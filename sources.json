@@ -1,0 +1,33 @@
+{
+  "$comment": "Corpus manifest — local sibling projects clothaid distils its knowledge pack from and validates against (dogfood diff harness). See docs/design/v0.0.1-design.md §2/§10.",
+  "sources": [
+    {
+      "name": "pepshop",
+      "path": "../pepshop",
+      "role": "primary",
+      "shape": "pnpm-workspace / TanStack Start + Express/tRPC",
+      "note": "frontrunner — the locked workflow and golden fixture for corpus reproduction"
+    },
+    {
+      "name": "nx-monorepo",
+      "path": "../nx-monorepo",
+      "role": "reference",
+      "shape": "Nx monorepo / Next.js 14",
+      "note": "team-repo leash + reuse-first/INVENTORY.md; monorepo topology coverage"
+    },
+    {
+      "name": "spa-bff",
+      "path": "../spa-bff",
+      "role": "reference",
+      "shape": "single-repo React SPA + Express BFF",
+      "note": "non-monorepo client/server split coverage"
+    },
+    {
+      "name": "cra-legacy",
+      "path": "../cra-legacy",
+      "role": "reference",
+      "shape": "CRA + Apollo + husky/lint-staged",
+      "note": "CRA/husky command-set + hook-setup coverage"
+    }
+  ]
+}
