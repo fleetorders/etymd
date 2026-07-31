@@ -21,7 +21,7 @@ export const FLEET_LENS = "fleet-manifest"
 /** The fleet `--json` schema marker — EXPERIMENTAL through 0.2.x, declared in the output. */
 export const FLEET_JSON_SCHEMA = "fleet-experimental-0.2"
 
-/** The wall artifacts a guarded WORKTREE must not carry at its root (they live hive-side). */
+/** The wall artifacts a guarded WORKTREE must not carry at its root (they live beside the manifest). */
 const GUARDED_WALL_ARTIFACTS = ["PROJECT_CONTEXT.md", "DECISIONS.md"]
 
 export interface FleetSweepOptions {
@@ -88,9 +88,20 @@ function finding(
   }
 }
 
-/** Where a guarded entry's audit state persists: beside the manifest, never in the worktree. */
+/**
+ * Where a guarded entry's audit state persists: beside the manifest, never in the worktree.
+ * Belt-and-braces to the loader's safe-name rule: a name that resolves anywhere but directly
+ * under `<dir>/guarded/` is refused — the manifest can lie, and a lie must never steer a write.
+ */
 export function guardedPersistenceRoot(manifest: FleetManifest, name: string): string {
-  return path.join(manifest.dir, "guarded", name)
+  const guardedDir = path.join(manifest.dir, "guarded")
+  const root = path.resolve(guardedDir, name)
+  if (path.dirname(root) !== guardedDir || root === guardedDir) {
+    throw new Error(
+      `entry name ${JSON.stringify(name)} escapes the guarded persistence zone — refusing to resolve a ledger root for it`,
+    )
+  }
+  return root
 }
 
 export function stateBudgetsFor(entry: FleetEntry): Partial<StateBudgets> | undefined {
@@ -133,8 +144,16 @@ export function emailMatchesGuardedHosts(email: string, hosts: string[]): boolea
   return hosts.some((h) => {
     const host = h.toLowerCase()
     if (domain === host) return true
-    // The email's domain may sit above the host (git.guarded.example → guarded.example) or below it.
-    if (domain.includes(".") && host.endsWith(`.${domain}`)) return true
+    // The email's domain may sit ONE label above the host (git.guarded.example → guarded.example) or
+    // anywhere below it. Climbing further would match generic/public suffixes — a host on
+    // git.guarded.example.com must never flag every @example.com commit as a guarded identity.
+    if (
+      domain.includes(".") &&
+      host.endsWith(`.${domain}`) &&
+      domain.split(".").length >= host.split(".").length - 1
+    ) {
+      return true
+    }
     return domain.endsWith(`.${host}`)
   })
 }
@@ -318,7 +337,7 @@ async function checkGuardedWallArtifacts(entries: FleetEntry[], findings: Findin
             "risk",
             `guarded entry \`${entry.name}\` carries ${artifact} inside its worktree`,
             [`${entry.resolvedRoot}/${artifact}`],
-            "Agent artifacts for guarded repos live outside the repo by policy — an in-repo copy is one push away from colleagues' eyes and will diverge from the hive-side truth.",
+            "Agent artifacts for guarded repos live outside the repo by policy — an in-repo copy is one push away from colleagues' eyes and will diverge from the manifest-side truth.",
             `Move it to the fleet's guarded/${entry.name}/ zone and leave a pointer if the harness needs one.`,
           ),
         )
@@ -480,7 +499,14 @@ async function checkGuardedEmails(
   for (const entry of manifest.entries) {
     if (entry.profile !== "personal" || !entry.resolvedRoot) continue
     const emails = await git(entry.resolvedRoot, ["log", "-30", "--format=%ae"])
-    if (emails === null) continue // not a repo / no commits — the audit already discloses that
+    if (emails === null) {
+      // Not a repo / no commits / git absent — this check did not run. The per-repo audit only
+      // discloses git absence when dated artifacts exist, so the wall must say so itself.
+      disclosures.push(
+        `Guarded-email check could not run in \`${entry.name}\` (no readable commit history) — undetermined, not clean.`,
+      )
+      continue
+    }
     const lines = emails.split("\n").filter(Boolean)
     const matched = [...new Set(lines.filter((e) => emailMatchesGuardedHosts(e, manifest.guardedHosts)))]
     if (matched.length) {
@@ -529,7 +555,9 @@ function stateAgeDays(facts: import("../core/types.js").ProjectFacts): number | 
   return Math.max(
     0,
     ...dated.map((f) =>
-      f.commitsSince ? Math.floor((repoAt - Date.parse(f.lastCommit)) / 86_400_000) : 0,
+      // A dirty artifact is treated fresh-now (the refresh is on disk, uncommitted) — the row
+      // must agree with the lens, which discloses instead of flagging it.
+      f.commitsSince && !f.dirty ? Math.floor((repoAt - Date.parse(f.lastCommit)) / 86_400_000) : 0,
     ),
   )
 }
@@ -565,10 +593,21 @@ async function sweepEntry(
   let upstreamRemote: string | undefined
   if (entry.upstream) {
     const url = await git(root, ["remote", "get-url", entry.upstream])
-    if (url !== null) {
+    // A remote that is configured but never fetched has zero refs/remotes/<name>/* refs, so
+    // `--not --remotes=<name>` excludes nothing — the full clock silently applies. Verify refs
+    // exist, or the fork-clock disclosure would be a lie about the clock actually used.
+    const refs =
+      url !== null
+        ? await git(root, ["for-each-ref", "--count=1", `refs/remotes/${entry.upstream}`])
+        : null
+    if (url !== null && refs) {
       upstreamRemote = entry.upstream
       project.disclosures.push(
         `freshness measured on fork-authored commits only (\`--not --remotes=${entry.upstream}\`)`,
+      )
+    } else if (url !== null) {
+      project.disclosures.push(
+        `upstream remote \`${entry.upstream}\` has no fetched refs — freshness measured on all commits`,
       )
     } else {
       project.disclosures.push(
@@ -594,6 +633,9 @@ async function sweepEntry(
   project.findings = result.findings
   for (const f of result.findings) project.counts[f.tier] += 1
   project.stateAgeDays = stateAgeDays(result.facts)
+  // The row's denominator must be the threshold the audit ACTUALLY applied — repo config plus
+  // the registry overlay — or the summary contradicts the findings it summarizes.
+  project.staleAfterDays = result.config.config.state.staleAfterDays
 
   for (const [key, value] of Object.entries(entry.contract)) {
     if (key === "placement" || !value) continue
@@ -690,7 +732,7 @@ export async function fleetLedgerTarget(
 
 /**
  * Make sure `id` is recorded in the entry's ledger, running one persisting single-repo audit
- * when it is not (guarded: audit read-only, ledger persisted hive-side). Returns false when the
+ * when it is not (guarded: audit read-only, ledger persisted beside the manifest). Returns false when the
  * id is still unknown after the audit.
  */
 export async function ensureFindingRecorded(
