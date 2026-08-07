@@ -442,6 +442,23 @@ export async function add(opts: FleetAddCmdOptions): Promise<void> {
     throw new Error("guarded entries take no `trust` — `profile: guarded` already implies it")
   }
 
+  // The manifest already declares which hosts are the guarded side's, and the remote was just read
+  // — so a guarded repo landing as a personal entry is a failure the tool has every fact needed to
+  // prevent. It matters because the two branches differ exactly where it is dangerous: the
+  // personal one records `path` and the RAW `remote`, so a mis-profiled guarded repo writes the
+  // guarded-side host and its internal group structure into a manifest that is tracked and pushed.
+  // That is the leak the alias convention exists to prevent, and it sat one forgotten flag away.
+  // Refuse rather than auto-correct: placement is the user's call, but it may not be made by
+  // omission.
+  const guardedHost = remote ? manifest.guardedHosts.find((h) => remote.includes(h)) : undefined
+  if (guardedHost && profile !== "guarded") {
+    throw new Error(
+      `\`${name}\` has a remote on the guarded host \`${guardedHost}\`, but --profile is \`${profile}\`. ` +
+        `A personal entry records its path and raw remote in the TRACKED manifest — register it ` +
+        `with \`--profile guarded\` (alias-only, machine-pinned), or move it out of the fleet root.`,
+    )
+  }
+
   const entry: Record<string, unknown> =
     profile === "guarded"
       ? { name, kind, profile, private: true }

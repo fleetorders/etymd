@@ -11,7 +11,7 @@ import { loadFleetManifest } from "../src/core/fleet.js"
 import { planWorkflow } from "../src/core/generate.js"
 import { scanProject } from "../src/core/scan.js"
 import { parseFailOnTier } from "../src/engine/finding.js"
-import { sweep as sweepCmd, dismiss as fleetDismiss } from "../src/commands/fleet.js"
+import { sweep as sweepCmd, dismiss as fleetDismiss, add } from "../src/commands/fleet.js"
 import {
   checkManifest,
   collectWallFindings,
@@ -976,5 +976,71 @@ describe("recurringClasses", () => {
       sweep("beta", [["gate-integrity/ci-only-typecheck", "gap"]]),
     ])
     expect(rc).toEqual([])
+  })
+})
+
+describe("fleet add — the guarded perimeter", () => {
+  const GUARDED = "gitlab.guarded.example.invalid"
+
+  async function repoWithRemote(rel: string, url: string) {
+    await initRepo(rel)
+    await gitIn(path.join(dir, rel), null, ["remote", "add", "origin", url])
+    return path.join(dir, rel)
+  }
+
+  it("PINNED: refuses a guarded-host remote registered as personal", async () => {
+    // The shipped failure this pins: `fleet add <dir> --profile guarded` silently registered an
+    // guarded-side repo as PERSONAL, because commander gave the parent's --profile the value. The
+    // personal branch records `path` plus the RAW remote, so the guarded-side host and its internal
+    // group structure landed in a manifest that is tracked and pushed. The CLI plumbing is
+    // fixed; this guard is what survives someone forgetting the flag entirely.
+    const target = await repoWithRemote("svc", `git@${GUARDED}:group/sub/svc.git`)
+    const manifestPath = await writeHub([], {
+      local: { machineProfile: "guarded", dirs: {}, guardedHosts: [GUARDED] },
+    })
+    await expect(
+      add({ cwd: path.dirname(manifestPath), target, name: "svc", trust: "private", yes: true }),
+    ).rejects.toThrow(/guarded host/i)
+    const doc = JSON.parse(await fs.readFile(manifestPath, "utf8"))
+    expect(doc.projects).toHaveLength(0)
+  })
+
+  it("writes a guarded entry carrying no path, no remote and no trust", async () => {
+    const target = await repoWithRemote("svc2", `git@${GUARDED}:group/sub/svc2.git`)
+    const manifestPath = await writeHub([], {
+      local: { machineProfile: "guarded", dirs: {}, guardedHosts: [GUARDED] },
+    })
+    await add({
+      cwd: path.dirname(manifestPath),
+      target,
+      name: "c-test",
+      profile: "guarded",
+      yes: true,
+    })
+    const doc = JSON.parse(await fs.readFile(manifestPath, "utf8"))
+    expect(doc.projects).toHaveLength(1)
+    // The three fields that carried the leak must be ABSENT, not merely redacted.
+    expect(doc.projects[0]).not.toHaveProperty("path")
+    expect(doc.projects[0]).not.toHaveProperty("remote")
+    expect(doc.projects[0]).not.toHaveProperty("trust")
+    expect(doc.projects[0].profile).toBe("guarded")
+    expect(doc.projects[0].private).toBe(true)
+  })
+
+  it("leaves a non-guarded remote on the personal path, remote recorded", async () => {
+    const target = await repoWithRemote("mine", "git@github.com:me/thing.git")
+    const manifestPath = await writeHub([], {
+      local: { machineProfile: "guarded", dirs: {}, guardedHosts: [GUARDED] },
+    })
+    await add({
+      cwd: path.dirname(manifestPath),
+      target,
+      name: "thing",
+      trust: "private",
+      yes: true,
+    })
+    const doc = JSON.parse(await fs.readFile(manifestPath, "utf8"))
+    expect(doc.projects[0].profile).toBe("personal")
+    expect(doc.projects[0].remote).toContain("github.com")
   })
 })
