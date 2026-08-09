@@ -275,6 +275,80 @@ describe("state-freshness — decisions format (marker-gated, forward-only)", ()
     expect(report.disclosures.some((d) => d.includes("Owner, Rollback"))).toBe(true)
   })
 
+  it("PINNED: a mid-file marker binds only the entries at or after it — position is the gate", async () => {
+    // An append-only ledger that declares new required fields mid-life cannot backfill the
+    // entries already written above the marker; flagging them would demand the impossible.
+    await write(
+      "DECISIONS.md",
+      [
+        "# Decisions",
+        "",
+        "## D-001 — 2026-01-05 — before the declaration\n\nDecision: no fields at all here.",
+        "## D-002 — 2026-01-06 — also before\n\nDecision: still nothing.",
+        "",
+        "<!-- decisions-format: 1 fields=Owner,Rollback -->",
+        "",
+        "## D-003 — 2026-01-07 — first bound entry\n\nScope: repo. Owner: ada. Rollback: revert.",
+        "## D-004 — 2026-01-08 — bound and short\n\nScope: repo. Owner: grace.",
+        "",
+      ].join("\n"),
+    )
+    const report = await stateFreshnessLens.run(await ctx())
+    // Only D-004's missing Rollback: D-001/D-002 lack Owner, Rollback AND the built-in Scope,
+    // and produce nothing — the built-in check shares the loop and shares the position gate.
+    expect(report.findings.map((f) => f.id)).toEqual([
+      "state-freshness/field-missing:DECISIONS.md:D-004:Rollback",
+    ])
+    // Exempt entries are unchecked, not clean — and the lens says so, naming the range.
+    expect(
+      report.disclosures.some(
+        (d) => d.includes("2 entries precede the format marker") && d.includes("D-001…D-002"),
+      ),
+    ).toBe(true)
+  })
+
+  it("PINNED: a marker at the top of the file still governs every entry", async () => {
+    await write(
+      "DECISIONS.md",
+      [
+        "# Decisions",
+        "<!-- decisions-format: 1 fields=Owner -->",
+        "",
+        "## D-001 — 2026-01-05 — first\n\nDecision: no owner, no scope.",
+        "## D-002 — 2026-01-06 — second\n\nScope: repo. Owner: ada.",
+        "",
+      ].join("\n"),
+    )
+    const report = await stateFreshnessLens.run(await ctx())
+    expect(report.findings.map((f) => f.id).sort()).toEqual([
+      "state-freshness/field-missing:DECISIONS.md:D-001:Owner",
+      "state-freshness/scope-missing:DECISIONS.md:D-001",
+    ])
+    expect(report.disclosures.some((d) => d.includes("precede the format marker"))).toBe(false)
+  })
+
+  it("still flags a past Revisit date above the marker — the entry made that promise itself", async () => {
+    // Position exempts entries from fields they never declared; it does not retire a date the
+    // entry wrote down. Revisit fires only where the field is already present.
+    await write(
+      "DECISIONS.md",
+      [
+        "# Decisions",
+        "",
+        "## D-001 — 2026-01-05 — legacy\n\nDecision: keep. Revisit: 2025-02-01",
+        "",
+        "<!-- decisions-format: 1 fields=Owner -->",
+        "",
+        "## D-002 — 2026-01-06 — bound\n\nScope: repo. Owner: ada.",
+        "",
+      ].join("\n"),
+    )
+    const report = await stateFreshnessLens.run(await ctx())
+    expect(report.findings.map((f) => f.id)).toEqual([
+      "state-freshness/revisit-due:DECISIONS.md:D-001",
+    ])
+  })
+
   it("leaves pre-marker records alone — declared fields are forward-only too", async () => {
     await write(
       "DECISIONS.md",

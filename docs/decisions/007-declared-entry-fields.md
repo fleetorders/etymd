@@ -39,6 +39,23 @@ its record is malformed, and a false "your file is lying" costs more trust than 
 Every-entry enforcement needs no heuristic, is explainable in one sentence, and cannot be dodged by
 how a sentence happens to read. It is also what `Scope:` already does, so the two behave alike.
 
+## Corrected — "every entry" means every entry from the marker's position
+
+The first implementation read "every entry" as every entry in the file, while the finding text it
+emitted said _after the marker_ and this record promised forward-only. The gap shows up the first
+time a long-lived ledger declares fields mid-life: the audit demands them from entries written long
+before the declaration existed, which no append-only record can supply without rewriting history.
+
+Forward-only is therefore a claim about **position**, not merely about the file: presence checks —
+the declared fields and the built-in `Scope:` sharing the same loop — bind entries whose heading
+starts at or after the marker. A marker left at the top of a file governs all of it, which is what
+a file that declared the format from the start means; a marker appended lower exempts the history
+above it. Exempt entries are counted and named in the disclosures, because an entry nobody checked
+is unchecked, not clean.
+
+`Revisit:` keeps whole-file reach. It is not a presence requirement — it fires only where the entry
+already wrote a date down, and a promise the entry made itself falls due wherever it sits.
+
 ## The marker carries the declaration, not the config file
 
 `<!-- decisions-format: 1 fields=Owner,Rollback -->`
