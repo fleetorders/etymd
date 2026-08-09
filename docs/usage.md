@@ -71,6 +71,13 @@ committer dates only, never mtime:
   literal marker `<!-- decisions-format: 1 -->` anywhere in the decisions file — forward-only,
   never retroactive. Duplicate / out-of-order `D-NNN` ids are flagged with a rename action even
   without the marker. Decisions artifacts are exempt from age — old decisions are history.
+- **Your own required fields**: append them to the marker —
+  `<!-- decisions-format: 1 fields=Owner,Rollback -->` — and every entry must carry each one
+  (`Owner:` or `**Owner:**` both count). Names may use letters, digits, spaces, `-` and `_`;
+  anything else is disclosed and skipped, as is a redeclared `Scope`. Etymd holds no opinion
+  about which fields are worth requiring: it checks presence of what you declared, nothing more.
+  Enforcement is every-entry rather than keyword-triggered, so no entry is exempted by how its
+  prose happens to read. A marker without `fields=` behaves exactly as it always has.
 
 **`context-economy`** — the always-loaded footprint as findings: any single file ≥ 4000 words,
 total ≥ 8000 words (defaults; override under `context` in `.etymd/config.json`). Only genuinely

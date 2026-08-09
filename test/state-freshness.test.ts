@@ -242,6 +242,87 @@ describe("state-freshness — decisions format (marker-gated, forward-only)", ()
     expect(report.outOfScope).toContain("DECISIONS.md")
   })
 
+  it("PINNED: a marker with no fields= behaves exactly as before — the attribute is an extension", async () => {
+    await write(
+      "DECISIONS.md",
+      `# Decisions\n${MARKER}\n\n## D-001 — 2026-01-05 — pick a queue\n\nScope: repo.\n`,
+    )
+    const report = await stateFreshnessLens.run(await ctx())
+    expect(report.findings).toEqual([])
+  })
+
+  it("checks fields the file declared, on every entry, and passes when they are present", async () => {
+    // Invented field names: etymd ships no vocabulary here, it checks what the file asked for.
+    const declaring = "<!-- decisions-format: 1 fields=Owner,Rollback -->"
+    await write(
+      "DECISIONS.md",
+      [
+        "# Decisions",
+        declaring,
+        "",
+        "## D-001 — 2026-01-05 — first\n\nScope: repo. **Owner:** ada. Rollback: revert the commit.",
+        "## D-002 — 2026-01-06 — second\n\nScope: repo. Owner: grace.",
+        "",
+      ].join("\n"),
+    )
+    const report = await stateFreshnessLens.run(await ctx())
+    // D-001 declares both and is silent; only D-002's missing Rollback is flagged.
+    expect(report.findings.map((f) => f.id)).toEqual([
+      "state-freshness/field-missing:DECISIONS.md:D-002:Rollback",
+    ])
+    expect(report.findings[0]?.tier).toBe("gap")
+    expect(report.findings[0]?.action).toContain("Rollback")
+    expect(report.disclosures.some((d) => d.includes("Owner, Rollback"))).toBe(true)
+  })
+
+  it("leaves pre-marker records alone — declared fields are forward-only too", async () => {
+    await write(
+      "DECISIONS.md",
+      "# Decisions\n\n## D-001 — 2026-01-05 — legacy\n\nDecision: keep the first.\n",
+    )
+    const report = await stateFreshnessLens.run(await ctx())
+    expect(report.findings).toEqual([])
+    expect(report.outOfScope).toContain("DECISIONS.md")
+  })
+
+  it("discloses an unusable declared field instead of silently dropping it", async () => {
+    // A file that believes it declared a field, audited quietly without it, would read as clean.
+    await write(
+      "DECISIONS.md",
+      [
+        "# Decisions",
+        "<!-- decisions-format: 1 fields=Owner,bad(name) -->",
+        "",
+        "## D-001 — 2026-01-05 — first\n\nScope: repo. Owner: ada.",
+        "",
+      ].join("\n"),
+    )
+    const report = await stateFreshnessLens.run(await ctx())
+    expect(report.findings).toEqual([])
+    expect(
+      report.disclosures.some((d) => d.includes("bad(name)") && d.includes("not checked")),
+    ).toBe(true)
+  })
+
+  it("does not double-flag a redeclared built-in, and discloses an unknown format version", async () => {
+    await write(
+      "DECISIONS.md",
+      [
+        "# Decisions",
+        "<!-- decisions-format: 9 fields=Scope -->",
+        "",
+        "## D-001 — 2026-01-05 — first\n\nDecision: no scope line here.",
+        "",
+      ].join("\n"),
+    )
+    const report = await stateFreshnessLens.run(await ctx())
+    // One finding, from the native Scope check — not a second from the redeclaration.
+    expect(report.findings.map((f) => f.id)).toEqual([
+      "state-freshness/scope-missing:DECISIONS.md:D-001",
+    ])
+    expect(report.disclosures.some((d) => d.includes("version 9"))).toBe(true)
+  })
+
   it("flags a past Revisit date as due review debt; future dates stay quiet", async () => {
     await write(
       "DECISIONS.md",

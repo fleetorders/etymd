@@ -147,7 +147,11 @@ _relative_ — a state doc is stale only when the repo moved past it, so a dorma
 state is current; a tracked file with uncommitted edits is treated fresh-now (the refresh is
 already on disk) and disclosed. Decisions records get format checks (`Scope:` presence, a
 `Revisit:` date that, once past, becomes a finding) — opt in by adding the literal marker
-`<!-- decisions-format: 1 -->` anywhere in the file; forward-only, never retroactive. Duplicate
+`<!-- decisions-format: 1 -->` anywhere in the file; forward-only, never retroactive. A file can
+require field names of its own by appending them to the marker —
+`<!-- decisions-format: 1 fields=Owner,Rollback -->` — and each is then checked on every entry.
+Etymd ships no field vocabulary and reads no meaning into the names; it verifies only that what
+the file declared is present, and discloses any name it could not use. Duplicate
 or out-of-order `D-NNN` ids are flagged with a rename action even without the marker — an
 append race is a defect in the file's own convention, not a format opinion.
 
