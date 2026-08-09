@@ -1,5 +1,20 @@
 # etymd
 
+## 0.8.0
+
+### Minor Changes
+
+- f2c1bfd: `etymd gates` no longer writes a gate that cannot fail. It derives whether any risk-tier finding is
+  reachable in the repo (a package manifest to contradict, a state document to fall behind); where
+  none is, the generated hook drops to `--fail-on gap` and the output says so and why. A `failOn`
+  recorded in `.etymd/config.json` is never adjusted, and `gates` now states which tier it wrote and
+  where that tier came from — the config key was previously unmentioned anywhere in its output.
+- 743ad44: Declared-field checks are forward-only from the marker's position, not from the file. A decisions
+  file that declares required entry fields mid-life no longer demands them from the entries appended
+  above the marker — an append-only record cannot backfill them. The built-in `Scope:` check shares
+  the same gate; `Revisit:` keeps whole-file reach, since it fires only where the entry already wrote
+  a date down. Entries exempt by position are counted and named in the lens disclosures.
+
 ## 0.7.0
 
 ### Minor Changes
