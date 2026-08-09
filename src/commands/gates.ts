@@ -5,7 +5,7 @@ import { cancel, confirm, isCancel, multiselect, select } from "@clack/prompts"
 
 import { applyFiles } from "../core/apply.js"
 import { CONFIG_FILE, configPath, readConfig, type GateConfig } from "../core/config.js"
-import { derivedCommands, planWorkflow } from "../core/generate.js"
+import { deriveFailOn, derivedCommands, planWorkflow } from "../core/generate.js"
 import { ensurePackageScript } from "../core/merge-json.js"
 import { scanProject } from "../core/scan.js"
 import type { ProjectFacts } from "../core/types.js"
@@ -39,6 +39,7 @@ function printGateSummary(
   gates: GateConfig,
   facts: ProjectFacts,
   source: { recorded: boolean; willRecord: boolean },
+  tier: { source: "config" | "derived" | "default"; reachable: string[] },
 ): void {
   const run = runPrefix(facts.packageManager)
   // The shell surface is a real step in the hook, so it belongs in the summary too — reporting
@@ -50,7 +51,35 @@ function printGateSummary(
   const listed = [...gates.commands.map((c) => `${run} ${c}`), ...(shellStep ? [shellStep] : [])]
   const cmds = listed.length ? listed.join(", ") : "none detected"
   print(`  ${glyph.bullet} ${theme.dim("pre-push runs")} ${theme.info(cmds)}`)
-  print(`  ${glyph.bullet} ${theme.dim("audit fails on")} ${theme.info(gates.failOn)}`)
+  // Never print the tier alone. A tier word with no provenance is what let a measured choice be
+  // reverted by a regeneration for six days without anyone reading the diff as policy.
+  const origin =
+    tier.source === "config"
+      ? `set in ${CONFIG_FILE}`
+      : tier.source === "derived"
+        ? "derived — see below"
+        : "default"
+  print(
+    `  ${glyph.bullet} ${theme.dim("audit fails on")} ${theme.info(gates.failOn)} ${theme.dim(`(${origin})`)}`,
+  )
+  if (tier.reachable.length === 0) {
+    // The gate that cannot fail: say so in full, because nothing else in a green push does.
+    print(
+      `    ${theme.warn("no risk-tier finding can fire in this repo")} ${theme.dim("(no package manifest to contradict, no state doc to fall behind)")}`,
+    )
+    print(
+      `    ${theme.dim(
+        gates.failOn === "risk"
+          ? `\`--fail-on risk\` would be a gate that always passes — change it in ${CONFIG_FILE} under \`gates.failOn\``
+          : `so the tier was lowered to \`${gates.failOn}\`, which this repo can reach — pin or override it in ${CONFIG_FILE} under \`gates.failOn\``,
+      )}`,
+    )
+  } else if (gates.failOn === "risk") {
+    // Reachable, but naming the ONE thing that can fail is what makes a too-narrow tier visible.
+    print(
+      `    ${theme.dim(`reachable at risk here: ${tier.reachable.join("; ")} — lower the tier in ${CONFIG_FILE} under \`gates.failOn\` to catch more`)}`,
+    )
+  }
   print(
     `  ${glyph.bullet} ${theme.dim("publish screen")} ${theme.info(gates.publishGate ? "yes" : "no")}${
       gates.publishGate && !facts.publishable ? theme.dim(" (overridden)") : ""
@@ -207,12 +236,18 @@ export async function run(opts: GatesOptions): Promise<void> {
   // Read the hook being replaced BEFORE planning: regeneration must never silently drop a
   // check the repo already runs.
   const existingPrePush = await readText(path.join(opts.cwd, ".githooks", "pre-push"))
-  const { config, present: hasConfig } = await readConfig(opts.cwd)
+  const { config, present: hasConfig, explicit } = await readConfig(opts.cwd)
   // `--yes` records nothing: with no one to decide, the values are the scan's guess, and
   // freezing a guess as a decision would silently stop the gate tracking the repo's scripts.
   const configSource = { recorded: hasConfig, willRecord: !opts.yes }
+  const derivedTier = deriveFailOn(facts, {
+    failOn: config.gates.failOn,
+    explicit: explicit.gatesFailOn,
+  })
+  let tier = { source: derivedTier.source, reachable: derivedTier.reachable }
   let gateConfig: GateConfig = {
     ...config.gates,
+    failOn: derivedTier.failOn,
     commands: config.gates.commands.length
       ? config.gates.commands
       : derivedCommands(facts, existingPrePush ?? undefined),
@@ -229,7 +264,7 @@ export async function run(opts: GatesOptions): Promise<void> {
   }
   let gateFiles = await plan()
   renderPlan(gateFiles, { regeneratesStale: true })
-  printGateSummary(gateConfig, facts, configSource)
+  printGateSummary(gateConfig, facts, configSource, tier)
 
   if (!opts.yes) {
     const choice = await select({
@@ -252,9 +287,11 @@ export async function run(opts: GatesOptions): Promise<void> {
         return
       }
       gateConfig = customized
+      // A tier the user just picked is a decision, and about to be recorded as one.
+      tier = { source: "config", reachable: derivedTier.reachable }
       gateFiles = await plan()
       renderPlan(gateFiles)
-      printGateSummary(gateConfig, facts, configSource)
+      printGateSummary(gateConfig, facts, configSource, tier)
     }
     // Choices are recorded so a re-run never re-asks and a drift check has something to
     // compare against.
@@ -308,6 +345,17 @@ export async function run(opts: GatesOptions): Promise<void> {
     }
   }
   print(`  ${glyph.ok} ${theme.dim("set")} ${theme.code("core.hooksPath = .githooks")}`)
+  // Restate the tier beside the file that now carries it. The plan above is scrollback by the
+  // time a hook exists; the tier is the one value in it that decides whether the gate can fail.
+  print(
+    `  ${glyph.ok} ${theme.dim("pre-push audit fails on")} ${theme.info(gateConfig.failOn)} ${theme.dim(
+      tier.source === "config"
+        ? `(from ${CONFIG_FILE})`
+        : tier.source === "derived"
+          ? `(derived — no risk-tier finding can fire here; set \`gates.failOn\` in ${CONFIG_FILE} to pin a tier)`
+          : `(default — set \`gates.failOn\` in ${CONFIG_FILE} to change it)`,
+    )}`,
+  )
 
   // The publish door needs one line in package.json to fire. The plan already showed it and the
   // install was consented to, so this does not ask again — but the merge itself stays

@@ -88,7 +88,7 @@ over repo-wide scans.
   (read-only sibling-repo smokes)
 - `docs/decisions/` — the decision record (001 founding · 002 foundation re-lock · 003 truth-guard
   pivot — the current identity · 004 fleet mode · 005 declared rules, design only · 006 local gate
-  provenance · 007 declared entry fields)
+  provenance · 007 declared entry fields · 008 derived gate tier)
 - `ROADMAP.md` — now/next/later, accepted heuristic trade-offs (release mechanics are a
   machine-local runbook, deliberately untracked: operating detail attracts account and
   environment specifics a public repo must not carry)

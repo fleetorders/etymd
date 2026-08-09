@@ -5,7 +5,12 @@ import path from "node:path"
 import { describe, expect, it } from "vitest"
 
 import { mergeGateSection } from "../src/commands/gates.js"
-import { derivedCommands, planWorkflow } from "../src/core/generate.js"
+import {
+  deriveFailOn,
+  derivedCommands,
+  planWorkflow,
+  riskReachability,
+} from "../src/core/generate.js"
 import { isDriftEmpty, summarizeBaselineDrift } from "../src/core/facts.js"
 import type { ProjectFacts } from "../src/core/types.js"
 import {
@@ -367,6 +372,60 @@ describe("summarizeBaselineDrift", () => {
     expect(drift.dirsAdded).toEqual(["docs"])
     expect(drift.dirsRemoved).toEqual([])
     expect(isDriftEmpty(drift)).toBe(false)
+  })
+})
+
+describe("deriveFailOn — a gate that cannot fail is not a gate", () => {
+  const STATE_DOC = {
+    id: "state",
+    label: "PROJECT_CONTEXT.md",
+    path: "PROJECT_CONTEXT.md",
+    kind: "state" as const,
+    exists: true,
+  }
+  const derived = { failOn: "risk", explicit: false }
+
+  it("PINNED: lowers the default tier where no risk-tier rule can fire", () => {
+    // The documents-repo class: nothing to contradict a script claim, nothing to fall behind.
+    // `--fail-on risk` there is a line that always exits 0 while reading as assurance.
+    const f = facts({ publishRoute: "none", artifacts: [] })
+    const out = deriveFailOn(f, derived)
+    expect(riskReachability(f)).toEqual([])
+    expect(out.failOn).toBe("gap")
+    expect(out.source).toBe("derived")
+  })
+
+  it("leaves the default alone where a risk-tier rule is reachable, and names what can fire", () => {
+    const withManifest = deriveFailOn(facts({ publishRoute: "npm" }), derived)
+    expect(withManifest.failOn).toBe("risk")
+    expect(withManifest.source).toBe("default")
+    expect(withManifest.reachable.join(" ")).toContain("package script")
+
+    // A state doc alone is enough: staleness past 3x the threshold escalates to risk.
+    const withState = deriveFailOn(facts({ publishRoute: "none", artifacts: [STATE_DOC] }), derived)
+    expect(withState.failOn).toBe("risk")
+    expect(withState.reachable.join(" ")).toContain("state doc")
+  })
+
+  it("PINNED: never adjusts a tier the config recorded — a decision outranks a derivation", () => {
+    // The regression this exists for: a generated file reinstating a default over a tier the
+    // repo had measured and chosen, one quiet regeneration at a time.
+    const out = deriveFailOn(facts({ publishRoute: "none", artifacts: [] }), {
+      failOn: "risk",
+      explicit: true,
+    })
+    expect(out.failOn).toBe("risk")
+    expect(out.source).toBe("config")
+    // The reachability finding still travels, so the summary can say the gate cannot fail.
+    expect(out.reachable).toEqual([])
+  })
+
+  it("does not raise a recorded tier that is already below risk", () => {
+    const out = deriveFailOn(facts({ publishRoute: "none", artifacts: [] }), {
+      failOn: "polish",
+      explicit: false,
+    })
+    expect(out.failOn).toBe("polish")
   })
 })
 
