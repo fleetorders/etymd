@@ -10,8 +10,27 @@ const LENS_ID = "state-freshness"
  * The marker that opts a decisions file into per-entry format checks. Forward-only by design:
  * mandatory-field checks apply to files that declared the format, never retroactively to
  * pre-existing records — old decisions are history, not defects.
+ *
+ * A file may append `fields=A,B` to require field names of its own choosing on every entry.
+ * Etymd ships no vocabulary for those names and attaches no meaning to them: it checks only that
+ * a field the file itself declared is present. A marker with no `fields=` behaves as it always
+ * has, so the attribute is an extension rather than a new format version.
  */
 export const DECISIONS_FORMAT_MARKER = "<!-- decisions-format: 1 -->"
+
+/** The version this build understands; a higher one is honoured as v1 and disclosed, never guessed at. */
+const KNOWN_FORMAT_VERSION = 1
+
+const MARKER_RE = /<!--\s*decisions-format:\s*(\d+)([^>]*?)-->/
+
+/** Declarable field names. Narrow on purpose: no regex metacharacters can reach the matcher. */
+const FIELD_NAME_RE = /^[A-Za-z0-9 _-]+$/
+
+/**
+ * `Scope` is checked natively, so a file redeclaring it would earn two findings for one
+ * missing line. Compared case-insensitively, as declared names are.
+ */
+const BUILT_IN_FIELDS = new Set(["scope"])
 
 const MS_PER_DAY = 86_400_000
 
@@ -21,6 +40,70 @@ interface DecisionEntry {
   num: number
   /** Body between this `## D-NNN` heading and the next `## ` heading. */
   block: string
+}
+
+interface DecisionsFormat {
+  /** Extra field names this file requires on every entry, in declaration order. */
+  fields: string[]
+  /** Marker text this build could not use. Disclosed by the lens, never silently dropped. */
+  problems: string[]
+}
+
+/**
+ * Read the format marker. Returns null when the file carries none — the forward-only gate.
+ *
+ * Everything unusable in the marker becomes a `problem` rather than a silent fallback: a file
+ * that believes it declared a required field, and is quietly audited without it, would read as
+ * clean for the one reason this tool exists to reject.
+ */
+function parseDecisionsFormat(text: string): DecisionsFormat | null {
+  const m = MARKER_RE.exec(text)
+  if (!m) return null
+
+  const problems: string[] = []
+  const fields: string[] = []
+
+  const version = Number(m[1])
+  if (version !== KNOWN_FORMAT_VERSION) {
+    problems.push(
+      `declares decisions-format version ${version}; this etymd understands version ${KNOWN_FORMAT_VERSION} — checked as version ${KNOWN_FORMAT_VERSION}.`,
+    )
+  }
+
+  const attrs = (m[2] ?? "").trim()
+  if (!attrs) return { fields, problems }
+
+  const declared = /^fields=(.*)$/.exec(attrs)
+  if (!declared) {
+    problems.push(`marker attribute \`${attrs}\` is not understood — ignored (only \`fields=\`).`)
+    return { fields, problems }
+  }
+
+  const seen = new Set(BUILT_IN_FIELDS)
+  for (const raw of (declared[1] as string).split(",")) {
+    const name = raw.trim()
+    if (!name) continue
+    if (!FIELD_NAME_RE.test(name)) {
+      problems.push(
+        `declared field \`${name}\` is not a usable field name (letters, digits, spaces, \`-\`, \`_\`) — not checked.`,
+      )
+      continue
+    }
+    const key = name.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    fields.push(name)
+  }
+
+  if (fields.length === 0 && problems.length === 0) {
+    problems.push("marker declares `fields=` with no field names — no extra fields checked.")
+  }
+  return { fields, problems }
+}
+
+/** Presence test for one declared field, matching the built-in `Scope:` shape (`**Name:**` counts). */
+function hasField(block: string, name: string): boolean {
+  return new RegExp(`${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s*]*:`).test(block)
 }
 
 function parseDecisionEntries(text: string): DecisionEntry[] {
@@ -86,10 +169,35 @@ function checkIdSequence(file: string, entries: DecisionEntry[]): Finding[] {
   return findings
 }
 
-/** Format-field checks (Scope presence, Revisit) — marker-gated, forward-only by design. */
-function checkFormatFields(file: string, entries: DecisionEntry[], today: string): Finding[] {
+/**
+ * Format-field checks (Scope presence, Revisit, and any field the file declared) — marker-gated,
+ * forward-only by design. Enforcement is every-entry and deterministic: no heuristic decides
+ * which entries "look like" they need a field, because a keyword trigger would flag prose that
+ * merely mentions the wrong word, and a false "your file is lying" costs more than a missed one.
+ */
+function checkFormatFields(
+  file: string,
+  entries: DecisionEntry[],
+  today: string,
+  declaredFields: string[],
+): Finding[] {
   const findings: Finding[] = []
   for (const entry of entries) {
+    for (const field of declaredFields) {
+      if (hasField(entry.block, field)) continue
+      findings.push({
+        id: `${LENS_ID}/field-missing:${file}:${entry.id}:${field}`,
+        lens: LENS_ID,
+        tier: "gap",
+        claim: `${file} ${entry.id} has no ${field}: field`,
+        evidence: [`${file}: ${entry.id}`, `${file} marker declares required field \`${field}\``],
+        why: "The file declares this field required on every entry after the marker; whatever reads the record for it finds nothing here.",
+        action: `Add a ${field}: line to ${entry.id}.`,
+        effort: "S",
+        confidence: "high",
+      })
+    }
+
     if (!/Scope[\s*]*:/.test(entry.block)) {
       findings.push({
         id: `${LENS_ID}/scope-missing:${file}:${entry.id}`,
@@ -225,14 +333,21 @@ export const stateFreshnessLens: Lens = {
       }
       const entries = parseDecisionEntries(text)
       findings.push(...checkIdSequence(a.path, entries))
-      if (!text.includes(DECISIONS_FORMAT_MARKER)) {
+      const format = parseDecisionsFormat(text)
+      if (!format) {
         disclosures.push(
           `${a.path} carries no \`${DECISIONS_FORMAT_MARKER}\` marker — format checks skipped (forward-only, never retroactive); id-sequence checks still ran.`,
         )
         outOfScope.push(a.path)
         continue
       }
-      findings.push(...checkFormatFields(a.path, entries, today))
+      for (const problem of format.problems) disclosures.push(`${a.path}: ${problem}`)
+      if (format.fields.length > 0) {
+        disclosures.push(
+          `${a.path} declares required entry fields: ${format.fields.join(", ")} — checked on every entry (etymd attaches no meaning to the names).`,
+        )
+      }
+      findings.push(...checkFormatFields(a.path, entries, today, format.fields))
     }
 
     disclosures.push(
