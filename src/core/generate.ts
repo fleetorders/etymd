@@ -32,6 +32,61 @@ export function derivedCommands(facts: ProjectFacts, existingHook?: string): str
   return base
 }
 
+/**
+ * Which risk-tier audit findings could ever fire in this repo, and why.
+ *
+ * The generated pre-push hook runs `etymd audit --fail-on <tier>`, and `risk` is the default. In a
+ * repo where no risk-tier rule has its preconditions — no package manifest, no state doc — that
+ * line is a gate that cannot fail: it exits 0 on every push and reads as assurance. Reporting a
+ * check that cannot run is the exact failure this tool exists to catch, so the tier is derived and
+ * the derivation is stated rather than assumed.
+ *
+ * Conservative by construction: a rule whose preconditions are uncertain counts as REACHABLE. A
+ * wrongly-quiet gate is the failure being fixed; wrongly claiming a gate works is the same failure
+ * wearing the other face, and only one of the two can be recovered from by reading the output.
+ *
+ * `gate-integrity/hooks-not-wired` is deliberately excluded: it fires when `core.hooksPath` is
+ * unset, and the hook cannot execute in that state — inside the gate it is unreachable by
+ * construction, whatever the repo looks like.
+ */
+export function riskReachability(facts: ProjectFacts): string[] {
+  const reasons: string[] = []
+  // instruction-truth: a script claim that no longer resolves, and a baseline command that
+  // vanished. Both need a manifest to name scripts against; without one there is nothing to
+  // contradict, and script claims are disclosed as unverifiable rather than flagged.
+  // `publishRoute` is the scan's record of whether a root package.json was read at all
+  // ("none" means there was none) — the manifest-presence fact, without a second one for it.
+  if (facts.publishRoute !== "none") {
+    reasons.push("an instruction file can name a package script that no longer exists")
+  }
+  // state-freshness: past 3x the staleness threshold with commits still landing, `gap` escalates.
+  if (facts.artifacts.some((a) => a.kind === "state" && a.exists)) {
+    reasons.push("a state doc can fall far enough behind the repo to escalate")
+  }
+  return reasons
+}
+
+/**
+ * The tier the pre-push audit should fail on, and where that tier came from.
+ *
+ * A recorded `gates.failOn` is a decision and is never adjusted — the derivation may only choose
+ * between defaults. That asymmetry is the point: the reverting regeneration this fixes was a
+ * generated file quietly reinstating a default over a tier the repo had measured and chosen.
+ */
+export function deriveFailOn(
+  facts: ProjectFacts,
+  recorded: { failOn: string; explicit: boolean },
+): { failOn: string; source: "config" | "derived" | "default"; reachable: string[] } {
+  const reachable = riskReachability(facts)
+  if (recorded.explicit) return { failOn: recorded.failOn, source: "config", reachable }
+  if (recorded.failOn === "risk" && reachable.length === 0) {
+    // Nothing can fail at `risk` here, so `risk` would be a gate that always passes. `gap` is the
+    // next tier down that this repo can actually reach — a narrower promise that is true.
+    return { failOn: "gap", source: "derived", reachable }
+  }
+  return { failOn: recorded.failOn, source: "default", reachable }
+}
+
 export interface GeneratedFile {
   path: string
   contents: string

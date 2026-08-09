@@ -66,6 +66,13 @@ export interface LoadedConfig {
   present: boolean
   /** Malformed or ignored input — surfaced as disclosures, never silently dropped. */
   problems: string[]
+  /**
+   * Keys the file actually set, as opposed to keys that collapsed to a default. `gates.failOn`
+   * defaults to the same word a user might write deliberately, so the resolved value cannot say
+   * which happened — and a derivation may adjust a default it chose while never touching a tier
+   * someone decided on.
+   */
+  explicit: { gatesFailOn: boolean }
 }
 
 export const DEFAULT_CONFIG: EtymdConfig = {
@@ -106,7 +113,7 @@ export async function readConfig(root: string): Promise<LoadedConfig> {
   const target = configPath(root)
   const problems: string[] = []
   if (!(await pathExists(target))) {
-    return { config: DEFAULT_CONFIG, present: false, problems }
+    return { config: DEFAULT_CONFIG, present: false, problems, explicit: { gatesFailOn: false } }
   }
 
   const raw = await readText(target)
@@ -117,11 +124,11 @@ export async function readConfig(root: string): Promise<LoadedConfig> {
     problems.push(
       `${CONFIG_FILE} exists but is not valid JSON (${err instanceof Error ? err.message : String(err)}) — defaults used.`,
     )
-    return { config: DEFAULT_CONFIG, present: true, problems }
+    return { config: DEFAULT_CONFIG, present: true, problems, explicit: { gatesFailOn: false } }
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     problems.push(`${CONFIG_FILE} must contain a JSON object — defaults used.`)
-    return { config: DEFAULT_CONFIG, present: true, problems }
+    return { config: DEFAULT_CONFIG, present: true, problems, explicit: { gatesFailOn: false } }
   }
 
   const obj = parsed as Record<string, unknown>
@@ -154,6 +161,7 @@ export async function readConfig(root: string): Promise<LoadedConfig> {
   return {
     present: true,
     problems,
+    explicit: { gatesFailOn: failOn !== undefined },
     config: {
       instructions: {
         include:
