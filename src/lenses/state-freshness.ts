@@ -36,7 +36,7 @@ const BUILT_IN_FIELDS = new Set(["scope"])
 
 const MS_PER_DAY = 86_400_000
 
-interface DecisionEntry {
+export interface DecisionEntry {
   /** "D-007" as written. */
   id: string
   num: number
@@ -117,7 +117,8 @@ function hasField(block: string, name: string): boolean {
   return new RegExp(`${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s*]*:`).test(block)
 }
 
-function parseDecisionEntries(text: string): DecisionEntry[] {
+/** Shared with instruction-truth, which resolves state-doc decision references against these ids. */
+export function parseDecisionEntries(text: string): DecisionEntry[] {
   const headings = [...text.matchAll(/^## .*$/gm)]
   const entries: DecisionEntry[] = []
   for (let i = 0; i < headings.length; i++) {
