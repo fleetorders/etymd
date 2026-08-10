@@ -331,12 +331,12 @@ export function extractPathClaims(text: string): PathClaims {
 export interface DecisionRefs {
   /** Decision number → the id as first written (`D-014`). Only refs claiming THIS repo's record. */
   refs: Map<number, string>
-  /** Refs whose every mention names another record (`fleet D-050`) — skipped, counted, disclosed. */
+  /** Refs whose every mention names another record (`peer D-050`) — skipped, counted, disclosed. */
   qualifiedSkipped: number
 }
 
 // Words that may precede a decision reference without naming a DIFFERENT record. Any other
-// immediately-preceding word ("fleet D-050", "upstream D-014") reads as a citation of some other
+// immediately-preceding word ("peer D-050", "upstream D-014") reads as a citation of some other
 // project's ledger, which this repo's record cannot resolve — skipped and disclosed, never
 // accused. Precision over recall: an unlisted verb costs a check, never a false accusation.
 const LOCAL_REF_LEADINS = new Set(

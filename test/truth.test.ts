@@ -332,7 +332,7 @@ describe("state-document truth (the lying-state-doc fixture)", () => {
     await write("DECISIONS.md", "# Decisions\n\n## D-001 — only\n\nScope: repo.\n")
     await write(
       "PROJECT_CONTEXT.md",
-      "# State\n\nThe convention is fleet D-050; upstream D-016 names the file. Local ruling (D-001) applies.\n",
+      "# State\n\nThe convention is peer D-050; upstream D-016 names the file. Local ruling (D-001) applies.\n",
     )
     const report = await runTruth()
     expect(report.findings.filter((f) => f.id.includes("dead-decision-ref"))).toEqual([])
