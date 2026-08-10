@@ -282,6 +282,89 @@ describe("instruction-truth lens (the lying-AGENTS.md fixture)", () => {
   })
 })
 
+describe("state-document truth (the lying-state-doc fixture)", () => {
+  it("flags a state doc's dead command, dead path, and dead decision reference", async () => {
+    await write("package.json", JSON.stringify({ name: "stateful", scripts: { lint: "eslint ." } }))
+    await write("pnpm-lock.yaml", "")
+    await write("node_modules/.bin/.keep", "")
+    await write("src/real.ts", "export {}\n")
+    await write("AGENTS.md", "# AGENTS.md\n\nRun `pnpm lint` before finishing.\n")
+    await write(
+      "DECISIONS.md",
+      "# Decisions\n\n## D-001 — first\n\nScope: repo.\n\n## D-002 — second\n\nScope: repo.\n",
+    )
+    await write(
+      "PROJECT_CONTEXT.md",
+      [
+        "# State",
+        "Pre-push runs `pnpm verify:all` and blocks on failure.", // no such script
+        "The engine lives in `src/engine/core.ts`.", // no such path
+        "Also see `src/real.ts`.", // true path
+        "Latest ruling: D-014 locked the approach.", // record stops at D-002
+        "Superseded by D-002 later.", // resolves — no finding
+      ].join("\n\n"),
+    )
+    const report = await runTruth()
+    const ids = report.findings.map((f) => f.id)
+    expect(ids).toContain("instruction-truth/stale-command:PROJECT_CONTEXT.md:verify:all")
+    expect(ids).toContain("instruction-truth/stale-path:PROJECT_CONTEXT.md:src/engine/core.ts")
+    expect(ids).toContain("instruction-truth/dead-decision-ref:PROJECT_CONTEXT.md:D-014")
+    expect(ids.filter((i) => i.includes("src/real.ts"))).toEqual([])
+    expect(ids.filter((i) => i.includes("D-002"))).toEqual([])
+    expect(report.findings.find((f) => f.id.includes("dead-decision-ref"))?.tier).toBe("gap")
+    expect(report.disclosures.some((d) => /Checked 1 state document/.test(d))).toBe(true)
+  })
+
+  it("flags a script claim in a repo with no package manifest at all (nothing could satisfy it)", async () => {
+    await write("AGENTS.md", "# AGENTS.md\n\nDocs-only repo.\n")
+    await write(
+      "PROJECT_CONTEXT.md",
+      "# State\n\n`git push` runs `npm run lint` and blocks on failure.\n",
+    )
+    const report = await runTruth()
+    expect(report.findings.map((f) => f.id)).toContain(
+      "instruction-truth/stale-command:PROJECT_CONTEXT.md:lint",
+    )
+  })
+
+  it("skips decision refs that name another record, and discloses the skip", async () => {
+    await write("AGENTS.md", "# AGENTS.md\n\nNothing to run.\n")
+    await write("DECISIONS.md", "# Decisions\n\n## D-001 — only\n\nScope: repo.\n")
+    await write(
+      "PROJECT_CONTEXT.md",
+      "# State\n\nThe convention is fleet D-050; upstream D-016 names the file. Local ruling (D-001) applies.\n",
+    )
+    const report = await runTruth()
+    expect(report.findings.filter((f) => f.id.includes("dead-decision-ref"))).toEqual([])
+    expect(report.disclosures.some((d) => d.includes("name another record"))).toBe(true)
+  })
+
+  it("discloses unresolvable refs when decisions live in a directory convention", async () => {
+    await write("AGENTS.md", "# AGENTS.md\n\nNothing to run.\n")
+    await write("docs/decisions/001-founding.md", "# 001\n\nA record.\n")
+    await write("PROJECT_CONTEXT.md", "# State\n\nSee D-014 for the ruling.\n")
+    const report = await runTruth()
+    // No file carries `## D-NNN` entries, so the citation is unverifiable — never accused.
+    expect(report.findings.filter((f) => f.id.includes("dead-decision-ref"))).toEqual([])
+    expect(report.disclosures.some((d) => d.includes("could not be resolved"))).toBe(true)
+  })
+
+  it("a truthful state doc adds no findings", async () => {
+    await write("package.json", JSON.stringify({ name: "honest", scripts: { test: "vitest" } }))
+    await write("pnpm-lock.yaml", "")
+    await write("node_modules/.bin/.keep", "")
+    await write("src/index.ts", "export {}\n")
+    await write("AGENTS.md", "# AGENTS.md\n\nRun `pnpm test`.\n")
+    await write("DECISIONS.md", "# Decisions\n\n## D-001 — shipped\n\nScope: repo.\n")
+    await write(
+      "PROJECT_CONTEXT.md",
+      "# State\n\n`pnpm test` is green; code in `src/index.ts`; per D-001 this stays.\n",
+    )
+    const report = await runTruth()
+    expect(report.findings).toEqual([])
+  })
+})
+
 describe("context-economy lens", () => {
   it("flags a heavy always-loaded file and the total budget", async () => {
     await write("package.json", JSON.stringify({ name: "heavy" }))

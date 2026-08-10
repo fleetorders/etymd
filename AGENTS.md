@@ -79,7 +79,8 @@ over repo-wide scans.
 - `src/engine/` — the findings engine: `finding.ts` (Finding/Lens/ranking) · `ledger.ts`
   (committed improvement memory + `resolveEntry` for dismiss/accept) · `run.ts` (lens registry +
   audit composition) · `fleet.ts` (sweep + manifest check + fleet-scope wall findings)
-- `src/lenses/` — the lenses: `instruction-truth/` (claims extraction + the headline truth lens) ·
+- `src/lenses/` — the lenses: `instruction-truth/` (claims extraction + the headline truth lens —
+  instruction files AND state documents, incl. decision-reference resolution) ·
   `state-freshness.ts` (state/decisions freshness — git committer dates, never mtime) ·
   `gate-integrity/` (inventory + lens) · `context-economy.ts`
 - `src/pack/` — the versioned pack: `templates.ts` (minimal scaffold + hooks) · `version.ts`
@@ -88,7 +89,7 @@ over repo-wide scans.
   (read-only sibling-repo smokes)
 - `docs/decisions/` — the decision record (001 founding · 002 foundation re-lock · 003 truth-guard
   pivot — the current identity · 004 fleet mode · 005 declared rules, design only · 006 local gate
-  provenance · 007 declared entry fields · 008 derived gate tier)
+  provenance · 007 declared entry fields · 008 derived gate tier · 009 state-doc truth)
 - `ROADMAP.md` — now/next/later, accepted heuristic trade-offs (release mechanics are a
   machine-local runbook, deliberately untracked: operating detail attracts account and
   environment specifics a public repo must not carry)
@@ -103,8 +104,8 @@ over repo-wide scans.
 - `src/lenses/instruction-truth/claims.ts` — claim extraction. Invariant: precision over recall;
   every skip class (builtins, flagged invocations, globs/URLs/placeholders, unrecognized
   extensions, gitignored claims, installed-binary commands, uninstalled node_modules,
-  create-this prose, naming stand-ins) is counted and disclosed by the lens, never silently
-  dropped.
+  create-this prose, naming stand-ins, foreign-record and unresolvable decision refs) is counted
+  and disclosed by the lens, never silently dropped.
 - `src/core/facts.ts` — cache (`.etymd/cache/`, gitignored) vs baseline
   (`.etymd/baseline.json`, committed). Drift is measured against the baseline, never the cache.
 - `src/core/config.ts` — the optional committed config file under `.etymd/` (audit scope +

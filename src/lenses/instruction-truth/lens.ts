@@ -5,13 +5,17 @@ import type { Finding, Lens, LensContext, LensReport } from "../../engine/findin
 import { CONFIG_FILE, DEFAULT_CONFIG } from "../../core/config.js"
 import { BASELINE_FILE, baselineCarriesMachinePath } from "../../core/facts.js"
 import type { ProjectFacts } from "../../core/types.js"
-import { git, pathExists, readJson } from "../../core/util.js"
+import { git, pathExists, readJson, readText } from "../../core/util.js"
+import { parseDecisionEntries } from "../state-freshness.js"
 import {
   extractCommandClaims,
+  extractDecisionRefs,
   extractDocRefs,
   extractPathClaims,
   listInstructionFiles,
+  listStateDocuments,
   packageManagerUsage,
+  type InstructionFile,
 } from "./claims.js"
 
 const LENS_ID = "instruction-truth"
@@ -159,6 +163,11 @@ export const instructionTruthLens: Lens = {
       return false
     }
     const nodeModulesInstalled = await pathExists(path.join(root, "node_modules"))
+    // A repo with no package manifest anywhere can never install node_modules, so nothing could
+    // ever satisfy a script claim there — checkable (and false) even without an install. Without
+    // this, a doc claiming `npm run lint` in a manifest-less repo stays green forever.
+    const manifestExists =
+      (await pathExists(path.join(root, "package.json"))) || facts.packages.length > 0
 
     let totalFilteredSkipped = 0
     let binaryResolved = 0
@@ -167,7 +176,8 @@ export const instructionTruthLens: Lens = {
     let prospectiveSkipped = 0
     let placeholderSkipped = 0
 
-    for (const file of files) {
+    // The command/path truth checks — shared by instruction files and state documents.
+    const auditClaims = async (file: InstructionFile) => {
       // Command claims: a script the file tells agents to run must exist somewhere real.
       const { scripts: claimed, filteredSkipped } = extractCommandClaims(file.text)
       totalFilteredSkipped += filteredSkipped
@@ -177,7 +187,7 @@ export const instructionTruthLens: Lens = {
           binaryResolved += 1
           continue
         }
-        if (!nodeModulesInstalled) {
+        if (!nodeModulesInstalled && manifestExists) {
           unverifiableCommands += 1
           continue
         }
@@ -234,6 +244,10 @@ export const instructionTruthLens: Lens = {
           }),
         )
       }
+    }
+
+    for (const file of files) {
+      await auditClaims(file)
 
       // Package-manager consistency: instructions must not command a different PM than the repo uses.
       if (facts.packageManager !== "unknown") {
@@ -270,6 +284,58 @@ export const instructionTruthLens: Lens = {
             action: `Create ${ref} or remove the reference.`,
             effort: "S",
             confidence: "high",
+          }),
+        )
+      }
+    }
+
+    // ---- state documents: the same truth checks, plus decision-reference resolution ----
+    // A state doc is the first file read on returning to a project — the highest-leverage place
+    // for a false claim to sit. Age and size live in state-freshness; TRUTH is checked here.
+    const auditedPaths = new Set(files.map((f) => f.path))
+    const stateDocs = await listStateDocuments(root, facts)
+    let qualifiedRefsSkipped = 0
+    let unresolvableRefs = 0
+    let ledgerIds: Set<number> | null = null
+    const ledgerSources: string[] = []
+    if (stateDocs.length) {
+      for (const artifact of facts.artifacts) {
+        if (artifact.kind !== "decisions" || !artifact.exists) continue
+        // Directory conventions read as null — they carry no parseable `## D-NNN` ids.
+        const text = await readText(path.join(root, artifact.path))
+        if (text === null) continue
+        const entries = parseDecisionEntries(text)
+        if (!entries.length) continue
+        ledgerIds ??= new Set()
+        for (const entry of entries) ledgerIds.add(entry.num)
+        ledgerSources.push(artifact.path)
+      }
+    }
+    for (const doc of stateDocs) {
+      // `instructions.include` may already have audited this file — never double-report.
+      if (!auditedPaths.has(doc.path)) await auditClaims(doc)
+
+      // Decision references: a state doc citing an id the record never wrote is stale in a way
+      // age cannot reveal — the file may have been edited yesterday and still cite nothing.
+      const { refs, qualifiedSkipped } = extractDecisionRefs(doc.text)
+      qualifiedRefsSkipped += qualifiedSkipped
+      if (!refs.size) continue
+      if (!ledgerIds) {
+        unresolvableRefs += refs.size
+        continue
+      }
+      for (const [num, asWritten] of refs) {
+        if (ledgerIds.has(num)) continue
+        findings.push(
+          finding({
+            id: `${LENS_ID}/dead-decision-ref:${doc.path}:${asWritten}`,
+            tier: "gap",
+            claim: `${doc.path} cites ${asWritten} — no such entry exists in ${ledgerSources.join(", ")}`,
+            evidence: [doc.path, `${ledgerSources.join(", ")}: no ${asWritten} entry`],
+            why: "A state doc is read as ground truth on return; a citation the decision record cannot back sends readers to a ruling that was never written.",
+            action: "Fix the reference — or record the missing decision.",
+            effort: "S",
+            confidence: "medium",
           }),
         )
       }
@@ -323,6 +389,25 @@ export const instructionTruthLens: Lens = {
     if (placeholderSkipped) {
       disclosures.push(
         `${placeholderSkipped} path claim(s) are naming stand-ins (e.g. \`my-custom-skill\`) rather than real references; skipped, not flagged.`,
+      )
+    }
+    if (stateDocs.length) {
+      disclosures.push(
+        `Checked ${stateDocs.length} state document(s) for command, path, and decision-reference claims (same skip classes as instruction files); decision ids resolved against ${
+          ledgerSources.length
+            ? ledgerSources.join(", ")
+            : "nothing — no decisions file with D-NNN entries"
+        }.`,
+      )
+    }
+    if (qualifiedRefsSkipped) {
+      disclosures.push(
+        `${qualifiedRefsSkipped} decision reference(s) name another record (e.g. a fleet-level ledger) — not claims about this repo's decisions; skipped, not flagged.`,
+      )
+    }
+    if (unresolvableRefs) {
+      disclosures.push(
+        `${unresolvableRefs} decision reference(s) could not be resolved — no decisions file with \`## D-NNN\` entries; skipped, not flagged.`,
       )
     }
     // Scoping narrows what this lens can see, so it is stated up front and by name — an audit

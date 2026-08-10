@@ -101,6 +101,24 @@ export async function listInstructionFiles(
   return { files: kept, excluded, included }
 }
 
+/**
+ * Every state document the scan detected (kind "state"). State docs are the first file read on
+ * returning to a project — the highest-leverage place for a false claim to sit — so they get the
+ * same command/path truth checks as instruction files, plus decision-reference resolution.
+ */
+export async function listStateDocuments(
+  root: string,
+  facts: ProjectFacts,
+): Promise<InstructionFile[]> {
+  const docs: InstructionFile[] = []
+  for (const artifact of facts.artifacts) {
+    if (artifact.kind !== "state" || !artifact.exists) continue
+    const text = await readText(path.join(root, artifact.path))
+    if (text !== null) docs.push({ path: normalizeRelPath(artifact.path), text })
+  }
+  return docs
+}
+
 /** Inline code spans + fenced-code lines — where command and path claims live. */
 export function extractCodeTokens(text: string): string[] {
   const tokens: string[] = []
@@ -308,6 +326,56 @@ export function extractPathClaims(text: string): PathClaims {
     else paths.push(claim)
   }
   return { paths, prospective, placeholder: [...placeholder] }
+}
+
+export interface DecisionRefs {
+  /** Decision number → the id as first written (`D-014`). Only refs claiming THIS repo's record. */
+  refs: Map<number, string>
+  /** Refs whose every mention names another record (`fleet D-050`) — skipped, counted, disclosed. */
+  qualifiedSkipped: number
+}
+
+// Words that may precede a decision reference without naming a DIFFERENT record. Any other
+// immediately-preceding word ("fleet D-050", "upstream D-014") reads as a citation of some other
+// project's ledger, which this repo's record cannot resolve — skipped and disclosed, never
+// accused. Precision over recall: an unlisted verb costs a check, never a false accusation.
+const LOCAL_REF_LEADINS = new Set(
+  (
+    "decision decisions entry entries ruling rulings record records ledger id ids item items " +
+    "see per in of on at by to as is was are were the a an and or but not with under over from " +
+    "via vs than after before since between through against latest newest earliest only also " +
+    "still now supersedes superseded superseding amends amended extends extended cites cited " +
+    "citing adds added adding wrote written writes locked locks closed closes opened opens " +
+    "resolves resolved reopened recorded number numbers"
+  ).split(" "),
+)
+
+/**
+ * `D-NNN` decision references a state document makes against the repo's own decision record.
+ * A ref counts as local when nothing precedes it but punctuation, connective prose, or a
+ * citation verb; one unqualified mention makes the number a live claim.
+ */
+export function extractDecisionRefs(text: string): DecisionRefs {
+  const byNum = new Map<number, { asWritten: string; local: boolean }>()
+  for (const m of text.matchAll(/\bD-(\d{1,4})\b/g)) {
+    const index = m.index ?? 0
+    // Part of a larger token (`X-D-3`, `a/D-3`) — an identifier, not a decision reference.
+    if (index > 0 && /[-/_.]/.test(text[index - 1] as string)) continue
+    const before = text.slice(Math.max(0, index - 48), index)
+    const lead = /([A-Za-z][A-Za-z0-9'’-]*)[ \t]+$/.exec(before)?.[1]
+    const local = !lead || LOCAL_REF_LEADINS.has(lead.toLowerCase())
+    const num = Number(m[1])
+    const seen = byNum.get(num)
+    if (!seen) byNum.set(num, { asWritten: m[0], local })
+    else seen.local = seen.local || local
+  }
+  const refs = new Map<number, string>()
+  let qualifiedSkipped = 0
+  for (const [num, ref] of byNum) {
+    if (ref.local) refs.set(num, ref.asWritten)
+    else qualifiedSkipped += 1
+  }
+  return { refs, qualifiedSkipped }
 }
 
 /** How often each package manager is used in command position — the consistency signal. */
