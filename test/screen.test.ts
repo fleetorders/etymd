@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
-import { isSelfName, readScreenable, screenText } from "../src/commands/screen.js"
+import { isSelfName, patternLiteral, readScreenable, screenText } from "../src/commands/screen.js"
 
 const patterns = [/AcmeInc/i, /internal\.example\.com/i]
 
@@ -69,11 +69,47 @@ describe("self-name exemption", () => {
   it("drops a pattern that IS the repo's own name, keeps one that merely contains it", () => {
     // A repo has to call itself something in its own README and package name; the
     // cross-project rule is about disclosing OTHER projects.
-    expect(isSelfName(/widget/i, "widget")).toBe(true)
-    expect(isSelfName(/WIDGET/i, "widget")).toBe(true)
+    expect(isSelfName(/widget/i, ["widget"])).toBe(true)
+    expect(isSelfName(/WIDGET/i, ["widget"])).toBe(true)
     // Narrower than the name, or broader than it, both stay active.
-    expect(isSelfName(/widget-internal/i, "widget")).toBe(false)
-    expect(isSelfName(/wid/i, "widget")).toBe(false)
+    expect(isSelfName(/widget-internal/i, ["widget"])).toBe(false)
+    expect(isSelfName(/wid/i, ["widget"])).toBe(false)
+  })
+
+  it("PINNED: word-anchored spelling of the same name is still the same name", () => {
+    // The regression this pins: a pattern generator started emitting names word-anchored, the
+    // exemption compared raw sources, and every self-name silently stopped being exempt — code,
+    // comment and test all still reading as correct while repos began reporting their own
+    // manifests as leaks. Anchors change where a match may begin, never WHICH string matches.
+    expect(isSelfName(/\bwidget\b/i, ["widget"])).toBe(true)
+    expect(isSelfName(/\bwidget/i, ["widget"])).toBe(true)
+    expect(isSelfName(/widget\b/i, ["widget"])).toBe(true)
+    // And still no wider: anchoring a DIFFERENT name does not make it the repo's own.
+    expect(isSelfName(/\bgadget\b/i, ["widget"])).toBe(false)
+  })
+
+  it("exempts any of the names the repo can prove are its own, and nothing else", () => {
+    // Directory, package name and remote basename routinely disagree; each is proof of identity.
+    const selves = ["widget", "widget-app", "widget.js"]
+    expect(isSelfName(/\bwidget-app\b/i, selves)).toBe(true)
+    expect(isSelfName(/\bwidget\.js\b/i, selves)).toBe(true) // escaped metacharacter, still literal
+    expect(isSelfName(/\bgadget\b/i, selves)).toBe(false)
+    // No provable identity means no exemption — a repo that cannot say what it is gets screened
+    // in full rather than trusted.
+    expect(isSelfName(/\bwidget\b/i, [])).toBe(false)
+  })
+
+  it("never exempts a pattern broader than a single name, however it is spelled", () => {
+    // A pattern that can match more than one string is not a name, so it can never be proven to
+    // be THIS repo's name — the exemption would be wider than the thing it exempts.
+    expect(isSelfName(/wid(get)?/i, ["widget"])).toBe(false)
+    expect(isSelfName(/widget|gadget/i, ["widget"])).toBe(false)
+    expect(isSelfName(/widge./i, ["widget"])).toBe(false)
+    expect(isSelfName(/widget+/i, ["widget"])).toBe(false)
+    expect(isSelfName(/widge[t]/i, ["widget"])).toBe(false)
+    expect(patternLiteral("widget\\d")).toBeNull()
+    expect(patternLiteral("wid\\bget")).toBeNull() // an anchor mid-pattern is not a literal
+    expect(patternLiteral("\\bwidget\\b")).toBe("widget")
   })
 })
 
