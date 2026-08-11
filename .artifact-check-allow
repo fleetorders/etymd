@@ -35,3 +35,9 @@ bare "/Users/"
 Absolute .`/Users/…. paths are banned
 prose ABOUT the ban
 paths are banned in tracked files
+#
+# The package's own author field — content that is deliberate and belongs in a
+# published package, not a leak. package.json cannot carry an inline marker,
+# which is precisely the case this file exists for. Scoped to the whole field so
+# it exempts this line and nothing else.
+"author": "Alkis Yuv"
