@@ -136,6 +136,44 @@ async function walk(dir: string, out: string[], depth = 0): Promise<void> {
   }
 }
 
+/**
+ * How many leading bytes decide whether a file is text. A NUL byte cannot occur
+ * in valid UTF-8 text, and every binary container this screen meets in practice
+ * — images, archives, compiled output — carries one early.
+ */
+const BINARY_SNIFF_BYTES = 8192
+
+/**
+ * Read a file for screening, or report that it is binary.
+ *
+ * Compressed bytes will contain any short sequence eventually, so a short
+ * pattern hits a binary asset every so often, reported as a "line" of mojibake.
+ * That made every ADDED pattern raise the false-positive rate across every repo
+ * holding assets — and the cost of a noisy gate is not the noise, it is that the
+ * answer becomes "bypass again" until a real finding is waved through with the
+ * rest.
+ *
+ * Skipping non-text closes that for every pattern at once, which is what this
+ * file's own doctrine prefers: remove the surface rather than add a rule.
+ * Deliberately NOT folded into core `readText` — that helper serves detect,
+ * context and generate, none of which want a Buffer read or this policy.
+ *
+ * Returns the text, `null` if unreadable, or "binary" if it should be skipped —
+ * three outcomes, because a caller that cannot tell "skipped" from "missing"
+ * cannot report the skip, and an unreported skip is the silent hole this was
+ * supposed to avoid.
+ */
+export async function readScreenable(p: string): Promise<string | null | "binary"> {
+  let buf: Buffer
+  try {
+    buf = await fs.readFile(p)
+  } catch {
+    return null
+  }
+  if (buf.subarray(0, BINARY_SNIFF_BYTES).includes(0)) return "binary"
+  return buf.toString("utf8")
+}
+
 export async function run(opts: ScreenOptions): Promise<void> {
   const patternPath =
     opts.patterns ??
@@ -178,6 +216,9 @@ export async function run(opts: ScreenOptions): Promise<void> {
 
   const hits: ScreenHit[] = []
   let scanned = 0
+  // Counted, not merely skipped: the summary reports it, so "no findings" can
+  // never quietly mean "the bytes were never looked at".
+  let skippedBinary = 0
 
   if (opts.scope === "message") {
     const file = opts.target
@@ -197,8 +238,12 @@ export async function run(opts: ScreenOptions): Promise<void> {
     const files: string[] = []
     await walk(dir, files)
     for (const f of files) {
-      const raw = await readText(f)
+      const raw = await readScreenable(f)
       if (raw === null) continue
+      if (raw === "binary") {
+        skippedBinary++
+        continue
+      }
       scanned++
       hits.push(...screenText(raw, path.relative(dir, f), active, allow))
     }
@@ -214,8 +259,12 @@ export async function run(opts: ScreenOptions): Promise<void> {
       if (rel === ALLOW_FILE || rel === LEGACY_ALLOW_FILE) continue
       const abs = path.join(opts.cwd, rel)
       if (!(await pathExists(abs))) continue
-      const raw = await readText(abs)
+      const raw = await readScreenable(abs)
       if (raw === null) continue
+      if (raw === "binary") {
+        skippedBinary++
+        continue
+      }
       scanned++
       hits.push(...screenText(raw, rel, active, allow))
     }
@@ -223,7 +272,13 @@ export async function run(opts: ScreenOptions): Promise<void> {
 
   if (!hits.length) return
 
-  section(`Content screen ${theme.dim(`· ${opts.scope} · ${scanned} file(s)`)}`)
+  section(
+    `Content screen ${theme.dim(
+      `· ${opts.scope} · ${scanned} file(s)${
+        skippedBinary ? ` · ${skippedBinary} binary skipped` : ""
+      }`,
+    )}`,
+  )
   for (const h of hits) {
     print(`  ${theme.warn(h.file)}${theme.dim(`:${h.line}`)}  ${theme.dim(`(${h.reason})`)}`)
     print(`    ${h.text}`)
