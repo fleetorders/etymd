@@ -36,8 +36,15 @@ Absolute .`/Users/…. paths are banned
 prose ABOUT the ban
 paths are banned in tracked files
 #
-# The package's own author field — content that is deliberate and belongs in a
-# published package, not a leak. package.json cannot carry an inline marker,
-# which is precisely the case this file exists for. Scoped to the whole field so
-# it exempts this line and nothing else.
-"author": "Alkis Yuv"
+# The author's own published name, in the package that names him as author: the
+# manifest, the LICENSE, and the bundled copy of the manifest inside dist. All
+# three are deliberate and belong in a published package.
+#
+# Scoped to the FULL name rather than each surrounding line. Three shapes of the
+# same fact already exist — `"author": "..."` in JSON, `author: "..."` in the
+# bundle where the key loses its quotes, and a copyright line — and a bundler
+# reformatting its output would invent a fourth. Exempting the line shapes is
+# whack-a-mole; exempting the full name is the actual exception, and it stays
+# narrower than the pattern it answers, which is a bare three letters that also
+# appear inside this name.
+Alkis Yuv
