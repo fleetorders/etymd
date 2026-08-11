@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest"
 
-import { isSelfName, screenText } from "../src/commands/screen.js"
+import { promises as fs } from "node:fs"
+import os from "node:os"
+import path from "node:path"
+
+import { isSelfName, readScreenable, screenText } from "../src/commands/screen.js"
 
 const patterns = [/AcmeInc/i, /internal\.example\.com/i]
 
@@ -70,5 +74,39 @@ describe("self-name exemption", () => {
     // Narrower than the name, or broader than it, both stay active.
     expect(isSelfName(/widget-internal/i, "widget")).toBe(false)
     expect(isSelfName(/wid/i, "widget")).toBe(false)
+  })
+})
+
+describe("binary files are skipped, not screened", () => {
+  // The defect this closes: compressed bytes contain any short sequence
+  // eventually, so a short pattern matches inside a binary asset and is reported
+  // as a "line" of mojibake. The cost of that noise is not the noise; it is that
+  // the gate's answer becomes "bypass again", and a trained-in bypass is what
+  // eventually waves a real finding through with the rest.
+  const tmp = () => path.join(os.tmpdir(), `etymd-screen-${Math.random().toString(36).slice(2)}`)
+
+  it("reports a file carrying a NUL byte as binary rather than screening its bytes", async () => {
+    const f = tmp()
+    // A real leak string sits AFTER the NUL, so a screen that reads this file at
+    // all would flag it. Skipping is the only way this test passes.
+    await fs.writeFile(
+      f,
+      Buffer.concat([Buffer.from("\x89PNG\r\n"), Buffer.from([0]), Buffer.from("AcmeInc")]),
+    )
+    expect(await readScreenable(f)).toBe("binary")
+    await fs.rm(f, { force: true })
+  })
+
+  it("still returns text for a file with no NUL, so the gate does not go blind", async () => {
+    const f = tmp()
+    await fs.writeFile(f, "Copyright (c) AcmeInc\n")
+    const out = await readScreenable(f)
+    expect(out).not.toBe("binary")
+    expect(screenText(String(out), "notice.txt", patterns)).toHaveLength(1)
+    await fs.rm(f, { force: true })
+  })
+
+  it("returns null for a file that does not exist — distinct from binary, so the skip can be counted", async () => {
+    expect(await readScreenable(tmp())).toBeNull()
   })
 })
