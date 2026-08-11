@@ -36,15 +36,16 @@ Absolute .`/Users/…. paths are banned
 prose ABOUT the ban
 paths are banned in tracked files
 #
-# The author's own published name, in the package that names him as author: the
-# manifest, the LICENSE, and the bundled copy of the manifest inside dist. All
-# three are deliberate and belong in a published package.
+# (Retired.) An exemption for the author's published name stood here, because a
+# bare three-letter pattern matched inside that name and blocked this package's
+# publish twice — at the LICENSE copyright line, and at the bundled manifest
+# where the bundler drops the quotes around the key.
 #
-# Scoped to the FULL name rather than each surrounding line. Three shapes of the
-# same fact already exist — `"author": "..."` in JSON, `author: "..."` in the
-# bundle where the key loses its quotes, and a copyright line — and a bundler
-# reformatting its output would invent a fourth. Exempting the line shapes is
-# whack-a-mole; exempting the full name is the actual exception, and it stays
-# narrower than the pattern it answers, which is a bare three letters that also
-# appear inside this name.
-Alkis Yuv
+# That pattern is gone. A name that is also a token of a published identity is
+# now excluded where the pattern list is produced, rather than forgiven at the
+# point it trips. An author's name is required to appear in the package that
+# names him, so an exemption here would have answered the symptom and left the
+# cause in place.
+#
+# Nothing replaces it. If a publish blocks on that name again, the fix belongs
+# where the pattern list is produced, not in this file.
