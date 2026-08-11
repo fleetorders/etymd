@@ -82,13 +82,95 @@ function compile(raw: string): RegExp[] {
     })
 }
 
+/** Regex metacharacters that, unescaped, mean a pattern is more than a plain literal. */
+const META = ".[]*^$+?(){}|"
+
 /**
- * Is this pattern just the repo's own name? Compared against the pattern's literal source, so a
- * pattern that IS the directory name is dropped while a broader one that merely contains it is
- * not — an exemption must be exactly as wide as the repo's own name and no wider.
+ * The exact string a pattern matches, or `null` if it matches more than one string.
+ *
+ * The self-name exemption is a comparison of MEANING, not of spelling: `\bwidget\b` and `widget`
+ * pick out the same name and must be treated alike. Comparing raw sources instead is what broke
+ * this exemption once already — a generator started emitting its names word-anchored, every
+ * source stopped matching the bare name, and the exemption silently stopped applying while its
+ * code, its comment and its test all still looked correct. Nothing failed; a repo simply began
+ * reporting its own `package.json` as a leak.
+ *
+ * Word anchors are accepted because they do not change WHICH string is matched, only where a
+ * match may begin and end. Anything else — a character class, a quantifier, an alternation —
+ * makes the pattern broader than a name, and a broader pattern is never exempt: an exemption
+ * must be exactly as wide as the repo's own name and no wider.
  */
-export function isSelfName(pattern: RegExp, self: string): boolean {
-  return pattern.source.toLowerCase() === self.toLowerCase()
+export function patternLiteral(source: string): string | null {
+  let out = ""
+  let i = source.startsWith("\\b") ? 2 : 0
+  for (; i < source.length; i++) {
+    // charAt rather than indexing: every position here is in range, and an index signature that
+    // admits `undefined` would only be silenced with a non-null assertion.
+    const c = source.charAt(i)
+    if (c === "\\") {
+      const next = source[i + 1]
+      if (next === undefined) return null
+      // `\b` is an anchor, meaningful here only as the closing one; `\d`, `\w`, `\s` and friends
+      // all match more than a literal. Every other escape is just a quoted character.
+      if (/[A-Za-z0-9]/.test(next)) return next === "b" && i + 2 === source.length ? out : null
+      out += next
+      i++
+      continue
+    }
+    if (META.includes(c)) return null
+    out += c
+  }
+  return out
+}
+
+/**
+ * Is this pattern one of the names the repo may legitimately call itself?
+ *
+ * `selves` is a union rather than a single name because the three places a repo states its own
+ * identity — its directory, its package manifest, its remote — routinely disagree, and a name
+ * the repo can prove is its own is not a disclosure of anyone else's project.
+ */
+export function isSelfName(pattern: RegExp, selves: readonly string[]): boolean {
+  const literal = patternLiteral(pattern.source)
+  if (literal === null || literal === "") return false
+  return selves.some((s) => s.toLowerCase() === literal.toLowerCase())
+}
+
+/** Strip an npm scope and a `.git` suffix — `@org/widget` and `widget.git` are both `widget`. */
+function bareName(raw: string): string {
+  return raw.replace(/^@[^/]+\//, "").replace(/\.git$/, "")
+}
+
+/**
+ * Every name this repo can PROVE is its own: its worktree directory, its package manifest's
+ * `name`, and the basename of its `origin` remote.
+ *
+ * Proof is the operative word — each source is read from the repo being screened, so a repo can
+ * only ever exempt itself. Where none of the three can be read the result is empty, which
+ * exempts nothing and leaves every pattern active: a repo whose identity cannot be established
+ * is screened in full rather than trusted.
+ */
+export async function selfIdentities(cwd: string): Promise<string[]> {
+  const names = new Set<string>()
+
+  const top = await git(cwd, ["rev-parse", "--show-toplevel"])
+  names.add(path.basename(top || path.resolve(cwd)))
+
+  const pkg = await readText(path.join(top || cwd, "package.json"))
+  if (pkg) {
+    try {
+      const name = (JSON.parse(pkg) as { name?: unknown }).name
+      if (typeof name === "string" && name) names.add(bareName(name))
+    } catch {
+      // An unparseable manifest states no identity; the other two sources still do.
+    }
+  }
+
+  const remote = await git(cwd, ["remote", "get-url", "origin"])
+  if (remote) names.add(bareName(path.basename(remote.trim())))
+
+  names.delete("")
+  return [...names]
 }
 
 export function screenText(
@@ -206,13 +288,11 @@ export async function run(opts: ScreenOptions): Promise<void> {
 
   // A repo naming ITSELF is legitimate — its README, its package name and its own docs all have
   // to call the project something. The cross-project rule is about disclosing OTHER projects, so
-  // the current repo's own name is dropped from the active patterns. Without this, a pattern
-  // list that names your projects flags a repo's every self-reference: measured at over a
-  // thousand hits in a single repo, which is not a report anyone reads.
-  const self = path.basename(
-    (await git(opts.cwd, ["rev-parse", "--show-toplevel"])) || path.resolve(opts.cwd),
-  )
-  const active = self ? patterns.filter((re) => !isSelfName(re, self)) : patterns
+  // the current repo's own names are dropped from the active patterns. Without this, a pattern
+  // list that names your projects flags a repo's every self-reference, which buries whatever
+  // real finding the report also contains.
+  const selves = await selfIdentities(opts.cwd)
+  const active = selves.length ? patterns.filter((re) => !isSelfName(re, selves)) : patterns
 
   const hits: ScreenHit[] = []
   let scanned = 0
