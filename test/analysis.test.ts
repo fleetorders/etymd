@@ -241,11 +241,11 @@ describe("planWorkflow", () => {
     }
   })
 
-  it("PINNED: every generated screen is inert without a checker — safe to commit to a public repo", () => {
-    // The screens carry no patterns: they resolve an external checker and no-op when it is
-    // absent. This is what lets the same file be committed anywhere. The commit-subject format
-    // check is the deliberate exception — it needs nothing installed and therefore always runs,
-    // which is why it is a declared config key and is named as an exception in the README.
+  it("PINNED: every generated gate is inert without a checker — safe to commit to a public repo", () => {
+    // The hooks carry no patterns and no policy: they resolve an external checker and no-op
+    // when it is absent. This is what lets the same file be committed anywhere. It holds for
+    // the DEFAULT hooks, which is what makes it a property of the pack rather than of a
+    // particular repo's configuration.
     const hooks = [generatePreCommitHook(), generateCommitMsgHook(), generatePrePushHook(facts())]
     for (const hook of hooks) {
       expect(hook).toMatch(/if \[ -x "\$GATE" \]/)
@@ -274,7 +274,10 @@ describe("commit-message format gate", () => {
     dirs.push(dir)
     const hook = path.join(dir, "commit-msg")
     const msgFile = path.join(dir, "COMMIT_EDITMSG")
-    await fs.writeFile(hook, generateCommitMsgHook(), { mode: 0o755 })
+    // The hook a repo gets when it has asked for the check — the only configuration in which
+    // there is any format behaviour to test.
+    const opted = { commands: [], failOn: "risk", allowWriting: [], commitFormat: true }
+    await fs.writeFile(hook, generateCommitMsgHook(opted), { mode: 0o755 })
     await fs.writeFile(msgFile, message)
     const { execFile } = await import("node:child_process")
     return await new Promise((resolve) => {
@@ -338,18 +341,19 @@ describe("commit-message format gate", () => {
     expect(output).toContain("reads better in git log")
   })
 
-  it("a repo that declares another convention gets the screen alone", () => {
-    const declined = generateCommitMsgHook({
-      commands: [],
-      failOn: "risk",
-      allowWriting: [],
-      commitFormat: false,
-    })
-    expect(declined).not.toContain("expected '<type>")
-    // What it declines is the format step — never the screen, which is the leak door.
-    expect(declined).toContain('"$GATE" screen --message "$1"')
-    // Unset is on: a convention with no door erodes, so the default has to be the door.
-    expect(generateCommitMsgHook()).toContain("expected '<type>")
+  it("PINNED: off unless the repo asks — the pack holds no opinion about commit wording", () => {
+    // The check needs nothing installed, so it is the one generated check that would run for
+    // everyone who clones. A default-on convention would make every repo etymd touches inherit
+    // an opinion it never chose, which is the opposite of what the pack is for.
+    const gates = { commands: [], failOn: "risk", allowWriting: [] }
+    for (const config of [undefined, gates, { ...gates, commitFormat: false }]) {
+      const hook = generateCommitMsgHook(config)
+      expect(hook).not.toContain("expected '<type>")
+      // What is absent is the format step — never the screen, which is the leak door.
+      expect(hook).toContain('"$GATE" screen --message "$1"')
+    }
+    // An explicit true, and only that, installs it.
+    expect(generateCommitMsgHook({ ...gates, commitFormat: true })).toContain("expected '<type>")
   })
 })
 

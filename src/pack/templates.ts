@@ -274,17 +274,18 @@ export const COMMIT_TYPES = [
 export const SUBJECT_ADVISORY_LENGTH = 72
 
 /**
- * Conventional Commits, checked at the only door that sees a message.
+ * Conventional Commits, checked at the only door that sees a message. Emitted ONLY where
+ * `gates.commitFormat` is explicitly true — see the caller.
  *
  * This is a FORMAT check and deliberately not a taste check: it reads the first non-comment
  * line and asks whether a machine can classify it, nothing more. The distinction matters
  * because the gate that argues about wording is the gate everyone learns to bypass — and the
  * bypass flag is shared with the screen above, which must never be bypassed.
  *
- * Unlike the screen, this needs nothing installed, so it is never a no-op. A convention with
- * no door is a convention that erodes without anyone deciding to abandon it: histories drift
- * from the format one hurried commit at a time, and nothing objects until the log is already
- * mixed.
+ * It earns its keep where a repo has chosen the convention, because a convention with no door
+ * erodes without anyone deciding to abandon it: histories drift one hurried commit at a time,
+ * and nothing objects until the log is already mixed. That is an argument for offering the
+ * door, never for installing it in a repo that did not ask.
  *
  * Merge, revert, fixup, squash and amend subjects are git's own wording rather than the
  * author's — gating them would ask people to rewrite text they did not write.
@@ -319,10 +320,10 @@ esac`
  * commit messages rather than files, which is why this is its own door.
  */
 export function generateCommitMsgHook(gates?: GateConfig): string {
-  // Unset means on. The key exists so a repo that keeps another convention can say so in one
-  // line, and so the resulting hook still says what it does — rather than the pack quietly
-  // deciding for every repo it touches.
-  const format = gates?.commitFormat === false ? "" : `${commitFormatStep()}\n`
+  // Unset means OFF, and only an explicit `true` turns it on. A convention is an opinion, and
+  // the pack does not hold opinions on a user's behalf — a repo that never asked for this must
+  // get the same hook it got before the check existed.
+  const format = gates?.commitFormat === true ? `${commitFormatStep()}\n` : ""
   return stampGenerated(`#!/usr/bin/env sh
 # etymd: the commit message itself — content screen, then format.
 #

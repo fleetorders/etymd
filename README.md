@@ -223,7 +223,7 @@ Every key is optional; omit the file entirely and the defaults below apply.
     "commands": ["typecheck", "lint"], // pre-push steps, in order
     "failOn": "risk", // audit tier that fails the push: risk | gap | polish
     "publishGate": true, // screen the published artifact
-    "commitFormat": true, // check the commit subject — Conventional Commits, on unless false
+    "commitFormat": true, // check the commit subject — Conventional Commits, off unless set
     "allowWriting": [], // commands allowed into a gate despite writing
     // Why a value here is what it is. Each key mirrors the field it explains, so the
     // note says what it refers to instead of sitting near it and hoping. Etymd keeps
@@ -336,18 +336,20 @@ That last door exists because the first three share a blind spot: they all answe
 the repository?". `npm` and `vsce` do not honour `.gitignore`, so a local cache file can be
 packaged into a published release while every git-scoped check passes forever.
 
-Every generated **screen** resolves the screener at run time and **no-ops when it is absent**, so
-the same hook file is safe to commit to a public repo: it carries no patterns, and a clone with
-no checker installed is screened by nothing. A deliberate exception is marked inline with
-`allow-published-string`, visible in the diff rather than hidden in an allowlist.
+Every generated hook resolves the screener at run time and **no-ops when it is absent**, so the
+same hook file is safe to commit to a public repo: it carries no patterns and imposes no policy
+on anyone who clones it. A deliberate exception is marked inline with `allow-published-string`,
+visible in the diff rather than hidden in an allowlist.
 
-The one check in a generated hook that is **not** inert is the commit-subject format below. It
-needs nothing installed, so it does run for whoever clones — which is the point of it, and the
-reason it is a declared key rather than a silent default.
+### The commit subject, if you ask for it
 
-### The commit subject, checked
+Off unless you turn it on:
 
-The `commit-msg` hook also checks the subject against
+```json
+{ "gates": { "commitFormat": true } }
+```
+
+in `.etymd/config.json`. Then the `commit-msg` hook also checks the subject against
 [Conventional Commits](https://www.conventionalcommits.org) — `<type>[(scope)][!]: <summary>`,
 with `feat fix docs style refactor perf test build ci chore revert` as the types. It is a format
 check and not a taste check: it asks whether a machine can classify the line, and stops there.
@@ -355,17 +357,15 @@ An over-long subject is reported as advice and never blocks, and the subjects gi
 — merge, revert, fixup, squash, amend — are exempt, since gating those would ask you to rewrite
 text you did not write.
 
-This is the check most worth having a door for. A convention nobody gates does not get abandoned
-in a decision you could point at; it erodes one hurried commit at a time, and by the time the log
-reads as a mixture, every commit in it is already published.
+It is the one generated check that needs nothing installed, and therefore the one that would run
+for everyone who clones your repo. That is exactly why it is off by default. Every other check
+the pack writes is either derived from what your repo already does or inert without a checker you
+installed yourself; a commit convention is neither — it is an opinion, and this tool does not
+hold opinions on your behalf.
 
-Keep a different convention, or none:
-
-```json
-{ "gates": { "commitFormat": false } }
-```
-
-in `.etymd/config.json`, and the generated hook carries the content screen alone.
+Turn it on where the convention is already yours. A convention nobody gates does not get
+abandoned in a decision you could point at: it erodes one hurried commit at a time, and by the
+time the log reads as a mixture, every commit in it is already published.
 
 Modeled on this repo's own workflow (Etymd guards its own instructions with Etymd — its CI runs
 the same gate against its own freshly built CLI):
