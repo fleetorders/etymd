@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
-import { describe, expect, it } from "vitest"
+import { afterAll, describe, expect, it } from "vitest"
 
 import { mergeGateSection } from "../src/commands/gates.js"
 import {
@@ -241,9 +241,11 @@ describe("planWorkflow", () => {
     }
   })
 
-  it("PINNED: every generated gate is inert without a checker — safe to commit to a public repo", () => {
-    // The hooks carry no patterns and no policy: they resolve an external checker and no-op
-    // when it is absent. This is what lets the same file be committed anywhere.
+  it("PINNED: every generated screen is inert without a checker — safe to commit to a public repo", () => {
+    // The screens carry no patterns: they resolve an external checker and no-op when it is
+    // absent. This is what lets the same file be committed anywhere. The commit-subject format
+    // check is the deliberate exception — it needs nothing installed and therefore always runs,
+    // which is why it is a declared config key and is named as an exception in the README.
     const hooks = [generatePreCommitHook(), generateCommitMsgHook(), generatePrePushHook(facts())]
     for (const hook of hooks) {
       expect(hook).toMatch(/if \[ -x "\$GATE" \]/)
@@ -258,6 +260,96 @@ describe("planWorkflow", () => {
   it("plans nothing when both toggles are off", async () => {
     const plan = await planWorkflow("/nonexistent-root", facts(), { agents: false, gates: false })
     expect(plan).toEqual([])
+  })
+})
+
+// Asserting on the hook's TEXT would pass for a check that never fires — the failure mode that
+// matters here, since a format gate looks identical whether it blocks or not. So the hook is
+// executed, and every claim below is a run against a control.
+describe("commit-message format gate", () => {
+  const dirs: string[] = []
+
+  async function runHook(message: string): Promise<{ code: number; output: string }> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-commit-msg-"))
+    dirs.push(dir)
+    const hook = path.join(dir, "commit-msg")
+    const msgFile = path.join(dir, "COMMIT_EDITMSG")
+    await fs.writeFile(hook, generateCommitMsgHook(), { mode: 0o755 })
+    await fs.writeFile(msgFile, message)
+    const { execFile } = await import("node:child_process")
+    return await new Promise((resolve) => {
+      execFile(
+        "sh",
+        [hook, msgFile],
+        // Point the screen's resolution at nothing executable: this test is about the format
+        // step, and the screen is machine-local by design.
+        { env: { ...process.env, COMMIT_MSG_GATE: path.join(dir, "absent") } },
+        (error, stdout, stderr) => {
+          const code = error && typeof error.code === "number" ? error.code : 0
+          resolve({ code, output: `${stdout}${stderr}` })
+        },
+      )
+    })
+  }
+
+  afterAll(async () => {
+    await Promise.all(dirs.map((d) => fs.rm(d, { recursive: true, force: true })))
+  })
+
+  it("blocks a subject no machine can classify", async () => {
+    const { code, output } = await runHook("Prose passes its own stranger test\n")
+    expect(code).toBe(1)
+    expect(output).toContain("expected '<type>[(scope)][!]: <summary>'")
+  })
+
+  it("admits the conventional forms, including scope and the breaking marker", async () => {
+    for (const subject of [
+      "feat: add the thing",
+      "fix(screen): recognise a repo's own name in any spelling",
+      "refactor!: rename the command surface",
+      "chore(release): 0.9.1",
+    ]) {
+      const { code } = await runHook(`${subject}\n\nA body, which is never inspected.\n`)
+      expect(code, subject).toBe(0)
+    }
+  })
+
+  it("exempts the subjects git writes on the author's behalf", async () => {
+    for (const subject of [
+      "Merge branch 'main'",
+      'Revert "feat: a thing"',
+      "fixup! feat: a thing",
+    ]) {
+      const { code } = await runHook(`${subject}\n`)
+      expect(code, subject).toBe(0)
+    }
+  })
+
+  it("reads past the comment block git appends to the message file", async () => {
+    const { code } = await runHook(
+      "# Please enter the commit message for your changes.\n#\nfeat: a real subject\n",
+    )
+    expect(code).toBe(0)
+  })
+
+  it("advises on an over-long subject without blocking it", async () => {
+    const { code, output } = await runHook(`feat: ${"x".repeat(80)}\n`)
+    expect(code).toBe(0)
+    expect(output).toContain("reads better in git log")
+  })
+
+  it("a repo that declares another convention gets the screen alone", () => {
+    const declined = generateCommitMsgHook({
+      commands: [],
+      failOn: "risk",
+      allowWriting: [],
+      commitFormat: false,
+    })
+    expect(declined).not.toContain("expected '<type>")
+    // What it declines is the format step — never the screen, which is the leak door.
+    expect(declined).toContain('"$GATE" screen --message "$1"')
+    // Unset is on: a convention with no door erodes, so the default has to be the door.
+    expect(generateCommitMsgHook()).toContain("expected '<type>")
   })
 })
 

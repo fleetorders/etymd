@@ -158,10 +158,13 @@ export async function planWorkflow(
     const existingPrePush = await readText(path.join(root, ".githooks", "pre-push"))
 
     await add(".githooks/pre-commit", generatePreCommitHook(), "Process gate (pre-commit)", true)
+    // The recorded config, not the derived one below: the derivation exists to fill in commands
+    // this hook does not run, and the format check must resolve identically here and in the
+    // fleet's drift comparison — a key read in one place and not the other reads as drift.
     await add(
       ".githooks/commit-msg",
-      generateCommitMsgHook(),
-      "Content screen (commit message)",
+      generateCommitMsgHook(opts.gateConfig),
+      "Message gate (content screen, format)",
       true,
     )
     // A recorded command set is the user's decision and wins outright; otherwise derive, keeping
@@ -175,6 +178,7 @@ export async function planWorkflow(
           commands: derivedCommands(facts, existingPrePush ?? undefined),
           failOn: opts.gateConfig?.failOn ?? DEFAULT_CONFIG.gates.failOn,
           publishGate: opts.gateConfig?.publishGate,
+          commitFormat: opts.gateConfig?.commitFormat,
           allowWriting: opts.gateConfig?.allowWriting ?? [],
         }
 

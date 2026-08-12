@@ -49,6 +49,13 @@ export interface GateConfig {
   failOn: string
   /** Emit the publish-time screen. Unset = derive from whether the repo publishes. */
   publishGate?: boolean
+  /**
+   * Check the commit subject against Conventional Commits. Unset = on: a convention with no
+   * door erodes, and this is the only door that sees a message. `false` writes a commit-msg
+   * hook carrying the content screen alone — for a repo that keeps a different convention, or
+   * none, which is a legitimate thing for a repo to keep.
+   */
+  commitFormat?: boolean
   /** Commands allowed into a gate despite looking like they write (an explicit override). */
   allowWriting: string[]
 }
@@ -158,6 +165,15 @@ export async function readConfig(root: string): Promise<LoadedConfig> {
     return gates.publishGate
   })()
 
+  const commitFormat = (() => {
+    if (gates.commitFormat === undefined) return undefined
+    if (typeof gates.commitFormat !== "boolean") {
+      problems.push(`${CONFIG_FILE}: \`gates.commitFormat\` must be true or false — ignored.`)
+      return undefined
+    }
+    return gates.commitFormat
+  })()
+
   return {
     present: true,
     problems,
@@ -191,6 +207,7 @@ export async function readConfig(root: string): Promise<LoadedConfig> {
           readGlobList(gates.commands, "gates.commands", problems) ?? DEFAULT_CONFIG.gates.commands,
         failOn: failOn ?? DEFAULT_CONFIG.gates.failOn,
         publishGate,
+        commitFormat,
         allowWriting:
           readGlobList(gates.allowWriting, "gates.allowWriting", problems) ??
           DEFAULT_CONFIG.gates.allowWriting,

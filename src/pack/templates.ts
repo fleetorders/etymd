@@ -255,14 +255,76 @@ exit 0
 `)
 }
 
+/** The subject forms a convention gates can read, and a person can read. */
+export const COMMIT_TYPES = [
+  "feat",
+  "fix",
+  "docs",
+  "style",
+  "refactor",
+  "perf",
+  "test",
+  "build",
+  "ci",
+  "chore",
+  "revert",
+] as const
+
+/** Beyond this a subject stops fitting a `git log --oneline` column. Advice, never a block. */
+export const SUBJECT_ADVISORY_LENGTH = 72
+
+/**
+ * Conventional Commits, checked at the only door that sees a message.
+ *
+ * This is a FORMAT check and deliberately not a taste check: it reads the first non-comment
+ * line and asks whether a machine can classify it, nothing more. The distinction matters
+ * because the gate that argues about wording is the gate everyone learns to bypass — and the
+ * bypass flag is shared with the screen above, which must never be bypassed.
+ *
+ * Unlike the screen, this needs nothing installed, so it is never a no-op. A convention with
+ * no door is a convention that erodes without anyone deciding to abandon it: histories drift
+ * from the format one hurried commit at a time, and nothing objects until the log is already
+ * mixed.
+ *
+ * Merge, revert, fixup, squash and amend subjects are git's own wording rather than the
+ * author's — gating them would ask people to rewrite text they did not write.
+ */
+function commitFormatStep(): string {
+  const types = COMMIT_TYPES.join("|")
+  return `
+# Message format — <type>[(scope)][!]: <summary>. Needs nothing installed, so it always runs.
+subject=$(sed -e '/^#/d' -e '/^[[:space:]]*$/d' "$1" | head -1)
+case "$subject" in
+  "Merge "*|"Revert "*|fixup!*|squash!*|amend!*) ;;
+  *)
+    if ! printf '%s' "$subject" | grep -qE '^(${types})(\\([a-z0-9._/-]+\\))?!?: .+'; then
+      echo "✗ commit message: expected '<type>[(scope)][!]: <summary>'"
+      echo "  got:   $subject"
+      echo "  types: ${COMMIT_TYPES.join(" ")}"
+      echo "  a '!' after the type or scope marks a breaking change"
+      exit 1
+    fi
+    # Length is advice, not a block: the format is what tooling reads, the length is what a
+    # person reads, and only one of the two can break anything.
+    if [ "\${#subject}" -gt ${SUBJECT_ADVISORY_LENGTH} ]; then
+      echo "› note: subject is \${#subject} characters; ${SUBJECT_ADVISORY_LENGTH} or fewer reads better in git log"
+    fi
+    ;;
+esac`
+}
+
 /**
  * The message is published history too, and the staged screen cannot see it: that gate reads
  * `git diff --cached`, which is file bytes only. A real audit found several leaks living in
  * commit messages rather than files, which is why this is its own door.
  */
-export function generateCommitMsgHook(): string {
+export function generateCommitMsgHook(gates?: GateConfig): string {
+  // Unset means on. The key exists so a repo that keeps another convention can say so in one
+  // line, and so the resulting hook still says what it does — rather than the pack quietly
+  // deciding for every repo it touches.
+  const format = gates?.commitFormat === false ? "" : `${commitFormatStep()}\n`
   return stampGenerated(`#!/usr/bin/env sh
-# etymd: content screen — the commit message itself.
+# etymd: the commit message itself — content screen, then format.
 #
 # The staged-content gate reads file bytes and never sees the message, yet a message is as
 # permanently published as any file. No-op where no checker is installed.
@@ -272,7 +334,7 @@ GATE="\${COMMIT_MSG_GATE:-$(command -v etymd || true)}"
 if [ -x "$GATE" ]; then
   "$GATE" screen --message "$1" || exit 1
 fi
-
+${format}
 ${localHookCall("commit-msg")}
 
 exit 0

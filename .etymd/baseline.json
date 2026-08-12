@@ -1,18 +1,18 @@
 {
-  "packVersion": "6",
-  "etymdVersion": "0.6.0",
-  "approvedAt": "2026-08-08T17:47:07.573Z",
+  "packVersion": "7",
+  "etymdVersion": "0.9.1",
+  "approvedAt": "2026-08-12T20:37:18.761Z",
   "profile": "solo",
   "facts": {
-    "etymdVersion": "0.6.0",
-    "packVersion": "6",
-    "generatedAt": "2026-08-08T17:47:07.571Z",
+    "etymdVersion": "0.9.1",
+    "packVersion": "7",
+    "generatedAt": "2026-08-12T20:37:18.755Z",
     "root": ".",
     "name": "etymd",
     "git": {
       "isRepo": true,
       "branch": "main",
-      "head": "a2f67e5",
+      "head": "5104394",
       "hooksPath": ".githooks",
       "husky": false,
       "recentAuthors": 1
@@ -203,12 +203,12 @@
       "scripts": 4
     },
     "freshness": {
-      "repoLastCommit": "2026-08-08T18:44:35+02:00",
+      "repoLastCommit": "2026-08-11T22:40:04+02:00",
       "artifacts": [
         {
           "artifactId": "decisions-dir",
           "path": "docs/decisions",
-          "lastCommit": "2026-08-08T17:33:57+02:00",
+          "lastCommit": "2026-08-10T02:09:52+02:00",
           "commitsSince": true
         }
       ],
@@ -222,11 +222,11 @@
         },
         {
           "name": "test",
-          "files": 11
+          "files": 12
         },
         {
           "name": "docs",
-          "files": 7
+          "files": 10
         },
         {
           "name": ".githooks",
@@ -234,7 +234,7 @@
         },
         {
           "name": ".changeset",
-          "files": 2
+          "files": 4
         },
         {
           "name": "media",
