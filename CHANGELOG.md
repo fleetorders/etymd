@@ -4,7 +4,7 @@
 
 ### Patch Changes
 
-- 8967d26: Content screen: skip binary files, and say how many were skipped
+- 91ddb97: Content screen: skip binary files, and say how many were skipped
 
   Compressed bytes contain any short sequence eventually, so a short pattern
   matches inside binary assets by accident and is reported as a "line" of
@@ -24,7 +24,7 @@
 
 ### Minor Changes
 
-- 3cf2e53: State documents are now checked for truth, not only for age: the instruction-truth lens runs its
+- 35dbeab: State documents are now checked for truth, not only for age: the instruction-truth lens runs its
   command-claim and path-claim checks over detected state docs, and resolves their `D-NNN` decision
   references against the repo's decisions file — a citation of an entry that was never written is a
   gap finding. References naming another record ("peer D-050") and citations against directory
@@ -35,12 +35,12 @@
 
 ### Minor Changes
 
-- f2c1bfd: `etymd gates` no longer writes a gate that cannot fail. It derives whether any risk-tier finding is
+- bad1380: `etymd gates` no longer writes a gate that cannot fail. It derives whether any risk-tier finding is
   reachable in the repo (a package manifest to contradict, a state document to fall behind); where
   none is, the generated hook drops to `--fail-on gap` and the output says so and why. A `failOn`
   recorded in `.etymd/config.json` is never adjusted, and `gates` now states which tier it wrote and
   where that tier came from — the config key was previously unmentioned anywhere in its output.
-- 743ad44: Declared-field checks are forward-only from the marker's position, not from the file. A decisions
+- e873664: Declared-field checks are forward-only from the marker's position, not from the file. A decisions
   file that declares required entry fields mid-life no longer demands them from the entries appended
   above the marker — an append-only record cannot backfill them. The built-in `Scope:` check shares
   the same gate; `Revisit:` keeps whole-file reach, since it fires only where the entry already wrote
@@ -50,7 +50,7 @@
 
 ### Minor Changes
 
-- 7371c8b: Decisions records can require fields of their own, and etymd holds no opinion about which.
+- d27d635: Decisions records can require fields of their own, and etymd holds no opinion about which.
 
   A decisions file already opts into per-entry format checks with a marker. It can now append field
   names to it — `<!-- decisions-format: 1 fields=Owner,Rollback -->` — and every entry after the
@@ -86,7 +86,7 @@
 
 ### Minor Changes
 
-- b02943b: Local gates: the tool now reads and rewrites what it generated, instead of guessing about it.
+- 47c5032: Local gates: the tool now reads and rewrites what it generated, instead of guessing about it.
 
   Two defects in the local-gate machinery, both silent, both affecting every project using
   `etymd gates`. Decision record:
@@ -164,7 +164,7 @@
 
 ### Minor Changes
 
-- e199ccc: `fleet add --profile corp` now records the alias-to-directory mapping too, not just the entry.
+- e265713: `fleet add --profile corp` now records the alias-to-directory mapping too, not just the entry.
 
   A corp entry in the tracked manifest is deliberately alias-only — no path, no remote — which is
   what keeps employer names out of a file that gets pushed. It also means the entry resolves to
@@ -185,7 +185,7 @@
   without an entry is inert, while an entry without a mapping is a broken registration sitting in
   the file that gets committed.
 
-- 9546979: `fleet add` no longer records a remote URL in the manifest.
+- e8ed2ba: `fleet add` no longer records a remote URL in the manifest.
 
   The field was write-only: nothing in the tool ever read it back. It was persisted because it
   happened to be derivable at registration time, and it stayed because no one asked what consumed
@@ -204,7 +204,7 @@
 
 ### Patch Changes
 
-- 52ebca8: Fix: `fleet add --profile corp` was silently ignored, registering employer repos as personal.
+- 88492b5: Fix: `fleet add --profile corp` was silently ignored, registering employer repos as personal.
 
   `fleet` declares its own `--profile` (the sweep filter), and commander hands a parent-declared
   option the value even when it is typed after the subcommand. So `fleet add <dir> --profile corp`
@@ -225,7 +225,7 @@
 
 ### Patch Changes
 
-- 915ae78: Fix: the shell gate now actually prints the sub-warning findings it documented.
+- 821f144: Fix: the shell gate now actually prints the sub-warning findings it documented.
 
   0.4.0 said "style and info print as advice" and did not do it — the generated hook ran only
   `shellcheck -S warning` and discarded everything below that bar. The generated file made no such
@@ -246,7 +246,7 @@
 
 ### Minor Changes
 
-- 69d1aad: Gate the shell surface: `etymd gates` now installs a shellcheck step in repos that have one.
+- 59c506d: Gate the shell surface: `etymd gates` now installs a shellcheck step in repos that have one.
 
   Package scripts are not the only executable surface a repo has, and in some repos they are not
   the main one. A tools or infra repo can be entirely `bootstrap/*.sh` plus `.githooks/*` with no
@@ -363,7 +363,7 @@
 
 ### Patch Changes
 
-- 80db483: Gate integrity: detect scripts regardless of how the package manager is invoked.
+- 7bc6cf5: Gate integrity: detect scripts regardless of how the package manager is invoked.
 
   Script expansion guessed the script name positionally — the token straight after the
   manager. That only holds for `npm run x`, `yarn x` and `pnpm x`. Every other live shape
@@ -392,7 +392,7 @@
 
 ### Patch Changes
 
-- fdf6b6e: Fleet sweep: recurring classes + `placement: "none"` honored.
+- 983c0e5: Fleet sweep: recurring classes + `placement: "none"` honored.
 
   - **Recurring classes** — the sweep report groups open findings by their engine-minted
     class prefix and lists every class present in ≥2 projects (worst tier first). A class
@@ -410,7 +410,7 @@
 
 ### Minor Changes
 
-- a58d3bd: Fleet mode — the truth guard across your repositories (design record `docs/decisions/004-fleet-truth-guard.md`; registry + fleet `--json` schemas EXPERIMENTAL through 0.2.x).
+- a336902: Fleet mode — the truth guard across your repositories (design record `docs/decisions/004-fleet-truth-guard.md`; registry + fleet `--json` schemas EXPERIMENTAL through 0.2.x).
 
   - New `state-freshness` truth lens: state/decisions artifacts dated by git committer dates only (never mtime); staleness is relative, so a dormant repo's old state is current; state char budget against the ~10k session-hook truncation; marker-gated decisions format checks (`Scope:`, duplicate/out-of-order `D-NNN` ids, past `Revisit:` dates as due review debt); ADR conventions (`docs/adr/`, `docs/decisions/`, `NNNN-*.md`) recognized natively.
   - New `etymd fleet` command family. The sweep runs a read-only audit per registered repo (`--manifest` required unless the cwd holds `registry.json` — no env var, no global pointer) and renders one line per project with a delta against `last.fleet.json`; detail only for new or risk findings. `fleet check` validates the manifest pair alone (dangling mappings, duplicate names, privacy leaks, machine paths). `fleet dismiss`/`fleet accept` resolve a project's finding from any cwd.
