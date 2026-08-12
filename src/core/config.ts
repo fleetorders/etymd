@@ -50,10 +50,11 @@ export interface GateConfig {
   /** Emit the publish-time screen. Unset = derive from whether the repo publishes. */
   publishGate?: boolean
   /**
-   * Check the commit subject against Conventional Commits. Unset = on: a convention with no
-   * door erodes, and this is the only door that sees a message. `false` writes a commit-msg
-   * hook carrying the content screen alone — for a repo that keeps a different convention, or
-   * none, which is a legitimate thing for a repo to keep.
+   * Check the commit subject against Conventional Commits. **Unset = off.** Every other check
+   * the pack generates is either derived from what the repo already does or inert without a
+   * checker the user installed themselves; this one is a convention, and a convention is an
+   * opinion. Etymd ships the door and never decides that a repo wants it: `true` here is the
+   * repo asking, and nothing else turns it on.
    */
   commitFormat?: boolean
   /** Commands allowed into a gate despite looking like they write (an explicit override). */

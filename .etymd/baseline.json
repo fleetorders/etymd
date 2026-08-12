@@ -1,18 +1,18 @@
 {
   "packVersion": "7",
   "etymdVersion": "0.9.1",
-  "approvedAt": "2026-08-12T20:37:18.761Z",
+  "approvedAt": "2026-08-12T21:14:50.815Z",
   "profile": "solo",
   "facts": {
     "etymdVersion": "0.9.1",
     "packVersion": "7",
-    "generatedAt": "2026-08-12T20:37:18.755Z",
+    "generatedAt": "2026-08-12T21:14:50.814Z",
     "root": ".",
     "name": "etymd",
     "git": {
       "isRepo": true,
       "branch": "main",
-      "head": "5104394",
+      "head": "2efbd34",
       "hooksPath": ".githooks",
       "husky": false,
       "recentAuthors": 1
@@ -203,7 +203,7 @@
       "scripts": 4
     },
     "freshness": {
-      "repoLastCommit": "2026-08-11T22:40:04+02:00",
+      "repoLastCommit": "2026-08-12T22:38:18+02:00",
       "artifacts": [
         {
           "artifactId": "decisions-dir",
