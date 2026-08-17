@@ -46,15 +46,38 @@ const MACHINE_PATH_RE = /\/(?:Users|home)\/[A-Za-z0-9._-]+\//
 const ALLOW_MARKER = "allow-published-string"
 
 /**
- * Repo-level exceptions, one extended-regex per line.
+ * Repo-level exceptions — ONE FILE, one labeled line per field.
  *
- * The inline marker covers a line you can edit. This file covers the lines you cannot: a
- * scanner's own source necessarily contains the patterns it screens for, its tests necessarily
- * contain fixtures that must match, and a bundler strips comments so an inline marker would not
- * survive into the artifact. Without it those files can never pass their own screen.
+ * A `pattern` line opens a record and the pattern is the REST of that line, verbatim:
  *
- * It is a hole in the gate by construction, so it is read from the repo being screened, never
- * from a shared location, and the file screens itself out (it contains every string it exempts).
+ *   pattern ^/Users/someone
+ *   reason test fixture for machine-path detector
+ *   date 2026-08-15
+ *   author owner
+ *
+ * No in-band delimiter, so a pattern may contain any character — including `|`, spaces,
+ * anything — without escaping. Delimiting a free-form field in-band is an ambiguity in the
+ * FORMAT (every guard in the parser only makes some misparses loud and leaves the rest
+ * silent); labels move the boundary to the line break, which the field cannot contain.
+ *
+ * Self-name exemptions (a repo naming itself) need no provenance — a bare pattern line is a
+ * complete record:
+ *
+ *   ^widget$
+ *
+ * Why provenance matters: every exemption is a hole in the gate. Without a date and author,
+ * a stale entry lives forever because nobody can ask "is this still needed?". With it, you
+ * can audit: "why did we exempt this string six months ago, and is the reason still valid?"
+ * A record missing its fields is reported and does not apply — never guessed at.
+ *
+ * This file covers the lines you cannot edit inline: a scanner's own source necessarily
+ * contains the patterns it screens for, its tests contain fixtures that must match, and a
+ * bundler strips comments so an inline marker would not survive into the artifact. Without it
+ * those files can never pass their own screen.
+ *
+ * It is a hole in the gate by construction, so it is read from the repo being screened,
+ * never from a shared location, and the file screens itself out (it contains every string
+ * it exempts).
  */
 const ALLOW_FILE = ".etymd-screen-allow"
 /** The previous tool's filename, still honoured so a migrated repo keeps its exceptions. */
@@ -67,7 +90,79 @@ export interface ScreenHit {
   reason: string
 }
 
-function compile(raw: string): RegExp[] {
+interface AllowEntry {
+  pattern: RegExp
+  reason?: string
+  date?: string
+  author?: string
+  isSelfName: boolean
+}
+
+/** A field label and its value, for lines like `reason fixture text`. */
+const LABELED_LINE = /^(pattern|reason|date|author)[ \t]+(.*)$/
+
+/**
+ * Read the allow file as records of labeled lines. Exported for tests only.
+ *
+ * A `pattern` line (or any unlabeled line — that is the self-name shorthand) opens a record;
+ * `reason`/`date`/`author` lines fill the open one. Records missing their provenance are
+ * RETURNED, not dropped — the run-level validation reports them, so an incomplete entry is
+ * noise to fix rather than silence to trust.
+ *
+ * An orphan provenance line (no open record) is dropped without a warning, deliberately: it
+ * exempts nothing, and the dangerous direction for an allow file is over-exemption, not
+ * under-exemption — a pattern nobody wrote simply never matches, and the hit it would have
+ * covered is still reported at the door that sees it.
+ */
+export function compileAllow(raw: string): AllowEntry[] {
+  const entries: AllowEntry[] = []
+  let current: AllowEntry | null = null
+  const close = () => {
+    if (current) entries.push(current)
+    current = null
+  }
+  for (const rawLine of raw.split("\n")) {
+    const l = rawLine.trim()
+    if (!l || l.startsWith("#")) continue
+    const labeled = LABELED_LINE.exec(l)
+    if (labeled) {
+      // Both groups always participate in a match; the defaults are for the type system.
+      const [, label = "", value = ""] = labeled
+      if (label === "pattern") {
+        close()
+        current = makeAllowEntry(value)
+      } else if (current) {
+        if (label === "reason") current.reason = value.trim()
+        else if (label === "date") current.date = value.trim()
+        else current.author = value.trim()
+      }
+    } else {
+      close()
+      current = makeAllowEntry(l)
+    }
+  }
+  close()
+  return entries
+}
+
+/** Compile one pattern, matching malformed input literally rather than dropping it. */
+function makeAllowEntry(patternStr: string): AllowEntry {
+  try {
+    return { pattern: new RegExp(patternStr, "i"), isSelfName: false }
+  } catch {
+    // A malformed pattern must never be silently dropped — match it literally instead.
+    return {
+      pattern: new RegExp(patternStr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"),
+      isSelfName: false,
+    }
+  }
+}
+
+/**
+ * Compile pattern file (not allow-file) — returns RegExp[] without provenance.
+ * Pattern files are simple lists, one per line.
+ */
+function compilePatterns(raw: string): RegExp[] {
   return raw
     .split("\n")
     .map((l) => l.trim())
@@ -177,13 +272,13 @@ export function screenText(
   text: string,
   file: string,
   patterns: RegExp[],
-  allow: RegExp[] = [],
+  allow: AllowEntry[] = [],
 ): ScreenHit[] {
   const hits: ScreenHit[] = []
   const lines = text.split("\n")
   for (const [i, line] of lines.entries()) {
     if (line.includes(ALLOW_MARKER)) continue
-    if (allow.some((re) => re.test(line))) continue
+    if (allow.some((entry) => entry.pattern.test(line))) continue
     for (const re of patterns) {
       if (re.test(line)) {
         hits.push({ file, line: i + 1, text: line.trim().slice(0, 160), reason: String(re) })
@@ -274,25 +369,64 @@ export async function run(opts: ScreenOptions): Promise<void> {
     )
     return
   }
-  const patterns = compile(rawPatterns)
+  const patterns = compilePatterns(rawPatterns)
   if (!patterns.length) {
     print(`  ${glyph.partial} ${theme.dim(`${patternPath} has no active patterns — skipping.`)}`)
     return
   }
 
   // Repo-level exceptions, read from the repo being screened.
-  const allowRaw =
-    (await readText(path.join(opts.cwd, ALLOW_FILE))) ??
-    (await readText(path.join(opts.cwd, LEGACY_ALLOW_FILE)))
-  const allow = allowRaw ? compile(allowRaw) : []
+  const usingLegacy =
+    !(await pathExists(path.join(opts.cwd, ALLOW_FILE))) &&
+    (await pathExists(path.join(opts.cwd, LEGACY_ALLOW_FILE)))
+  const allowRaw = usingLegacy
+    ? await readText(path.join(opts.cwd, LEGACY_ALLOW_FILE))
+    : await readText(path.join(opts.cwd, ALLOW_FILE))
+  const allowEntries = allowRaw ? compileAllow(allowRaw) : []
+
+  // Validate provenance and self-name exemptions
+  const selves = await selfIdentities(opts.cwd)
+  const validatedEntries = allowEntries.filter((entry) => {
+    if (entry.isSelfName) return true // Self-name marked during compilation check
+
+    // Check if this is a self-name exemption
+    if (isSelfName(entry.pattern, selves)) {
+      entry.isSelfName = true
+      return true
+    }
+
+    // Non-self-name entries require provenance
+    if (!entry.reason || !entry.date || !entry.author) {
+      print(
+        `  ${glyph.partial} ${theme.warn(`Missing provenance for exemption pattern`)} ${theme.dim(String(entry.pattern))}`,
+      )
+      print(
+        `    ${theme.dim("Format: a `pattern` line, then `reason`, `date`, `author` lines — a bare pattern line is a self-name exemption")}`,
+      )
+      return false
+    }
+
+    return true
+  })
+
+  const allow = validatedEntries
 
   // A repo naming ITSELF is legitimate — its README, its package name and its own docs all have
   // to call the project something. The cross-project rule is about disclosing OTHER projects, so
   // the current repo's own names are dropped from the active patterns. Without this, a pattern
   // list that names your projects flags a repo's every self-reference, which buries whatever
   // real finding the report also contains.
-  const selves = await selfIdentities(opts.cwd)
   const active = selves.length ? patterns.filter((re) => !isSelfName(re, selves)) : patterns
+
+  // Warn about legacy allow file usage
+  if (usingLegacy) {
+    print(
+      `  ${glyph.partial} ${theme.warn(`Using legacy ${LEGACY_ALLOW_FILE} file — rename to ${ALLOW_FILE} and add provenance`)}`,
+    )
+    print(
+      `    ${theme.dim("New format: a `pattern` line, then `reason`, `date`, `author` lines per entry")}`,
+    )
+  }
 
   const hits: ScreenHit[] = []
   let scanned = 0

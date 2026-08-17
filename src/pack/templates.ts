@@ -205,8 +205,15 @@ ${
  * for (employer names, hostnames, identities), so they can never live in a tracked file — the
  * hook names an executable, and the executable reads the pattern file. Etymd ships the screener
  * (`etymd screen`) but never ships patterns: the mechanism is general, the policy is the user's.
+ *
+ * Resolution order: an explicit CONTENT_GATE, then the repo's own `./dist/cli.js` if it builds
+ * one, then whatever `etymd` is on PATH. The middle step exists for the dogfood case — a repo
+ * developing the screener itself must gate on its own unreleased build, or its hooks enforce
+ * the last PUBLISHED behaviour against a tree that has already moved past it (observed: a
+ * renamed allow file the published binary could not read, silently voiding every exemption).
+ * Consumer repos carry no `dist/`, so for them the order is unchanged.
  */
-const CONTENT_GATE_RESOLUTION = `GATE="\${CONTENT_GATE:-$(command -v etymd || true)}"`
+const CONTENT_GATE_RESOLUTION = `GATE="\${CONTENT_GATE:-$(if [ -x ./dist/cli.js ]; then echo ./dist/cli.js; else command -v etymd || true; fi)}"`
 
 /**
  * The seam between what the pack owns and what the repo owns.
@@ -435,7 +442,7 @@ ${auditStep}
 # with --no-verify and anything a rebase or merge brought in from elsewhere. Advisory here (it
 # never blocks the push): the blocking decision belongs at commit time, where the fix is cheap.
 ${CONTENT_GATE_RESOLUTION}
-if [ -x "$GATE" ] && [ "\${CONTENT_GATE_PREPUSH:-1}" = "1" ]; then
+if [ -x "$GATE" ]; then
   "$GATE" screen --tree --advisory || true
 fi
 
@@ -458,13 +465,9 @@ export function generateArtifactCheckScript(): string {
 # Wire it into the irreversible moment:
 #   package.json → "prepublishOnly": "./scripts/artifact-check.sh"
 #
-# No-op where no checker is installed. Bypass is deliberate and loud: ARTIFACT_CHECK_SKIP=1.
+# The artifact gate is the one check that sees what actually SHIPS — bypass with
+# .etymd-screen-allow entries (with provenance) if you must exempt a string.
 set -eu
-
-if [ "\${ARTIFACT_CHECK_SKIP:-0}" = "1" ]; then
-  echo "› artifact-check: SKIPPED by ARTIFACT_CHECK_SKIP=1"
-  exit 0
-fi
 
 ${CONTENT_GATE_RESOLUTION}
 [ -x "$GATE" ] || { echo "› artifact-check: no checker installed — skipping."; exit 0; }
