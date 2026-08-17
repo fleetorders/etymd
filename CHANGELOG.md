@@ -1,5 +1,71 @@
 # etymd
 
+## 0.11.0
+
+### Minor Changes
+
+- 1193d71: Content screen: allow-file entries carry provenance, and the env bypasses are gone
+
+  Every exemption is a hole in the gate, and a hole with no name on it lives forever — nobody can
+  ask "is this still needed?" about an entry nobody signed. Repo-level exceptions now live in
+  `.etymd-screen-allow` (the previous `.artifact-check-allow` is still honoured) as records of
+  labeled lines:
+
+  ```
+  pattern ^/Users/someone
+  reason test fixture for machine-path detector
+  date 2026-08-15
+  author owner
+  ```
+
+  The pattern is the rest of its line, verbatim — it may contain any character, `|` included,
+  without escaping. Delimiting a free-form field in-band would be an ambiguity in the format
+  itself, and every parser-side guard against it only makes the misparses you imagined loud while
+  leaving the rest silent; the line break is the one boundary the field cannot contain.
+
+  An entry naming the repo itself needs no provenance — a bare `^widget$` line is a complete
+  record, the exemption being exactly as wide as the name. Anything else missing a field is
+  reported and does not apply, so an unprovenanced file reads as noise to fix, not as silence to
+  trust.
+
+  The two environment bypasses the generated hooks carried — `CONTENT_GATE_PREPUSH` and
+  `ARTIFACT_CHECK_SKIP` — are removed. They were off-switches invisible in the tree: nothing in
+  the repo records that a gate was skipped, or why. The allow file is the one bypass path left,
+  and every entry in it says who exempted what, when, and for what reason.
+
+  Generated hooks now resolve their screener in a defined order: an explicit `CONTENT_GATE`, then
+  the repo's own `./dist/cli.js` when it builds one, then the `etymd` on PATH. The middle step is
+  the dogfood case — a repo developing the screener must gate on its own unreleased build, or its
+  hooks enforce the last published behaviour against a tree that has moved past it. Repos without
+  a `dist/` resolve exactly as before. Pack v8 — run `etymd gates` to pick it up.
+
+### Patch Changes
+
+- 652a353: Dependency advisories, 2026-08 batch: vitest 2.1.8 → 4.1.10, @changesets/cli 2.27.11 → 2.31.1,
+  tsup 8.3.5 → 8.5.1, plus in-range transitive fixes (js-yaml, nanoid, postcss, tmp)
+
+  Clears the whole advisory list reachable in range, then the vitest 2 → 4 major the rest of it
+  needed — the deliberate migration, not an audit-chased one: all 260 tests pass on 4.1.10
+  unchanged, config needed nothing, and the esbuild/vite/vitest development-server exposure class
+  (file read and execution via a listening dev server) is closed rather than reasoned around.
+
+  What remains is one low: esbuild 0.27.3–0.28.0, arbitrary file read when running a development
+  server on Windows, reached only through tsup (which pins ^0.27.0). Forcing an override past
+  tsup's declared range is audit-chasing a code path this repo never enters — nothing in it
+  starts a listening dev server — so it waits for a tsup release that carries esbuild 0.28.
+
+- 9521732: Content screen: a clean run reports itself, with the file count
+
+  A clean `etymd screen` printed nothing at all — the summary header, file count and binary-skip
+  count only appeared when there were findings. From inside a hook, where the exit code is the
+  only other signal, "silent" and "never looked" were indistinguishable, which is the exact
+  failure the binary-skip disclosure exists to prevent (0.9.1 claimed the count is always
+  reported; on a clean run it never was).
+
+  Every run now prints its summary line — scope, files scanned, binary skipped — and a clean run
+  says so. Hooks gain one line per successful commit; a silent screen remains possible only
+  where the screener is absent, which the tool already reports as inert rather than clean.
+
 ## 0.10.0
 
 ### Minor Changes
