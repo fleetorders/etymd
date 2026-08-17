@@ -4,7 +4,13 @@ import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
-import { isSelfName, patternLiteral, readScreenable, screenText } from "../src/commands/screen.js"
+import {
+  compileAllow,
+  isSelfName,
+  patternLiteral,
+  readScreenable,
+  screenText,
+} from "../src/commands/screen.js"
 
 const patterns = [/AcmeInc/i, /internal\.example\.com/i]
 
@@ -53,7 +59,7 @@ describe("content screen", () => {
   it("honours repo-level allow patterns for lines that cannot carry an inline marker", () => {
     // A scanner's own source contains the strings it screens for, and a bundler strips
     // comments — so some exemptions cannot live on the line itself.
-    const allow = [/describing its own check/i]
+    const allow = [{ pattern: /describing its own check/i, isSelfName: false }]
     expect(screenText("AcmeInc, describing its own check", "f", patterns, allow)).toEqual([])
     // The exemption is narrow: an ordinary hit beside it still reports.
     expect(screenText("AcmeInc in plain prose", "f", patterns, allow)).toHaveLength(1)
@@ -61,7 +67,99 @@ describe("content screen", () => {
 
   it("an allow pattern suppresses a machine path too, not just a listed pattern", () => {
     const home = `/${"Users"}/someone/x`
-    expect(screenText(home, "f", [], [/someone/])).toEqual([])
+    expect(screenText(home, "f", [], [{ pattern: /someone/i, isSelfName: false }])).toEqual([])
+  })
+})
+
+describe("allow-file records", () => {
+  it("reads a labeled record: the pattern is the rest of its line, verbatim", () => {
+    const entries = compileAllow(
+      ["pattern ^AcmeInc$", "reason fixture text", "date 2026-08-15", "author nightly"].join("\n"),
+    )
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.pattern.source).toBe("^AcmeInc$")
+    expect(entries[0]?.reason).toBe("fixture text")
+    expect(entries[0]?.date).toBe("2026-08-15")
+    expect(entries[0]?.author).toBe("nightly")
+  })
+
+  it("PINNED: a pattern may contain pipes — alternation survives intact", () => {
+    // The format this replaces split entries on `|`, so an alternation truncated at its
+    // first branch and the rest could masquerade as provenance — a silent narrowing of the
+    // gate. Labeled lines cannot express that misparse: the pattern runs to end of line.
+    const entries = compileAllow(
+      ["pattern AcmeInc|BetaInc", "reason either name", "date 2026-08-15", "author nightly"].join(
+        "\n",
+      ),
+    )
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.pattern.source).toBe("AcmeInc|BetaInc")
+    // Both branches of the alternation suppress, and nothing wider does.
+    expect(screenText("BetaInc ships it", "f", [/GammaInc/i], entries)).toEqual([])
+    expect(screenText("AcmeInc ships it", "f", [/GammaInc/i], entries)).toEqual([])
+    expect(screenText("GammaInc in plain prose", "f", [/GammaInc/i], entries)).toHaveLength(1)
+  })
+
+  it("a bare unlabeled line is a complete pattern-only record (self-name shorthand)", () => {
+    const entries = compileAllow("^widget$")
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.pattern.source).toBe("^widget$")
+    expect(entries[0]?.reason).toBeUndefined()
+  })
+
+  it("comments, blanks and indentation do not become patterns", () => {
+    const entries = compileAllow(["# a comment", "", "  pattern ^a$  ", "\treason r"].join("\n"))
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.pattern.source).toBe("^a$")
+    expect(entries[0]?.reason).toBe("r")
+  })
+
+  it("malformed regex falls back to a literal match, never a silent drop", () => {
+    const entries = compileAllow(
+      ["pattern ([unclosed", "reason broken", "date 2026-08-15", "author x"].join("\n"),
+    )
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.pattern.test("a ([unclosed b")).toBe(true)
+  })
+
+  it("an orphan provenance line exempts nothing and creates no record", () => {
+    // Fail-safe by design: an orphan can only under-exempt, and under-exemption reports
+    // its own gap at the door that sees the hit.
+    const entries = compileAllow(["reason no pattern above me", "pattern ^a$"].join("\n"))
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.pattern.source).toBe("^a$")
+    expect(entries[0]?.reason).toBeUndefined()
+  })
+
+  it("reads several records in sequence, each with its own fields", () => {
+    const entries = compileAllow(
+      [
+        "pattern ^a$",
+        "reason first",
+        "date 2026-08-15",
+        "author x",
+        "pattern ^b$",
+        "reason second",
+        "date 2026-08-16",
+        "author y",
+      ].join("\n"),
+    )
+    expect(entries).toHaveLength(2)
+    expect(entries[1]?.reason).toBe("second")
+    expect(entries[1]?.author).toBe("y")
+  })
+
+  it("a pattern with spaces runs to the end of the line, not to the first space", () => {
+    const entries = compileAllow(
+      [
+        "pattern AcmeInc and its friends",
+        "reason prose pattern",
+        "date 2026-08-15",
+        "author x",
+      ].join("\n"),
+    )
+    expect(entries[0]?.pattern.source).toBe("AcmeInc and its friends")
+    expect(screenText("AcmeInc and its friends together", "f", [/AcmeInc/i], entries)).toEqual([])
   })
 })
 

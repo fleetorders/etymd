@@ -338,8 +338,29 @@ packaged into a published release while every git-scoped check passes forever.
 
 Every generated hook resolves the screener at run time and **no-ops when it is absent**, so the
 same hook file is safe to commit to a public repo: it carries no patterns and imposes no policy
-on anyone who clones it. A deliberate exception is marked inline with `allow-published-string`,
-visible in the diff rather than hidden in an allowlist.
+on anyone who clones it. A deliberate exception on a line you can edit is marked inline with
+`allow-published-string`, visible in the diff.
+
+Some exemptions cannot live on the line itself: a scanner's own source contains the strings it
+screens for, its tests contain fixtures that must match, and a bundler strips comments so an
+inline marker would not survive into the artifact. Those live in `.etymd-screen-allow` at the
+repo root — one labeled line per field, so the pattern is never delimited:
+
+```
+pattern ^AcmeInc|BetaInc$
+reason fixture proving the detector fires on either name
+date 2026-08-15
+author someone
+```
+
+A pattern may contain any character, including the `|` shown above, without escaping: a
+free-form field delimited in-band is an ambiguity in the format itself, and no amount of
+parser-side guarding fixes that class — labels move the boundary to the line break, which the
+field cannot contain. An entry naming the repo itself needs no provenance — a bare `^widget$`
+line is a complete record, the exemption being exactly as wide as the name. Anything else
+missing a field is reported and does not apply: an exemption is a hole in the gate, and a hole
+nobody signed cannot be audited later. The file is read from the repo being screened, never a
+shared location, and it screens itself out (it necessarily contains every string it exempts).
 
 ### The commit subject, if you ask for it
 
