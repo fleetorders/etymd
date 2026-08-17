@@ -484,8 +484,9 @@ export async function run(opts: ScreenOptions): Promise<void> {
     }
   }
 
-  if (!hits.length) return
-
+  // The summary prints on a clean run too, with its file count: "no findings" must never be
+  // indistinguishable from "the bytes were never looked at". Silence on success reads as
+  // exactly that, from inside a hook where the exit code is the only other signal.
   section(
     `Content screen ${theme.dim(
       `· ${opts.scope} · ${scanned} file(s)${
@@ -493,6 +494,10 @@ export async function run(opts: ScreenOptions): Promise<void> {
       }`,
     )}`,
   )
+  if (!hits.length) {
+    print(`  ${glyph.ok} ${theme.dim("clean")}`)
+    return
+  }
   for (const h of hits) {
     print(`  ${theme.warn(h.file)}${theme.dim(`:${h.line}`)}  ${theme.dim(`(${h.reason})`)}`)
     print(`    ${h.text}`)
