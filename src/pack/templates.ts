@@ -371,11 +371,20 @@ exit 0
 function shellcheckStep(): string {
   return `
 # Shell correctness. Scripts are discovered by shebang over TRACKED files at push time, so a
-# script added later is covered without regenerating this hook.
+# script added later is covered without regenerating this hook. zsh is NOT in the checked set:
+# shellcheck cannot parse it (SC1071 is a parser-level error no inline directive can silence),
+# so checking it would fail every push on the parser, not on the script. Excluded — and said so
+# at run time below, because a coverage hole that is silent is indistinguishable from coverage.
 if command -v shellcheck >/dev/null 2>&1; then
   scripts=$(git ls-files -z \\
-    | xargs -0 -I{} sh -c 'head -1 "{}" 2>/dev/null | grep -qE "^#!.*[/ ](ba|da|z)?sh( |$)" && echo "{}"' \\
+    | xargs -0 -I{} sh -c 'head -1 "{}" 2>/dev/null | grep -qE "^#!.*[/ ](ba|da)?sh( |$)" && echo "{}"' \\
     | sort)
+  zsh_scripts=$(git ls-files -z \\
+    | xargs -0 -I{} sh -c 'head -1 "{}" 2>/dev/null | grep -qE "^#!.*[/ ]zsh( |$)" && echo "{}"' \\
+    | sort)
+  if [ -n "$zsh_scripts" ]; then
+    echo "› shellcheck: $(printf '%s\\n' "$zsh_scripts" | wc -l | tr -d ' ') zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
+  fi
   if [ -n "$scripts" ]; then
     echo "› shellcheck ($(printf '%s\\n' "$scripts" | wc -l | tr -d ' ') scripts, blocking at severity=warning)"
     printf '%s\\n' "$scripts" | xargs shellcheck -S warning || {
