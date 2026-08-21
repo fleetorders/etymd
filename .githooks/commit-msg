@@ -32,10 +32,13 @@ esac
 
 # Repo-owned checks. This file is generated and will be overwritten; `.githooks/commit-msg.local`
 # is yours — etymd never reads, writes, or regenerates it. Put project-specific guards there.
+# A guard running tests that build fixture repositories should scrub git's exported GIT_* names
+# first — a child git inherits them and ignores its cwd, so the suite would hit the real repo:
+#   env $(env | grep -o '^GIT_[A-Za-z0-9_]*' | sed 's/^/-u /') <your command>
 LOCAL="$(dirname "$0")/commit-msg.local"
 if [ -x "$LOCAL" ]; then
   "$LOCAL" "$@" || exit 1
 fi
 
 exit 0
-# etymd:generated pack-v8 fb5f852715904344
+# etymd:generated pack-v11 a423ea209c621ff1

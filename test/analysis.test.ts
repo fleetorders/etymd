@@ -600,14 +600,18 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
 
   it("omits the step entirely where there is no shell surface", () => {
     const hook = generatePrePushHook(facts({ shell: { scripts: 0 } }))
-    expect(hook).not.toContain("shellcheck")
+    // Step-precise marker: every hook now MENTIONS shellcheck (the scrub helper's disable
+    // directive), so the bare word can no longer prove the step's presence or absence.
+    expect(hook).not.toContain("command -v shellcheck")
+    expect(hook).not.toContain("shellcheck -S warning")
   })
 
   it("treats an absent `shell` fact as not-measured, not as zero", () => {
     // A facts file written by an older etymd predates the field; regenerating from it must not
     // crash, and must not claim a surface it never looked for.
     const hook = generatePrePushHook(facts({ shell: undefined }))
-    expect(hook).not.toContain("shellcheck")
+    expect(hook).not.toContain("command -v shellcheck")
+    expect(hook).not.toContain("shellcheck -S warning")
   })
 
   it("PINNED: a missing shellcheck binary skips LOUDLY and never blocks", () => {
@@ -647,8 +651,10 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
       allowWriting: [],
     })
     expect(hook).toContain("pnpm typecheck")
-    expect(hook).toContain("shellcheck")
-    expect(hook.indexOf("typecheck")).toBeLessThan(hook.indexOf("shellcheck"))
+    // The step marker, not the bare word — the scrub helper's disable directive mentions
+    // shellcheck above every step, which would invert a bare-substring ordering check.
+    expect(hook).toContain("command -v shellcheck")
+    expect(hook.indexOf("typecheck")).toBeLessThan(hook.indexOf("command -v shellcheck"))
   })
 })
 

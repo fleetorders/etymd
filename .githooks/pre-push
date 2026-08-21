@@ -3,16 +3,26 @@
 
 # Repo-owned checks. This file is generated and will be overwritten; `.githooks/pre-push.local`
 # is yours — etymd never reads, writes, or regenerates it. Put project-specific guards there.
+# A guard running tests that build fixture repositories should scrub git's exported GIT_* names
+# first — a child git inherits them and ignores its cwd, so the suite would hit the real repo:
+#   env $(env | grep -o '^GIT_[A-Za-z0-9_]*' | sed 's/^/-u /') <your command>
 LOCAL="$(dirname "$0")/pre-push.local"
 if [ -x "$LOCAL" ]; then
   "$LOCAL" "$@" || exit 1
 fi
+# Gate steps run scrubbed of git's exported GIT_* names: a child git that inherits them ignores
+# its cwd, so a hook-run suite building fixture repositories would operate on the real repo.
+run_gate() (
+  # shellcheck disable=SC2046  # word-splitting is the point: one -u per exported GIT_* name
+  env $(env | grep -o '^GIT_[A-Za-z0-9_]*' | sed 's/^/-u /') "$@"
+)
+
 echo "› npm run format:check"
-npm run format:check || exit 1
+run_gate npm run format:check || exit 1
 echo "› npm run typecheck"
-npm run typecheck || exit 1
+run_gate npm run typecheck || exit 1
 echo "› npm run test"
-npm run test || exit 1
+run_gate npm run test || exit 1
 # Shell correctness. Scripts are discovered by shebang over TRACKED files at push time, so a
 # script added later is covered without regenerating this hook.
 if command -v shellcheck >/dev/null 2>&1; then
@@ -54,4 +64,4 @@ if [ -x "$GATE" ]; then
 fi
 
 exit 0
-# etymd:generated pack-v8 3138bee89153be59
+# etymd:generated pack-v11 a753a8033f9cf198
