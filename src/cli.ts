@@ -314,6 +314,10 @@ program
   .option("--dir <dir>", "screen an unpacked build artifact — what actually ships")
   .option("--patterns <file>", "pattern file (default: ~/.config/etymd/screen-patterns)")
   .option("--advisory", "report without failing")
+  .option(
+    "--upstream <remote>",
+    "fork's upstream remote: files byte-identical to its refs skip vocabulary-class patterns (secret patterns stay absolute)",
+  )
   .action((opts, cmd) =>
     action(async () => {
       const { run } = await import("./commands/screen.js")
@@ -324,6 +328,7 @@ program
         target: opts.message ?? opts.dir,
         patterns: opts.patterns,
         advisory: opts.advisory,
+        upstream: opts.upstream,
       })
     }),
   )
