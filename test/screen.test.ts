@@ -5,11 +5,14 @@ import os from "node:os"
 import path from "node:path"
 
 import {
+  collectUpstreamBlobs,
   compileAllow,
+  compilePatterns,
   isSelfName,
   patternLiteral,
   readScreenable,
   screenText,
+  stagedBlobShas,
 } from "../src/commands/screen.js"
 
 const patterns = [/AcmeCorp/i, /internal\.example\.com/i]
@@ -242,5 +245,144 @@ describe("binary files are skipped, not screened", () => {
 
   it("returns null for a file that does not exist — distinct from binary, so the skip can be counted", async () => {
     expect(await readScreenable(tmp())).toBeNull()
+  })
+})
+
+describe("pattern classes", () => {
+  it("defaults every pattern to secret when the file carries no class directive", () => {
+    const pats = compilePatterns("alpha\nbeta\n# a comment\ngamma")
+    expect(pats.map((p) => p.cls)).toEqual(["secret", "secret", "secret"])
+    expect(pats.map((p) => p.re.source)).toEqual(["alpha", "beta", "gamma"])
+  })
+
+  it("a `# class: vocabulary` directive switches the class of the lines beneath it, and back", () => {
+    const pats = compilePatterns(
+      ["always-secret", "# class: vocabulary", "two-factor", "# class: secret", "corp-name"].join(
+        "\n",
+      ),
+    )
+    expect(pats.map((p) => [p.re.source, p.cls])).toEqual([
+      ["always-secret", "secret"],
+      ["two-factor", "vocabulary"],
+      ["corp-name", "secret"],
+    ])
+  })
+
+  it("skipVocabulary drops only vocabulary patterns — secret patterns and the machine path stay", () => {
+    const pats = [
+      { re: /supersecret/i, cls: "secret" as const },
+      { re: /two-factor/i, cls: "vocabulary" as const },
+    ]
+    const home = `/${"Users"}/someone/x` // assembled so the source is not a literal home path
+    const text = ["mentions two-factor", "mentions supersecret", home].join("\n")
+    // Full screen: all three fire.
+    expect(screenText(text, "f", pats, [], false)).toHaveLength(3)
+    // Upstream-owned: the vocabulary hit is dropped, secret + machine path remain.
+    const kept = screenText(text, "f", pats, [], true)
+    expect(kept.map((h) => h.line)).toEqual([2, 3])
+  })
+
+  it("a bare RegExp[] is still accepted and treated as secret (backward compatible)", () => {
+    expect(screenText("two-factor", "f", [/two-factor/i], [], true)).toHaveLength(1)
+  })
+})
+
+describe("upstream-owned exemption (forks)", () => {
+  async function initRepo(): Promise<string> {
+    const { execFile } = await import("node:child_process")
+    const { promisify } = await import("node:util")
+    const pexec = promisify(execFile)
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-upstream-"))
+    const run = (args: string[]) => pexec("git", args, { cwd: dir })
+    await run(["init", "-q"])
+    await run(["config", "user.email", "t@example.com"])
+    await run(["config", "user.name", "t"])
+    await run(["commit", "-q", "--allow-empty", "-m", "init"])
+    return dir
+  }
+
+  it("collects upstream blobs and decides ownership by content, across paths; fails closed", async () => {
+    const { execFile } = await import("node:child_process")
+    const { promisify } = await import("node:util")
+    const pexec = promisify(execFile)
+    const dir = await initRepo()
+    const run = (args: string[]) => pexec("git", args, { cwd: dir })
+    const out = (args: string[]) => run(args).then((r) => r.stdout.trim())
+
+    // An upstream commit carrying doc.md, then pointed at by a remote-tracking ref.
+    await fs.writeFile(path.join(dir, "doc.md"), "upstream text with two-factor wording\n")
+    await run(["add", "doc.md"])
+    await run(["commit", "-q", "-m", "upstream doc"])
+    const upstreamSha = await out(["rev-parse", "HEAD:doc.md"])
+    await run(["update-ref", "refs/remotes/upstream/main", "HEAD"])
+    await run(["reset", "-q", "--soft", "HEAD~1"]) // doc.md now staged, byte-identical to upstream
+
+    const blobs = await collectUpstreamBlobs(dir, "upstream")
+    expect(blobs).not.toBeNull()
+    expect(blobs!.has(upstreamSha)).toBe(true)
+
+    // A verbatim copy at a DIFFERENT path is still upstream-owned (blob identity, not path).
+    await fs.writeFile(path.join(dir, "copied.md"), "upstream text with two-factor wording\n")
+    await run(["add", "copied.md"])
+    // A modified upstream file is NOT owned — a fork edit must be screened fully.
+    await fs.writeFile(
+      path.join(dir, "mine.md"),
+      "upstream text with two-factor wording + my edit\n",
+    )
+    await run(["add", "mine.md"])
+
+    const staged = await stagedBlobShas(dir)
+    const owned = (rel: string) => {
+      const sha = staged.get(rel)
+      return !!sha && blobs!.has(sha)
+    }
+    expect(owned("doc.md")).toBe(true)
+    expect(owned("copied.md")).toBe(true)
+    expect(owned("mine.md")).toBe(false)
+
+    // Fail closed: an unknown remote yields null so the caller exempts nothing.
+    expect(await collectUpstreamBlobs(dir, "no-such-remote")).toBeNull()
+  })
+})
+
+describe("upstream exemption end to end (run, config-resolved)", () => {
+  it("exempts a vocabulary word in an upstream-owned staged file, blocks it once modified", async () => {
+    const { execFile } = await import("node:child_process")
+    const { promisify } = await import("node:util")
+    const { run } = await import("../src/commands/screen.js")
+    const pexec = promisify(execFile)
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-run-"))
+    const g = (args: string[]) => pexec("git", args, { cwd: dir })
+    await g(["init", "-q"])
+    await g(["config", "user.email", "t@example.com"])
+    await g(["config", "user.name", "t"])
+    await g(["commit", "-q", "--allow-empty", "-m", "init"])
+    // An upstream commit carrying the doc, pointed at by a remote-tracking ref, then soft-reset so
+    // the doc is STAGED byte-identical to upstream.
+    await fs.writeFile(path.join(dir, "doc.md"), "upstream text mentioning two-factor\n")
+    await g(["add", "doc.md"])
+    await g(["commit", "-q", "-m", "up"])
+    await g(["update-ref", "refs/remotes/upstream/main", "HEAD"])
+    await g(["reset", "-q", "--soft", "HEAD~1"])
+    // Opt in via config, NOT the flag — proving config resolution.
+    await g(["config", "etymd.upstream", "upstream"])
+
+    const patternFile = path.join(dir, "patterns.txt")
+    await fs.writeFile(patternFile, "# class: vocabulary\ntwo-factor\n")
+
+    process.exitCode = 0
+    await run({ cwd: dir, scope: "staged", patterns: patternFile })
+    const exempt = process.exitCode
+    process.exitCode = 0 // reset before asserting, so a failed expect cannot leak a nonzero exit
+    expect(exempt).toBe(0) // doc.md is upstream-owned → the vocabulary hit is skipped → clean
+
+    // A fork edit to the upstream file must be screened fully.
+    await fs.writeFile(path.join(dir, "doc.md"), "upstream text mentioning two-factor + my edit\n")
+    await g(["add", "doc.md"])
+    process.exitCode = 0
+    await run({ cwd: dir, scope: "staged", patterns: patternFile })
+    const blocked = process.exitCode
+    process.exitCode = 0
+    expect(blocked).toBe(1) // modified → no longer upstream-owned → vocabulary applies → blocked
   })
 })

@@ -29,6 +29,23 @@ import { glyph, theme } from "../ui/theme.js"
 
 export type ScreenScope = "staged" | "tree" | "message" | "dir"
 
+/**
+ * Pattern classes. A pattern file is a flat list by default and every pattern is `secret` —
+ * blocks everywhere, always. A `# class: vocabulary` directive line switches the class for the
+ * patterns beneath it (a `# class: secret` line switches back). Vocabulary-class patterns are
+ * words that indicate a leaky DESCRIPTION rather than a secret string — and the same words occur
+ * in a fork's UPSTREAM documentation, which is already public. Only vocabulary-class patterns are
+ * ever skipped, and only on files proven to be upstream-owned (see `--upstream`). Secret-class
+ * patterns and the machine-path check are absolute — they never skip, on any file.
+ */
+export type PatternClass = "secret" | "vocabulary"
+export interface ScreenPattern {
+  re: RegExp
+  cls: PatternClass
+}
+/** A `# class: <name>` line switches the class of the patterns that follow it. */
+const CLASS_DIRECTIVE = /^#[ \t]*class:[ \t]*(secret|vocabulary)\b/i
+
 export interface ScreenOptions {
   cwd: string
   scope: ScreenScope
@@ -37,6 +54,14 @@ export interface ScreenOptions {
   patterns?: string
   /** Report without failing — the pre-push door is advisory by default. */
   advisory?: boolean
+  /**
+   * The name of this repo's upstream remote (a fork). When set, a staged/tree file whose content
+   * is byte-identical to any blob at the tips of `refs/remotes/<upstream>/*` is treated as
+   * upstream-owned: vocabulary-class patterns are skipped for it (secret-class stays absolute).
+   * Fails closed — if the remote's refs cannot be read, nothing is exempted and a notice is
+   * printed, so a fork whose upstream vanished screens fully and visibly rather than silently.
+   */
+  upstream?: string
 }
 
 /** Absolute home paths name the machine (and usually the person) — checked structurally. */
@@ -158,23 +183,38 @@ function makeAllowEntry(patternStr: string): AllowEntry {
   }
 }
 
+/** Compile one pattern line, matching malformed input literally rather than dropping it. */
+function compileOnePattern(l: string): RegExp {
+  try {
+    return new RegExp(l, "i")
+  } catch {
+    // A malformed pattern must never be silently dropped — match it literally instead.
+    return new RegExp(l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")
+  }
+}
+
 /**
- * Compile pattern file (not allow-file) — returns RegExp[] without provenance.
- * Pattern files are simple lists, one per line.
+ * Compile pattern file (not allow-file) into classed patterns. Exported for tests.
+ *
+ * Pattern files are simple lists, one per line; a `# class: secret|vocabulary` directive switches
+ * the class of the lines beneath it. The default before any directive is `secret`, so a file with
+ * no directive behaves exactly as before — every pattern absolute.
  */
-function compilePatterns(raw: string): RegExp[] {
-  return raw
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith("#"))
-    .map((l) => {
-      try {
-        return new RegExp(l, "i")
-      } catch {
-        // A malformed pattern must never be silently dropped — match it literally instead.
-        return new RegExp(l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")
-      }
-    })
+export function compilePatterns(raw: string): ScreenPattern[] {
+  const out: ScreenPattern[] = []
+  let cls: PatternClass = "secret"
+  for (const rawLine of raw.split("\n")) {
+    const l = rawLine.trim()
+    if (!l) continue
+    const dir = CLASS_DIRECTIVE.exec(l)
+    if (dir) {
+      cls = dir[1]!.toLowerCase() as PatternClass
+      continue
+    }
+    if (l.startsWith("#")) continue
+    out.push({ re: compileOnePattern(l), cls })
+  }
+  return out
 }
 
 /** Regex metacharacters that, unescaped, mean a pattern is more than a plain literal. */
@@ -271,15 +311,23 @@ export async function selfIdentities(cwd: string): Promise<string[]> {
 export function screenText(
   text: string,
   file: string,
-  patterns: RegExp[],
+  patterns: readonly (RegExp | ScreenPattern)[],
   allow: AllowEntry[] = [],
+  skipVocabulary = false,
 ): ScreenHit[] {
+  // A bare RegExp is treated as secret-class, so every existing caller and test is unchanged.
+  const classed = patterns.map((p) =>
+    p instanceof RegExp ? { re: p, cls: "secret" as PatternClass } : p,
+  )
+  // On an upstream-owned file only the vocabulary class is dropped — its matches are upstream's own
+  // public wording. Secret-class patterns (and the machine-path check below) never skip.
+  const active = skipVocabulary ? classed.filter((p) => p.cls === "secret") : classed
   const hits: ScreenHit[] = []
   const lines = text.split("\n")
   for (const [i, line] of lines.entries()) {
     if (line.includes(ALLOW_MARKER)) continue
     if (allow.some((entry) => entry.pattern.test(line))) continue
-    for (const re of patterns) {
+    for (const { re } of active) {
       if (re.test(line)) {
         hits.push({ file, line: i + 1, text: line.trim().slice(0, 160), reason: String(re) })
         break
@@ -295,6 +343,49 @@ export function screenText(
     }
   }
   return hits
+}
+
+/**
+ * Every blob object-id at the tips of the upstream remote's refs. A fork copies upstream files
+ * verbatim — sometimes to a DIFFERENT path (an adapter lifted from `upstream/channels` into an
+ * `add-*` skill) — so ownership is decided by CONTENT identity (the blob sha) across ALL upstream
+ * refs, not by path: a byte-identical copy shares the blob wherever it sits. Returns null when no
+ * upstream refs can be read, so the caller exempts nothing and says so — a fork whose upstream
+ * vanished then screens fully and visibly rather than silently trusting a gap.
+ */
+export async function collectUpstreamBlobs(
+  cwd: string,
+  remote: string,
+): Promise<Set<string> | null> {
+  const refsRaw = await git(cwd, ["for-each-ref", "--format=%(refname)", `refs/remotes/${remote}/`])
+  const refs = (refsRaw ?? "").split("\n").filter(Boolean)
+  if (!refs.length) return null
+  const blobs = new Set<string>()
+  for (const ref of refs) {
+    const tree = await git(cwd, ["ls-tree", "-r", ref])
+    if (tree === null) continue
+    for (const line of tree.split("\n")) {
+      // `<mode> blob <sha>\t<path>` — a submodule line is `commit`, not `blob`, and is ignored.
+      const m = /^\d+ blob ([0-9a-f]+)\t/.exec(line)
+      if (m) blobs.add(m[1]!)
+    }
+  }
+  return blobs.size ? blobs : null
+}
+
+/**
+ * The staged (index) blob sha for every tracked path — how a file will be committed. Compared
+ * against the upstream blob set to decide upstream ownership with no content read and no hashing.
+ */
+export async function stagedBlobShas(cwd: string): Promise<Map<string, string>> {
+  const raw = await git(cwd, ["ls-files", "-s"])
+  const map = new Map<string, string>()
+  for (const line of (raw ?? "").split("\n")) {
+    // `<mode> <sha> <stage>\t<path>`
+    const m = /^\d+ ([0-9a-f]+) \d+\t(.+)$/.exec(line)
+    if (m) map.set(m[2]!, m[1]!)
+  }
+  return map
 }
 
 async function walk(dir: string, out: string[], depth = 0): Promise<void> {
@@ -416,7 +507,39 @@ export async function run(opts: ScreenOptions): Promise<void> {
   // the current repo's own names are dropped from the active patterns. Without this, a pattern
   // list that names your projects flags a repo's every self-reference, which buries whatever
   // real finding the report also contains.
-  const active = selves.length ? patterns.filter((re) => !isSelfName(re, selves)) : patterns
+  const active = selves.length ? patterns.filter((p) => !isSelfName(p.re, selves)) : patterns
+
+  // Upstream-owned exemption (forks): a staged/tree file whose content is byte-identical to any
+  // upstream blob has its vocabulary-class patterns skipped. Engaged only when there ARE vocabulary
+  // patterns AND an upstream remote was named, so every other repo pays no git cost and behaves
+  // exactly as before.
+  const hasVocab = active.some((p) => p.cls === "vocabulary")
+  // A fork opts into the exemption with `--upstream <remote>` or, persistently,
+  // `git config etymd.upstream <remote>`. The config is the better signal: it survives a rebuild
+  // that drops the remote, so the fork still KNOWS it is a fork and reports the missing ref rather
+  // than silently skipping the exemption — the exact "vanished for a week, nobody noticed" gap.
+  const upstreamRemote =
+    hasVocab && (opts.scope === "staged" || opts.scope === "tree")
+      ? (opts.upstream ?? (await git(opts.cwd, ["config", "--get", "etymd.upstream"])) ?? undefined)
+      : undefined
+  let upstreamBlobs: Set<string> | null = null
+  let blobByPath = new Map<string, string>()
+  let upstreamNote = ""
+  if (upstreamRemote) {
+    upstreamBlobs = await collectUpstreamBlobs(opts.cwd, upstreamRemote)
+    if (upstreamBlobs === null) {
+      // Fail closed and LOUD: a fork whose upstream ref vanished (a rebuild dropped the remote,
+      // nobody fetched) must screen fully AND say why — never a silent exemption of nothing.
+      upstreamNote = `upstream ref '${upstreamRemote}' unavailable — vocabulary exemption off, screening every pattern`
+    } else {
+      blobByPath = await stagedBlobShas(opts.cwd)
+    }
+  }
+  const isUpstreamOwned = (rel: string): boolean => {
+    if (!upstreamBlobs) return false
+    const sha = blobByPath.get(rel)
+    return !!sha && upstreamBlobs.has(sha)
+  }
 
   // Warn about legacy allow file usage
   if (usingLegacy) {
@@ -480,8 +603,14 @@ export async function run(opts: ScreenOptions): Promise<void> {
         continue
       }
       scanned++
-      hits.push(...screenText(raw, rel, active, allow))
+      hits.push(...screenText(raw, rel, active, allow, isUpstreamOwned(rel)))
     }
+  }
+
+  // A broken upstream ref is reported whatever the outcome — the exemption silently doing nothing
+  // is the exact invisible-gap this fails-closed to avoid.
+  if (upstreamNote) {
+    print(`  ${glyph.partial} ${theme.warn(upstreamNote)}`)
   }
 
   // The summary prints on a clean run too, with its file count: "no findings" must never be
