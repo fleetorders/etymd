@@ -235,6 +235,9 @@ const CONTENT_GATE_RESOLUTION = `GATE="\${CONTENT_GATE:-$(if [ -x ./dist/cli.js 
 function localHookCall(hook: string): string {
   return `# Repo-owned checks. This file is generated and will be overwritten; \`.githooks/${hook}.local\`
 # is yours — etymd never reads, writes, or regenerates it. Put project-specific guards there.
+# A guard running tests that build fixture repositories should scrub git's exported GIT_* names
+# first — a child git inherits them and ignores its cwd, so the suite would hit the real repo:
+#   env $(env | grep -o '^GIT_[A-Za-z0-9_]*' | sed 's/^/-u /') <your command>
 LOCAL="$(dirname "$0")/${hook}.local"
 if [ -x "$LOCAL" ]; then
   "$LOCAL" "$@" || exit 1
@@ -396,6 +399,32 @@ else
 fi`
 }
 
+/**
+ * Runs a gate step with git's hook environment scrubbed.
+ *
+ * Git exports GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE / … to every hook it runs, and a child
+ * git that inherits them IGNORES ITS CWD. A test suite that builds fixture repositories by
+ * shelling out to git therefore operates on the REAL repository — committing into it, moving
+ * its refs — while the same suite outside a hook is harmless. Any gate step can shell out to
+ * git (a test command above all, but a format or lint script may ask git for its file list
+ * too), so every step runs scrubbed, uniformly.
+ *
+ * The scrub strips EVERY exported GIT_* name, not a fixed list — git adds variables over time,
+ * and a name the list missed is the whole defect back. A step that genuinely means this
+ * repository finds it again from its working directory, which for a hook is the repo root.
+ * The audit and shellcheck steps are deliberately NOT routed through it: audit operates on the
+ * repo it is invoked in and never descends into fixtures, and shellcheck's `git ls-files` must
+ * see the real repo.
+ */
+const SCRUBBED_RUNNER = `
+# Gate steps run scrubbed of git's exported GIT_* names: a child git that inherits them ignores
+# its cwd, so a hook-run suite building fixture repositories would operate on the real repo.
+run_gate() (
+  # shellcheck disable=SC2046  # word-splitting is the point: one -u per exported GIT_* name
+  env $(env | grep -o '^GIT_[A-Za-z0-9_]*' | sed 's/^/-u /') "$@"
+)
+`
+
 export function generatePrePushHook(facts: ProjectFacts, gates?: GateConfig): string {
   const run = runPrefix(facts.packageManager)
   const c = facts.commands
@@ -412,8 +441,11 @@ export function generatePrePushHook(facts: ProjectFacts, gates?: GateConfig): st
     )
     .map((key) => `${run} ${key}`)
   const shellStep = facts.shell?.scripts ? shellcheckStep() : ""
+  // Emitted only when a step exists to call it — a helper with no caller is dead text in a file
+  // people read to learn what their gate does.
+  const runner = steps.length ? SCRUBBED_RUNNER : ""
   const body = steps.length
-    ? steps.map((s) => `echo "› ${s}"\n${s} || exit 1`).join("\n")
+    ? steps.map((s) => `echo "› ${s}"\nrun_gate ${s} || exit 1`).join("\n")
     : shellStep
       ? // A repo whose executable surface is shell HAS a correctness command — it just is not in
         // package.json. Claiming "none detected" beside a step that is about to run would be the
@@ -434,7 +466,7 @@ fi`
   return stampGenerated(`#!/usr/bin/env sh
 # etymd: correctness gate. Mirrors CI cheapest-first; blocks the push on any failure.
 
-${localHookCall("pre-push")}
+${localHookCall("pre-push")}${runner}
 ${body}${shellStep}
 ${auditStep}
 

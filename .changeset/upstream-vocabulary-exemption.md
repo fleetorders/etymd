@@ -5,7 +5,7 @@
 screen: forks can exempt upstream-owned files from vocabulary-class patterns
 
 A fork that syncs from upstream stages hundreds of upstream files; a pattern that
-matches ordinary wording (a "vocabulary" pattern, e.g. words a leaky *description*
+matches ordinary wording (a "vocabulary" pattern, e.g. words a leaky _description_
 would use) then fires on upstream's own already-public docs and blocks the sync
 commit. This adds:
 
@@ -18,7 +18,7 @@ commit. This adds:
   vocabulary-class patterns are skipped. Secret-class patterns and the machine-path
   check stay absolute everywhere. Matching is by blob sha across all upstream refs,
   so a file copied verbatim to a different path (an adapter lifted from another
-  upstream branch) is still recognised, and a file the fork *modifies* is screened
+  upstream branch) is still recognised, and a file the fork _modifies_ is screened
   in full.
 - **Fails closed and loud.** If the upstream ref cannot be read (a rebuild dropped
   the remote), nothing is exempted and a one-line notice says so — the config signal

@@ -75,4 +75,56 @@ describe.skipIf(!existsSync(CLI))("etymd gates — the written tier is derived a
     expect(await prePush()).toContain("--fail-on polish")
     expect(out).toContain(path.join(".etymd", "config.json"))
   })
+
+  it("PINNED: a configured test command runs inside the GIT_* scrub, never the raw hook environment", async () => {
+    // The class: git exports GIT_DIR/GIT_WORK_TREE/… to every hook, a child git inherits them
+    // and ignores its cwd, and a hook-run suite that builds fixture repositories would operate
+    // on the REAL repo. The step must be routed through the scrub, not merely accompanied by it.
+    await write("AGENTS.md", "# AGENTS.md\n")
+    await write(
+      "package.json",
+      JSON.stringify({ name: "demo", private: true, scripts: { test: "vitest run" } }, null, 2) +
+        "\n",
+    )
+    await write(
+      ".etymd/config.json",
+      JSON.stringify({ gates: { commands: ["test"] } }, null, 2) + "\n",
+    )
+
+    await gates()
+    const hook = await prePush()
+    expect(hook).toContain("run_gate npm run test || exit 1")
+    // Every exported GIT_* name is stripped, never a fixed list — git adds names over time.
+    expect(hook).toContain("grep -o '^GIT_[A-Za-z0-9_]*'")
+    // The companion note names the hazard, so a hand-written `.local` guard can do the same.
+    expect(hook).toContain("GIT_* names")
+  })
+
+  it("the emitted scrub actually blinds a child git to the exported GIT_DIR", async () => {
+    // A text-level assertion passes a broken scrub line; only running it proves the wrap works.
+    const outer = path.join(dir, "outer")
+    const inner = path.join(dir, "inner")
+    for (const repo of [outer, inner]) {
+      await fs.mkdir(repo, { recursive: true })
+      await pExecFile("git", ["init", "-q"], { cwd: repo })
+    }
+    // Control: with GIT_DIR exported (the hook environment), the child git ignores its cwd —
+    // this is the defect class the scrub exists to break.
+    const dirty = await pExecFile("sh", ["-c", "cd inner && git rev-parse --git-dir"], {
+      cwd: dir,
+      env: { ...process.env, GIT_DIR: path.join(outer, ".git") },
+    })
+    expect(path.resolve(dir, dirty.stdout.trim())).toBe(path.join(outer, ".git"))
+    // Scrubbed: the same environment, wrapped the way the generated hook wraps it — the child
+    // resolves the repository from its working directory again.
+    const clean = await pExecFile(
+      "sh",
+      [
+        "-c",
+        "cd inner && env $(env | grep -o '^GIT_[A-Za-z0-9_]*' | sed 's/^/-u /') git rev-parse --git-dir",
+      ],
+      { cwd: dir, env: { ...process.env, GIT_DIR: path.join(outer, ".git") } },
+    )
+    expect(path.resolve(inner, clean.stdout.trim())).toBe(path.join(inner, ".git"))
+  })
 })
