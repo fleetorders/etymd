@@ -156,10 +156,14 @@ describe.skipIf(!hasRepo("docs-only"))("corpus: docs-only (no manifest)", () => 
 })
 
 describe.skipIf(!hasRepo("oss-fork"))("corpus: oss-fork (large fork, symlinked contract)", () => {
-  it("scans the fork: pnpm, husky hooks, AGENTS.md symlink counts as a contract", async () => {
+  it("scans the fork: pnpm, githooks (migrated from husky), AGENTS.md symlink counts as a contract", async () => {
     const facts = await scanProject(repo("oss-fork"))
     expect(facts.packageManager).toBe("pnpm")
-    expect(facts.hooks.source).toBe("husky")
+    // The fork inherited husky from upstream, then adopted tracked .githooks (core.hooksPath).
+    // The scanner reports the LIVE source, so githooks is the correct fact here — do not "fix" this
+    // back to husky. Modern-husky detection stays covered deterministically by the .husky/_ fixture
+    // in scan.test.ts ("classifies husky v9's `.husky/_` hooksPath as husky", the oss-fork class).
+    expect(facts.hooks.source).toBe("githooks")
     expect(facts.artifacts.find((a) => a.id === "agents")?.exists).toBe(true)
   })
 

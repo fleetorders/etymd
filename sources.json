@@ -48,7 +48,7 @@
       "private": true,
       "role": "reference",
       "shape": "fork of an active upstream OSS project",
-      "note": "claim-rich surface: large inherited instruction layer, symlinked+gitignored AGENTS.md, husky; the fork-scoping case"
+      "note": "claim-rich surface: large inherited instruction layer, symlinked+gitignored AGENTS.md, adopted tracked .githooks over inherited husky; the fork-scoping case"
     }
   ]
 }
