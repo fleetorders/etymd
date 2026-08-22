@@ -34,9 +34,10 @@ export type ScreenScope = "staged" | "tree" | "message" | "dir"
  * blocks everywhere, always. A `# class: vocabulary` directive line switches the class for the
  * patterns beneath it (a `# class: secret` line switches back). Vocabulary-class patterns are
  * words that indicate a leaky DESCRIPTION rather than a secret string — and the same words occur
- * in a fork's UPSTREAM documentation, which is already public. Only vocabulary-class patterns are
- * ever skipped, and only on files proven to be upstream-owned (see `--upstream`). Secret-class
- * patterns and the machine-path check are absolute — they never skip, on any file.
+ * in a fork's UPSTREAM documentation, which is already public. Vocabulary-class patterns and the
+ * machine-path check are skipped only on files proven to be upstream-owned (see `--upstream`): such
+ * a file is byte-identical to public upstream, so any path it names is already public and cannot
+ * leak this machine. Secret-class patterns are absolute — they never skip, on any file.
  */
 export type PatternClass = "secret" | "vocabulary"
 export interface ScreenPattern {
@@ -57,7 +58,8 @@ export interface ScreenOptions {
   /**
    * The name of this repo's upstream remote (a fork). When set, a staged/tree file whose content
    * is byte-identical to any blob at the tips of `refs/remotes/<upstream>/*` is treated as
-   * upstream-owned: vocabulary-class patterns are skipped for it (secret-class stays absolute).
+   * upstream-owned: vocabulary-class patterns and the machine-path check are skipped for it
+   * (secret-class stays absolute).
    * Fails closed — if the remote's refs cannot be read, nothing is exempted and a notice is
    * printed, so a fork whose upstream vanished screens fully and visibly rather than silently.
    */
@@ -313,15 +315,16 @@ export function screenText(
   file: string,
   patterns: readonly (RegExp | ScreenPattern)[],
   allow: AllowEntry[] = [],
-  skipVocabulary = false,
+  upstreamOwned = false,
 ): ScreenHit[] {
   // A bare RegExp is treated as secret-class, so every existing caller and test is unchanged.
   const classed = patterns.map((p) =>
     p instanceof RegExp ? { re: p, cls: "secret" as PatternClass } : p,
   )
-  // On an upstream-owned file only the vocabulary class is dropped — its matches are upstream's own
-  // public wording. Secret-class patterns (and the machine-path check below) never skip.
-  const active = skipVocabulary ? classed.filter((p) => p.cls === "secret") : classed
+  // On an upstream-owned file the vocabulary class is dropped (its matches are upstream's own public
+  // wording) and the machine-path check below is skipped too — the file is byte-identical to public
+  // upstream, so any path it names is already public. Secret-class patterns still never skip.
+  const active = upstreamOwned ? classed.filter((p) => p.cls === "secret") : classed
   const hits: ScreenHit[] = []
   const lines = text.split("\n")
   for (const [i, line] of lines.entries()) {
@@ -333,7 +336,7 @@ export function screenText(
         break
       }
     }
-    if (MACHINE_PATH_RE.test(line)) {
+    if (!upstreamOwned && MACHINE_PATH_RE.test(line)) {
       hits.push({
         file,
         line: i + 1,
