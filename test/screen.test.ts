@@ -268,7 +268,7 @@ describe("pattern classes", () => {
     ])
   })
 
-  it("skipVocabulary drops only vocabulary patterns — secret patterns and the machine path stay", () => {
+  it("upstreamOwned drops vocabulary patterns AND the machine-path check — secret patterns stay", () => {
     const pats = [
       { re: /supersecret/i, cls: "secret" as const },
       { re: /two-factor/i, cls: "vocabulary" as const },
@@ -277,9 +277,11 @@ describe("pattern classes", () => {
     const text = ["mentions two-factor", "mentions supersecret", home].join("\n")
     // Full screen: all three fire.
     expect(screenText(text, "f", pats, [], false)).toHaveLength(3)
-    // Upstream-owned: the vocabulary hit is dropped, secret + machine path remain.
+    // Upstream-owned: the vocabulary hit AND the machine path drop — both are already public in the
+    // byte-identical upstream file. Only the secret-class hit remains.
     const kept = screenText(text, "f", pats, [], true)
-    expect(kept.map((h) => h.line)).toEqual([2, 3])
+    expect(kept.map((h) => h.line)).toEqual([2])
+    expect(kept.map((h) => h.reason)).not.toContain("absolute home path")
   })
 
   it("a bare RegExp[] is still accepted and treated as secret (backward compatible)", () => {
