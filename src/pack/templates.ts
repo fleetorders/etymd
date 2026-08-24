@@ -196,6 +196,21 @@ ${
   )
 }
 
+/** The package name this pack ships as — the key that decides the dev-build arm below. */
+const SELF_PACKAGE_NAME = "etymd"
+
+/**
+ * Is generation running in the repo that develops the screener itself?
+ *
+ * Keyed on the MANIFEST name, never on `facts.name` alone: that field falls back to the
+ * directory basename when no `package.json` exists, and a directory that merely happens to be
+ * called `etymd` is not this package. `publishRoute` is the scan's record of whether a root
+ * manifest was read at all — `"none"` means there was none.
+ */
+export function isSelfBuildRepo(facts: ProjectFacts): boolean {
+  return facts.publishRoute !== "none" && facts.name === SELF_PACKAGE_NAME
+}
+
 /**
  * The content screen is DECLARED here and RESOLVED at run time from an external checker, which
  * is what lets a generated hook be committed to a public repo safely: the hook holds no
@@ -206,14 +221,27 @@ ${
  * hook names an executable, and the executable reads the pattern file. Etymd ships the screener
  * (`etymd screen`) but never ships patterns: the mechanism is general, the policy is the user's.
  *
- * Resolution order: an explicit CONTENT_GATE, then the repo's own `./dist/cli.js` if it builds
- * one, then whatever `etymd` is on PATH. The middle step exists for the dogfood case — a repo
- * developing the screener itself must gate on its own unreleased build, or its hooks enforce
- * the last PUBLISHED behaviour against a tree that has already moved past it (observed: a
- * renamed allow file the published binary could not read, silently voiding every exemption).
- * Consumer repos carry no `dist/`, so for them the order is unchanged.
+ * Resolution order, everywhere: an explicit CONTENT_GATE, then whatever `etymd` is on PATH.
+ *
+ * In this package's OWN repo — and only there, decided at generation time from the manifest
+ * name — one step is inserted between them, for the dogfood case: a repo developing the
+ * screener has to gate on its own unreleased build, or its hooks enforce the last PUBLISHED
+ * behaviour against a tree that has already moved past it (observed: a renamed allow file the
+ * published binary could not read, silently voiding every exemption).
+ *
+ * That step was previously emitted into EVERY repo as a bare `[ -x ./dist/cli.js ]` existence
+ * check — and `dist/cli.js` is simply where a great many CLI projects build. Any such repo had
+ * its hook resolve the screener to ITS OWN binary, which does not know `screen`: the commit
+ * door then failed closed on every commit, while the push door — which ignores the screen's
+ * exit status by design — skipped the whole-tree pass in silence, the worse of the two. The
+ * trap armed itself on a plain dependency install, since that runs the repo's build. Deciding
+ * at generation time is what keeps the arm out of every repo it cannot be true for; a repo that
+ * needs a different runner for one invocation still has CONTENT_GATE.
  */
-const CONTENT_GATE_RESOLUTION = `GATE="\${CONTENT_GATE:-$(if [ -x ./dist/cli.js ]; then echo ./dist/cli.js; else command -v etymd || true; fi)}"`
+function contentGateResolution(selfBuild: boolean): string {
+  if (!selfBuild) return `GATE="\${CONTENT_GATE:-$(command -v etymd || true)}"`
+  return `GATE="\${CONTENT_GATE:-$(if [ -x ./dist/cli.js ]; then echo ./dist/cli.js; else command -v etymd || true; fi)}"`
+}
 
 /**
  * The seam between what the pack owns and what the repo owns.
@@ -241,7 +269,7 @@ if [ -x "$LOCAL" ]; then
 fi`
 }
 
-export function generatePreCommitHook(): string {
+export function generatePreCommitHook(selfBuild = false): string {
   return stampGenerated(`#!/usr/bin/env sh
 # etymd: process gate. Cheap, locally-knowable checks belong here (fast, blocks the commit).
 
@@ -253,7 +281,7 @@ ${localHookCall("pre-commit")}
 # commit anywhere, active only where you opted in.
 #
 # Bypass, with a reason: git commit --no-verify
-${CONTENT_GATE_RESOLUTION}
+${contentGateResolution(selfBuild)}
 if [ -x "$GATE" ]; then
   "$GATE" screen --staged || exit 1
 fi
@@ -396,7 +424,11 @@ else
 fi`
 }
 
-export function generatePrePushHook(facts: ProjectFacts, gates?: GateConfig): string {
+export function generatePrePushHook(
+  facts: ProjectFacts,
+  gates?: GateConfig,
+  selfBuild = false,
+): string {
   const run = runPrefix(facts.packageManager)
   const c = facts.commands
   // A recorded command set wins over the derivation: the guess is a starting point, and the one
@@ -441,7 +473,7 @@ ${auditStep}
 # Content screen, second pass — the WHOLE TREE rather than one diff. Catches anything committed
 # with --no-verify and anything a rebase or merge brought in from elsewhere. Advisory here (it
 # never blocks the push): the blocking decision belongs at commit time, where the fix is cheap.
-${CONTENT_GATE_RESOLUTION}
+${contentGateResolution(selfBuild)}
 if [ -x "$GATE" ]; then
   "$GATE" screen --tree --advisory || true
 fi
@@ -458,7 +490,7 @@ exit 0
  * do not honour .gitignore), so every git-based gate passes forever while the bytes go out.
  * This builds what the project would publish, unpacks it, and screens the result.
  */
-export function generateArtifactCheckScript(): string {
+export function generateArtifactCheckScript(selfBuild = false): string {
   return stampGenerated(`#!/usr/bin/env sh
 # etymd: content screen — the published ARTIFACT, not the repository.
 #
@@ -469,7 +501,7 @@ export function generateArtifactCheckScript(): string {
 # .etymd-screen-allow entries (with provenance) if you must exempt a string.
 set -eu
 
-${CONTENT_GATE_RESOLUTION}
+${contentGateResolution(selfBuild)}
 [ -x "$GATE" ] || { echo "› artifact-check: no checker installed — skipping."; exit 0; }
 
 WORK=$(mktemp -d)
