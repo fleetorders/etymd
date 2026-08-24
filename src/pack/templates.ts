@@ -244,6 +244,36 @@ function contentGateResolution(selfBuild: boolean): string {
 }
 
 /**
+ * A screen call that explains itself when the runner turns out not to be a screener.
+ *
+ * `screen` arrived in etymd 0.11, and the resolution above can also land on whatever a person
+ * pointed the override at. Either way the runner answers with its own bare "unknown command",
+ * which names no cause and no way out — at the moment a commit is blocked. That is the same
+ * shape of unexplained gate failure this pack exists to prevent, so the hook says the one thing
+ * the runner cannot.
+ *
+ * The probe runs ONLY after a failure, so a clean run pays nothing for it, and it is what
+ * separates the two cases sharing an exit code: a screener reporting a real finding (it has
+ * already spoken — add nothing) and a runner that never understood the subcommand at all.
+ */
+function contentScreenCall(opts: {
+  args: string
+  envVar: string
+  blocking: boolean
+  indent: string
+}): string {
+  const { args, envVar, blocking, indent } = opts
+  const hint = `etymd: this checker does not understand 'screen' (needs etymd 0.11+) — upgrade it, or set ${envVar} to a checker that does.`
+  return [
+    `${indent}if ! "$GATE" screen ${args}; then`,
+    `${indent}  "$GATE" screen --help >/dev/null 2>&1 ||`,
+    `${indent}    echo "${hint}" >&2`,
+    ...(blocking ? [`${indent}  exit 1`] : []),
+    `${indent}fi`,
+  ].join("\n")
+}
+
+/**
  * The seam between what the pack owns and what the repo owns.
  *
  * A generated file that cannot hold anything local forces a false choice: accept the pack and
@@ -283,7 +313,7 @@ ${localHookCall("pre-commit")}
 # Bypass, with a reason: git commit --no-verify
 ${contentGateResolution(selfBuild)}
 if [ -x "$GATE" ]; then
-  "$GATE" screen --staged || exit 1
+${contentScreenCall({ args: "--staged", envVar: "CONTENT_GATE", blocking: true, indent: "  " })}
 fi
 
 exit 0
@@ -368,7 +398,7 @@ export function generateCommitMsgHook(gates?: GateConfig): string {
 # Bypass, with a reason: git commit --no-verify
 GATE="\${COMMIT_MSG_GATE:-$(command -v etymd || true)}"
 if [ -x "$GATE" ]; then
-  "$GATE" screen --message "$1" || exit 1
+${contentScreenCall({ args: '--message "$1"', envVar: "COMMIT_MSG_GATE", blocking: true, indent: "  " })}
 fi
 ${format}
 ${localHookCall("commit-msg")}
@@ -475,7 +505,7 @@ ${auditStep}
 # never blocks the push): the blocking decision belongs at commit time, where the fix is cheap.
 ${contentGateResolution(selfBuild)}
 if [ -x "$GATE" ]; then
-  "$GATE" screen --tree --advisory || true
+${contentScreenCall({ args: "--tree --advisory", envVar: "CONTENT_GATE", blocking: false, indent: "  " })}
 fi
 
 exit 0
@@ -514,7 +544,7 @@ if [ -f package.json ]; then
   tar -xzf "$WORK"/*.tgz -C "$WORK" 2>/dev/null || true
 fi
 
-"$GATE" screen --dir "$WORK" || exit 1
+${contentScreenCall({ args: '--dir "$WORK"', envVar: "CONTENT_GATE", blocking: true, indent: "" })}
 exit 0
 `)
 }

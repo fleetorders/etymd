@@ -50,8 +50,11 @@ fi
 # never blocks the push): the blocking decision belongs at commit time, where the fix is cheap.
 GATE="${CONTENT_GATE:-$(if [ -x ./dist/cli.js ]; then echo ./dist/cli.js; else command -v etymd || true; fi)}"
 if [ -x "$GATE" ]; then
-  "$GATE" screen --tree --advisory || true
+  if ! "$GATE" screen --tree --advisory; then
+    "$GATE" screen --help >/dev/null 2>&1 ||
+      echo "etymd: this checker does not understand 'screen' (needs etymd 0.11+) — upgrade it, or set CONTENT_GATE to a checker that does." >&2
+  fi
 fi
 
 exit 0
-# etymd:generated pack-v12 3138bee89153be59
+# etymd:generated pack-v12 1d6cdd27b83b10b3
