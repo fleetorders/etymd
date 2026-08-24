@@ -218,7 +218,9 @@ describe("init approves the repo it leaves behind, not the one it found", () => 
   })
 
   it("baselines the scaffold it just wrote, so a later deletion still reads as drift", async () => {
-    await runInit({ cwd: dir, yes: true })
+    // The scaffold is opt-in — the flag is what makes init write a contract here, and the
+    // baseline must still reflect the repo init LEAVES BEHIND.
+    await runInit({ cwd: dir, yes: true, withAgents: true })
 
     const baseline = await readBaseline(dir)
     const contract = baseline?.facts.artifacts.find((a) => a.id === "agents")

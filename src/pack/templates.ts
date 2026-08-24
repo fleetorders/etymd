@@ -196,6 +196,21 @@ ${
   )
 }
 
+/** The package name this pack ships as — the key that decides the dev-build arm below. */
+const SELF_PACKAGE_NAME = "etymd"
+
+/**
+ * Is generation running in the repo that develops the screener itself?
+ *
+ * Keyed on the MANIFEST name, never on `facts.name` alone: that field falls back to the
+ * directory basename when no `package.json` exists, and a directory that merely happens to be
+ * called `etymd` is not this package. `publishRoute` is the scan's record of whether a root
+ * manifest was read at all — `"none"` means there was none.
+ */
+export function isSelfBuildRepo(facts: ProjectFacts): boolean {
+  return facts.publishRoute !== "none" && facts.name === SELF_PACKAGE_NAME
+}
+
 /**
  * The content screen is DECLARED here and RESOLVED at run time from an external checker, which
  * is what lets a generated hook be committed to a public repo safely: the hook holds no
@@ -206,14 +221,57 @@ ${
  * hook names an executable, and the executable reads the pattern file. Etymd ships the screener
  * (`etymd screen`) but never ships patterns: the mechanism is general, the policy is the user's.
  *
- * Resolution order: an explicit CONTENT_GATE, then the repo's own `./dist/cli.js` if it builds
- * one, then whatever `etymd` is on PATH. The middle step exists for the dogfood case — a repo
- * developing the screener itself must gate on its own unreleased build, or its hooks enforce
- * the last PUBLISHED behaviour against a tree that has already moved past it (observed: a
- * renamed allow file the published binary could not read, silently voiding every exemption).
- * Consumer repos carry no `dist/`, so for them the order is unchanged.
+ * Resolution order, everywhere: an explicit CONTENT_GATE, then whatever `etymd` is on PATH.
+ *
+ * In this package's OWN repo — and only there, decided at generation time from the manifest
+ * name — one step is inserted between them, for the dogfood case: a repo developing the
+ * screener has to gate on its own unreleased build, or its hooks enforce the last PUBLISHED
+ * behaviour against a tree that has already moved past it (observed: a renamed allow file the
+ * published binary could not read, silently voiding every exemption).
+ *
+ * That step was previously emitted into EVERY repo as a bare `[ -x ./dist/cli.js ]` existence
+ * check — and `dist/cli.js` is simply where a great many CLI projects build. Any such repo had
+ * its hook resolve the screener to ITS OWN binary, which does not know `screen`: the commit
+ * door then failed closed on every commit, while the push door — which ignores the screen's
+ * exit status by design — skipped the whole-tree pass in silence, the worse of the two. The
+ * trap armed itself on a plain dependency install, since that runs the repo's build. Deciding
+ * at generation time is what keeps the arm out of every repo it cannot be true for; a repo that
+ * needs a different runner for one invocation still has CONTENT_GATE.
  */
-const CONTENT_GATE_RESOLUTION = `GATE="\${CONTENT_GATE:-$(if [ -x ./dist/cli.js ]; then echo ./dist/cli.js; else command -v etymd || true; fi)}"`
+function contentGateResolution(selfBuild: boolean): string {
+  if (!selfBuild) return `GATE="\${CONTENT_GATE:-$(command -v etymd || true)}"`
+  return `GATE="\${CONTENT_GATE:-$(if [ -x ./dist/cli.js ]; then echo ./dist/cli.js; else command -v etymd || true; fi)}"`
+}
+
+/**
+ * A screen call that explains itself when the runner turns out not to be a screener.
+ *
+ * `screen` arrived in etymd 0.11, and the resolution above can also land on whatever a person
+ * pointed the override at. Either way the runner answers with its own bare "unknown command",
+ * which names no cause and no way out — at the moment a commit is blocked. That is the same
+ * shape of unexplained gate failure this pack exists to prevent, so the hook says the one thing
+ * the runner cannot.
+ *
+ * The probe runs ONLY after a failure, so a clean run pays nothing for it, and it is what
+ * separates the two cases sharing an exit code: a screener reporting a real finding (it has
+ * already spoken — add nothing) and a runner that never understood the subcommand at all.
+ */
+function contentScreenCall(opts: {
+  args: string
+  envVar: string
+  blocking: boolean
+  indent: string
+}): string {
+  const { args, envVar, blocking, indent } = opts
+  const hint = `etymd: this checker does not understand 'screen' (needs etymd 0.11+) — upgrade it, or set ${envVar} to a checker that does.`
+  return [
+    `${indent}if ! "$GATE" screen ${args}; then`,
+    `${indent}  "$GATE" screen --help >/dev/null 2>&1 ||`,
+    `${indent}    echo "${hint}" >&2`,
+    ...(blocking ? [`${indent}  exit 1`] : []),
+    `${indent}fi`,
+  ].join("\n")
+}
 
 /**
  * The seam between what the pack owns and what the repo owns.
@@ -235,13 +293,16 @@ const CONTENT_GATE_RESOLUTION = `GATE="\${CONTENT_GATE:-$(if [ -x ./dist/cli.js 
 function localHookCall(hook: string): string {
   return `# Repo-owned checks. This file is generated and will be overwritten; \`.githooks/${hook}.local\`
 # is yours — etymd never reads, writes, or regenerates it. Put project-specific guards there.
+# A guard running tests that build fixture repositories should scrub git's exported GIT_* names
+# first — a child git inherits them and ignores its cwd, so the suite would hit the real repo:
+#   env $(env | grep -o '^GIT_[A-Za-z0-9_]*' | sed 's/^/-u /') <your command>
 LOCAL="$(dirname "$0")/${hook}.local"
 if [ -x "$LOCAL" ]; then
   "$LOCAL" "$@" || exit 1
 fi`
 }
 
-export function generatePreCommitHook(): string {
+export function generatePreCommitHook(selfBuild = false): string {
   return stampGenerated(`#!/usr/bin/env sh
 # etymd: process gate. Cheap, locally-knowable checks belong here (fast, blocks the commit).
 
@@ -253,9 +314,9 @@ ${localHookCall("pre-commit")}
 # commit anywhere, active only where you opted in.
 #
 # Bypass, with a reason: git commit --no-verify
-${CONTENT_GATE_RESOLUTION}
+${contentGateResolution(selfBuild)}
 if [ -x "$GATE" ]; then
-  "$GATE" screen --staged || exit 1
+${contentScreenCall({ args: "--staged", envVar: "CONTENT_GATE", blocking: true, indent: "  " })}
 fi
 
 exit 0
@@ -340,7 +401,7 @@ export function generateCommitMsgHook(gates?: GateConfig): string {
 # Bypass, with a reason: git commit --no-verify
 GATE="\${COMMIT_MSG_GATE:-$(command -v etymd || true)}"
 if [ -x "$GATE" ]; then
-  "$GATE" screen --message "$1" || exit 1
+${contentScreenCall({ args: '--message "$1"', envVar: "COMMIT_MSG_GATE", blocking: true, indent: "  " })}
 fi
 ${format}
 ${localHookCall("commit-msg")}
@@ -371,11 +432,24 @@ exit 0
 function shellcheckStep(): string {
   return `
 # Shell correctness. Scripts are discovered by shebang over TRACKED files at push time, so a
-# script added later is covered without regenerating this hook.
+# script added later is covered without regenerating this hook. zsh is NOT in the checked set:
+# the checker cannot parse it (SC1071 is a parser-level error no inline directive can silence),
+# so checking it would fail every push on the parser, not on the script. Excluded — and said so
+# at run time below, because a coverage hole that is silent is indistinguishable from coverage.
+#
+# "the checker", not its name, on purpose: a comment whose first word is that name is read as
+# a DIRECTIVE, and an unparseable directive is itself an error (SC1072/SC1073). A hook that
+# explains why it skips a shell dialect must not break the checker while doing it.
 if command -v shellcheck >/dev/null 2>&1; then
   scripts=$(git ls-files -z \\
-    | xargs -0 -I{} sh -c 'head -1 "{}" 2>/dev/null | grep -qE "^#!.*[/ ](ba|da|z)?sh( |$)" && echo "{}"' \\
+    | xargs -0 -I{} sh -c 'head -1 "{}" 2>/dev/null | grep -qE "^#!.*[/ ](ba|da)?sh( |$)" && echo "{}"' \\
     | sort)
+  zsh_scripts=$(git ls-files -z \\
+    | xargs -0 -I{} sh -c 'head -1 "{}" 2>/dev/null | grep -qE "^#!.*[/ ]zsh( |$)" && echo "{}"' \\
+    | sort)
+  if [ -n "$zsh_scripts" ]; then
+    echo "› shellcheck: $(printf '%s\\n' "$zsh_scripts" | wc -l | tr -d ' ') zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
+  fi
   if [ -n "$scripts" ]; then
     echo "› shellcheck ($(printf '%s\\n' "$scripts" | wc -l | tr -d ' ') scripts, blocking at severity=warning)"
     printf '%s\\n' "$scripts" | xargs shellcheck -S warning || {
@@ -396,7 +470,37 @@ else
 fi`
 }
 
-export function generatePrePushHook(facts: ProjectFacts, gates?: GateConfig): string {
+/**
+ * Runs a gate step with git's hook environment scrubbed.
+ *
+ * Git exports GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE / … to every hook it runs, and a child
+ * git that inherits them IGNORES ITS CWD. A test suite that builds fixture repositories by
+ * shelling out to git therefore operates on the REAL repository — committing into it, moving
+ * its refs — while the same suite outside a hook is harmless. Any gate step can shell out to
+ * git (a test command above all, but a format or lint script may ask git for its file list
+ * too), so every step runs scrubbed, uniformly.
+ *
+ * The scrub strips EVERY exported GIT_* name, not a fixed list — git adds variables over time,
+ * and a name the list missed is the whole defect back. A step that genuinely means this
+ * repository finds it again from its working directory, which for a hook is the repo root.
+ * The audit and shellcheck steps are deliberately NOT routed through it: audit operates on the
+ * repo it is invoked in and never descends into fixtures, and shellcheck's `git ls-files` must
+ * see the real repo.
+ */
+const SCRUBBED_RUNNER = `
+# Gate steps run scrubbed of git's exported GIT_* names: a child git that inherits them ignores
+# its cwd, so a hook-run suite building fixture repositories would operate on the real repo.
+run_gate() (
+  # shellcheck disable=SC2046  # word-splitting is the point: one -u per exported GIT_* name
+  env $(env | grep -o '^GIT_[A-Za-z0-9_]*' | sed 's/^/-u /') "$@"
+)
+`
+
+export function generatePrePushHook(
+  facts: ProjectFacts,
+  gates?: GateConfig,
+  selfBuild = false,
+): string {
   const run = runPrefix(facts.packageManager)
   const c = facts.commands
   // A recorded command set wins over the derivation: the guess is a starting point, and the one
@@ -412,8 +516,11 @@ export function generatePrePushHook(facts: ProjectFacts, gates?: GateConfig): st
     )
     .map((key) => `${run} ${key}`)
   const shellStep = facts.shell?.scripts ? shellcheckStep() : ""
+  // Emitted only when a step exists to call it — a helper with no caller is dead text in a file
+  // people read to learn what their gate does.
+  const runner = steps.length ? SCRUBBED_RUNNER : ""
   const body = steps.length
-    ? steps.map((s) => `echo "› ${s}"\n${s} || exit 1`).join("\n")
+    ? steps.map((s) => `echo "› ${s}"\nrun_gate ${s} || exit 1`).join("\n")
     : shellStep
       ? // A repo whose executable surface is shell HAS a correctness command — it just is not in
         // package.json. Claiming "none detected" beside a step that is about to run would be the
@@ -434,16 +541,16 @@ fi`
   return stampGenerated(`#!/usr/bin/env sh
 # etymd: correctness gate. Mirrors CI cheapest-first; blocks the push on any failure.
 
-${localHookCall("pre-push")}
+${localHookCall("pre-push")}${runner}
 ${body}${shellStep}
 ${auditStep}
 
 # Content screen, second pass — the WHOLE TREE rather than one diff. Catches anything committed
 # with --no-verify and anything a rebase or merge brought in from elsewhere. Advisory here (it
 # never blocks the push): the blocking decision belongs at commit time, where the fix is cheap.
-${CONTENT_GATE_RESOLUTION}
+${contentGateResolution(selfBuild)}
 if [ -x "$GATE" ]; then
-  "$GATE" screen --tree --advisory || true
+${contentScreenCall({ args: "--tree --advisory", envVar: "CONTENT_GATE", blocking: false, indent: "  " })}
 fi
 
 exit 0
@@ -458,7 +565,7 @@ exit 0
  * do not honour .gitignore), so every git-based gate passes forever while the bytes go out.
  * This builds what the project would publish, unpacks it, and screens the result.
  */
-export function generateArtifactCheckScript(): string {
+export function generateArtifactCheckScript(selfBuild = false): string {
   return stampGenerated(`#!/usr/bin/env sh
 # etymd: content screen — the published ARTIFACT, not the repository.
 #
@@ -469,7 +576,7 @@ export function generateArtifactCheckScript(): string {
 # .etymd-screen-allow entries (with provenance) if you must exempt a string.
 set -eu
 
-${CONTENT_GATE_RESOLUTION}
+${contentGateResolution(selfBuild)}
 [ -x "$GATE" ] || { echo "› artifact-check: no checker installed — skipping."; exit 0; }
 
 WORK=$(mktemp -d)
@@ -482,7 +589,7 @@ if [ -f package.json ]; then
   tar -xzf "$WORK"/*.tgz -C "$WORK" 2>/dev/null || true
 fi
 
-"$GATE" screen --dir "$WORK" || exit 1
+${contentScreenCall({ args: '--dir "$WORK"', envVar: "CONTENT_GATE", blocking: true, indent: "" })}
 exit 0
 `)
 }

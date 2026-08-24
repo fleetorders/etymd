@@ -8,6 +8,7 @@ import {
   generatePreCommitHook,
   generatePrePushHook,
   isSafeGateCommand,
+  isSelfBuildRepo,
 } from "../pack/templates.js"
 import { DEFAULT_CONFIG, type GateConfig } from "./config.js"
 import type { ProjectFacts } from "./types.js"
@@ -156,8 +157,18 @@ export async function planWorkflow(
     // regenerated without it and compared a repo against a hook missing checks the repo really
     // runs: permanent false drift, and a silent downgrade for anyone who applied it.
     const existingPrePush = await readText(path.join(root, ".githooks", "pre-push"))
+    // Decided ONCE, here, from the manifest — the dev-build arm in the content-screen resolution
+    // is emitted into this package's own repo and no other. See `contentGateResolution`: as a
+    // run-time path check it turned any repo that builds a CLI to `dist/cli.js` into its own
+    // broken screener.
+    const selfBuild = isSelfBuildRepo(facts)
 
-    await add(".githooks/pre-commit", generatePreCommitHook(), "Process gate (pre-commit)", true)
+    await add(
+      ".githooks/pre-commit",
+      generatePreCommitHook(selfBuild),
+      "Process gate (pre-commit)",
+      true,
+    )
     // The recorded config, not the derived one below: the derivation exists to fill in commands
     // this hook does not run, and the format check must resolve identically here and in the
     // fleet's drift comparison — a key read in one place and not the other reads as drift.
@@ -184,7 +195,7 @@ export async function planWorkflow(
 
     await add(
       ".githooks/pre-push",
-      generatePrePushHook(facts, gateConfig),
+      generatePrePushHook(facts, gateConfig, selfBuild),
       "Correctness gate (pre-push)",
       true,
     )
@@ -195,7 +206,7 @@ export async function planWorkflow(
     if (opts.gateConfig?.publishGate ?? opts.publishGate ?? facts.publishable) {
       await add(
         "scripts/artifact-check.sh",
-        generateArtifactCheckScript(),
+        generateArtifactCheckScript(selfBuild),
         "Content screen (published artifact)",
         true,
       )
