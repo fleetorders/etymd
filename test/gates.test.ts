@@ -356,3 +356,42 @@ describe.skipIf(!existsSync(CLI))(
     })
   },
 )
+
+describe.skipIf(!existsSync(CLI))(
+  "etymd gates — the generated hooks pass the checker they run",
+  () => {
+    it("PINNED: every generated hook is shellcheck-clean at warning", async () => {
+      // A hook that gates on shellcheck must survive shellcheck itself. The specific trap this
+      // pins: any comment whose first word is the checker's own name is parsed as a DIRECTIVE, so
+      // prose explaining why a shell dialect is skipped can itself become a parse error — a
+      // generated gate breaking the tool it exists to run.
+      const hasShellcheck = await pExecFile("command", ["-v", "shellcheck"], { shell: true }).then(
+        () => true,
+        () => false,
+      )
+      if (!hasShellcheck) return
+
+      await write("package.json", JSON.stringify({ name: "demo", private: true }, null, 2) + "\n")
+      await write("AGENTS.md", "# AGENTS.md\n")
+      await write("scripts/thing.sh", "#!/usr/bin/env sh\necho hi\n")
+      await gates()
+
+      const targets = [".githooks/pre-commit", ".githooks/pre-push", ".githooks/commit-msg"].filter(
+        (rel) => existsSync(path.join(dir, rel)),
+      )
+      expect(targets.length).toBeGreaterThan(0)
+
+      const result = await pExecFile("shellcheck", ["-S", "warning", ...targets], {
+        cwd: dir,
+      }).then(
+        () => ({ ok: true, out: "" }),
+        (e: { stdout?: string; stderr?: string }) => ({
+          ok: false,
+          out: (e.stdout ?? "") + (e.stderr ?? ""),
+        }),
+      )
+      expect(result.out).toBe("")
+      expect(result.ok).toBe(true)
+    })
+  },
+)
