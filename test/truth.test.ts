@@ -6,7 +6,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { scanProject } from "../src/core/scan.js"
 import { git } from "../src/core/util.js"
-import { extractCommandClaims, extractPathClaims } from "../src/lenses/instruction-truth/claims.js"
+import {
+  extractCommandClaims,
+  extractDocRefs,
+  extractPathClaims,
+} from "../src/lenses/instruction-truth/claims.js"
 import { instructionTruthLens } from "../src/lenses/instruction-truth/lens.js"
 import { contextEconomyLens, TOTAL_BUDGET_WORDS } from "../src/lenses/context-economy.js"
 import type { LensContext } from "../src/engine/finding.js"
@@ -115,6 +119,29 @@ describe("claim extraction", () => {
   })
 })
 
+describe("doc-ref extraction (home paths are not repo paths)", () => {
+  it("a `~/` home-path mention is not a repo doc reference", () => {
+    const { refs, tildeSkipped } = extractDocRefs(
+      "Global rules in `~/.claude/CLAUDE.md` apply on top of this file.",
+    )
+    expect(refs).toEqual([])
+    expect(tildeSkipped).toBe(1)
+  })
+
+  it("one ordinary occurrence still makes the doc a live claim", () => {
+    const { refs, tildeSkipped } = extractDocRefs(
+      "Global rules in `~/.claude/CLAUDE.md` apply on top; for this repo see CLAUDE.md.",
+    )
+    expect(refs).toEqual(["CLAUDE.md"])
+    expect(tildeSkipped).toBe(1)
+  })
+
+  it("an unadorned mention is a claim, as before", () => {
+    const { refs } = extractDocRefs("State is tracked in PROJECT_CONTEXT.md.")
+    expect(refs).toEqual(["PROJECT_CONTEXT.md"])
+  })
+})
+
 describe("instruction-truth lens (the lying-AGENTS.md fixture)", () => {
   async function writeLyingFixture() {
     await write(
@@ -179,6 +206,19 @@ describe("instruction-truth lens (the lying-AGENTS.md fixture)", () => {
     await write("package.json", JSON.stringify({ name: "bare" }))
     const report = await runTruth()
     expect(report.findings.map((f) => f.id)).toContain("instruction-truth/no-contract")
+  })
+
+  it("a tilde-home doc mention is skipped and disclosed, never a dangling ref", async () => {
+    // The observed defect: prose pointing at the reader's machine accused the repo of a missing
+    // file. The home file is real; the repo never had one — nothing to verify here.
+    await write("package.json", JSON.stringify({ name: "homedoc", private: true }))
+    await write(
+      "AGENTS.md",
+      "# AGENTS.md\n\nGlobal rules in `~/.claude/CLAUDE.md` apply on top of this file.\n",
+    )
+    const report = await runTruth()
+    expect(report.findings.filter((f) => f.id.includes("dangling-ref"))).toEqual([])
+    expect(report.disclosures.some((d) => d.includes("`~/` home paths"))).toBe(true)
   })
 
   it("resolves workspace scripts and package-relative paths in a monorepo (no false lies)", async () => {

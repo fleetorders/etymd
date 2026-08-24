@@ -17,6 +17,8 @@ import { glyph, theme } from "../ui/theme.js"
 export interface InitOptions {
   cwd: string
   yes?: boolean
+  /** Scaffold the minimal AGENTS.md where none exists — opt-in, never a `-y` default. */
+  withAgents?: boolean
 }
 
 function bail(): never {
@@ -74,14 +76,17 @@ export async function run(opts: InitOptions): Promise<void> {
   const hasContract = facts.artifacts.some((a) => a.id === "agents" && a.exists)
   let scaffoldAgents = false
   if (!hasContract) {
-    scaffoldAgents = opts.yes
-      ? true
-      : (guard(
-          await confirm({
-            message: "No AGENTS.md found — scaffold a minimal one from the reckoning?",
-            initialValue: true,
-          }),
-        ) as boolean)
+    // Opt-in only: the flag, or an interactive answer. `-y` alone must never land template prose
+    // nobody reviewed — a mechanical baseline-only rollout would seed unfilled contracts (and
+    // baselines that then defend them) across many repos at once.
+    if (opts.withAgents) scaffoldAgents = true
+    else if (!opts.yes)
+      scaffoldAgents = guard(
+        await confirm({
+          message: "No AGENTS.md found — scaffold a minimal one from the reckoning?",
+          initialValue: true,
+        }),
+      ) as boolean
   }
 
   let gates = false
