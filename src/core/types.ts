@@ -169,6 +169,11 @@ export interface ContextFile {
   role: string
   words: number
   approxTokens: number
+  /**
+   * Other always-loaded names that are THIS SAME FILE — a symlink or hardlink resolving to one
+   * inode. Present so output can name every alias while the words are counted once.
+   */
+  aliases?: string[]
 }
 
 export interface ContextBudget {
