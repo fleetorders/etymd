@@ -169,3 +169,81 @@ describe.skipIf(!existsSync(CLI))(
     })
   },
 )
+
+describe.skipIf(!existsSync(CLI))(
+  "etymd gates — a screen door that explains its own failure",
+  () => {
+    it("PINNED: a runner that does not understand `screen` gets a self-explaining line, not a bare error", async () => {
+      // `screen` needs etymd 0.11+. Against an older one the runner answers with its own
+      // "unknown command" and nothing else — no cause, no way out, at the moment a commit is
+      // blocked. That is the same unexplained-gate shape the pack exists to prevent.
+      await write("package.json", JSON.stringify({ name: "demo", private: true }, null, 2) + "\n")
+      await write("AGENTS.md", "# AGENTS.md\n")
+      await gates()
+
+      const notAScreener = path.join(dir, "old-etymd")
+      await fs.writeFile(
+        notAScreener,
+        "#!/usr/bin/env sh\necho \"error: unknown command 'screen'\" >&2\nexit 1\n",
+        "utf8",
+      )
+      await fs.chmod(notAScreener, 0o755)
+
+      const env = {
+        ...process.env,
+        CONTENT_GATE: notAScreener,
+        GIT_AUTHOR_NAME: "t",
+        GIT_AUTHOR_EMAIL: "t@example.invalid",
+        GIT_COMMITTER_NAME: "t",
+        GIT_COMMITTER_EMAIL: "t@example.invalid",
+      }
+      await pExecFile("git", ["config", "core.hooksPath", ".githooks"], { cwd: dir })
+      await pExecFile("git", ["add", "AGENTS.md", "package.json"], { cwd: dir, env })
+
+      const failure = await pExecFile("git", ["commit", "-m", "chore: gate"], {
+        cwd: dir,
+        env,
+      }).then(
+        () => null,
+        (e: { stdout?: string; stderr?: string }) => e,
+      )
+      // Still blocks — the hint explains a refusal, it never softens one.
+      expect(failure).not.toBeNull()
+      const out = (failure?.stdout ?? "") + (failure?.stderr ?? "")
+      expect(out).toContain("does not understand 'screen'")
+      expect(out).toContain("etymd 0.11+")
+      expect(out).toContain("CONTENT_GATE")
+    })
+
+    it("PINNED: a working screener never pays for the probe", async () => {
+      // The probe is post-failure only. A clean commit must not invoke the runner a second time.
+      await write("package.json", JSON.stringify({ name: "demo", private: true }, null, 2) + "\n")
+      await write("AGENTS.md", "# AGENTS.md\n")
+      await gates()
+
+      const counter = path.join(dir, "counted-etymd")
+      await fs.writeFile(
+        counter,
+        `#!/usr/bin/env sh\necho "CALL $*" >> "${path.join(dir, "calls.log")}"\nexit 0\n`,
+        "utf8",
+      )
+      await fs.chmod(counter, 0o755)
+
+      const env = {
+        ...process.env,
+        CONTENT_GATE: counter,
+        GIT_AUTHOR_NAME: "t",
+        GIT_AUTHOR_EMAIL: "t@example.invalid",
+        GIT_COMMITTER_NAME: "t",
+        GIT_COMMITTER_EMAIL: "t@example.invalid",
+      }
+      await pExecFile("git", ["config", "core.hooksPath", ".githooks"], { cwd: dir })
+      await pExecFile("git", ["add", "AGENTS.md", "package.json"], { cwd: dir, env })
+      await pExecFile("git", ["commit", "-m", "chore: gate"], { cwd: dir, env })
+
+      const log = await fs.readFile(path.join(dir, "calls.log"), "utf8")
+      expect(log).toContain("CALL screen --staged")
+      expect(log).not.toContain("--help")
+    })
+  },
+)
