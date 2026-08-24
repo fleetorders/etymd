@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process"
+import { execFile, execSync } from "node:child_process"
 import { existsSync, promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -126,5 +126,62 @@ describe.skipIf(!existsSync(CLI))("etymd gates — the written tier is derived a
       { cwd: dir, env: { ...process.env, GIT_DIR: path.join(outer, ".git") } },
     )
     expect(path.resolve(inner, clean.stdout.trim())).toBe(path.join(inner, ".git"))
+  })
+})
+
+// Behavioral runs below prove blocking/clean against the REAL checker — only where it exists.
+let hasShellcheck = false
+try {
+  execSync("command -v shellcheck", { stdio: "ignore" })
+  hasShellcheck = true
+} catch {
+  /* not on PATH — the hook's own absent-checker branch covers that case */
+}
+
+describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's reach", () => {
+  it("the shebang scan hands only sh/bash/dash to shellcheck, and the hook says why", async () => {
+    await write("package.json", JSON.stringify({ name: "zshy", private: true }, null, 2) + "\n")
+    await write("AGENTS.md", "# AGENTS.md\n")
+    await write("tool/run.zsh", "#!/bin/zsh\necho hi\n")
+    await pExecFile("git", ["add", "."], { cwd: dir })
+
+    await gates()
+    const hook = await prePush()
+    // The checked set: sh, bash, dash — zsh dropped from the character class.
+    expect(hook).toContain("(ba|da)?sh")
+    expect(hook).not.toContain("(ba|da|z)?sh")
+    // The exclusion is a disclosed skip, not silent absence of coverage.
+    expect(hook).toContain("SC1071")
+    expect(hook).toContain("zsh script(s) excluded")
+  })
+
+  it.skipIf(!hasShellcheck)(
+    "PINNED: a repo whose surface is zsh pushes clean through the fresh hook",
+    async () => {
+      await write("package.json", JSON.stringify({ name: "zshy", private: true }, null, 2) + "\n")
+      await write("AGENTS.md", "# AGENTS.md\n")
+      await write("tool/run.zsh", "#!/bin/zsh\necho hi\n")
+      await pExecFile("git", ["add", "."], { cwd: dir })
+
+      await gates()
+      // Running the generated hook directly is what a push executes. Before the fix this died
+      // inside shellcheck on SC1071 — a parser error, not a finding.
+      const { stdout } = await pExecFile("sh", [path.join(dir, ".githooks", "pre-push")], {
+        cwd: dir,
+      })
+      expect(stdout).toContain("zsh script(s) excluded")
+    },
+  )
+
+  it.skipIf(!hasShellcheck)("a bash script with a real warning still blocks the push", async () => {
+    await write("package.json", JSON.stringify({ name: "bashy", private: true }, null, 2) + "\n")
+    await write("AGENTS.md", "# AGENTS.md\n")
+    await write("tool/do.sh", "#!/bin/bash\nnever_used=1\necho ok\n")
+    await pExecFile("git", ["add", "."], { cwd: dir })
+
+    await gates()
+    await expect(
+      pExecFile("sh", [path.join(dir, ".githooks", "pre-push")], { cwd: dir }),
+    ).rejects.toThrow()
   })
 })

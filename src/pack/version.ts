@@ -6,4 +6,8 @@
  * Gaps in the sequence are deliberate: a number stays retired even when the change that took it
  * never shipped, so a version cited in a baseline or a record means exactly one pack, ever.
  */
-export const PACK_VERSION = "11"
+export const PACK_VERSION = "12"
+ * v9 was claimed by a change that never shipped; the number is skipped so no two template
+ * meanings ever share a version.
+ */
+export const PACK_VERSION = "12"
