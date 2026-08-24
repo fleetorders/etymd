@@ -10,4 +10,3 @@ export const PACK_VERSION = "12"
  * v9 was claimed by a change that never shipped; the number is skipped so no two template
  * meanings ever share a version.
  */
-export const PACK_VERSION = "12"
