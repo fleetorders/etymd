@@ -4,6 +4,7 @@ import type { Finding, LensReport } from "../engine/finding.js"
 import type { Ledger, LedgerEntry, LedgerStatus } from "../engine/ledger.js"
 import type { LedgerDiff } from "../engine/ledger.js"
 import type { BaselineDrift } from "../core/facts.js"
+import { contextFileLabel } from "../core/context.js"
 import type { ContextBudget, ProjectFacts } from "../core/types.js"
 import { glyph, theme } from "./theme.js"
 
@@ -109,11 +110,15 @@ export function renderContext(budget: ContextBudget, threshold: number): void {
     print(`  ${theme.dim("no always-loaded agent files found — nothing loads every session yet")}`)
     return
   }
-  const pathWidth = maxWidth(budget.files.map((f) => f.path))
+  // Aliases share a line because they share the bytes: one file read under two names is one
+  // entry in the footprint, and printing it twice was how the double count looked plausible.
+  const pathWidth = maxWidth(budget.files.map((f) => contextFileLabel(f)))
   for (const f of budget.files) {
     const heavy = f.words >= threshold
     const words = heavy ? theme.warn(`${f.words} w`) : `${f.words} w`
-    print(`  ${pad(theme.info(f.path), pathWidth)}  ${pad(words, 12)} ${theme.dim(f.role)}`)
+    print(
+      `  ${pad(theme.info(contextFileLabel(f)), pathWidth)}  ${pad(words, 12)} ${theme.dim(f.role)}`,
+    )
   }
   print()
   keyValues([
@@ -128,7 +133,9 @@ export function renderContext(budget: ContextBudget, threshold: number): void {
       `  ${theme.dim("These load every session but are rarely all needed. Move to an on-demand skill:")}`,
     )
     for (const f of budget.extractionCandidates) {
-      print(`  ${glyph.arrow} ${theme.info(f.path)} ${theme.dim(`(${f.words} words)`)}`)
+      print(
+        `  ${glyph.arrow} ${theme.info(contextFileLabel(f))} ${theme.dim(`(${f.words} words)`)}`,
+      )
     }
   } else {
     print(`  ${glyph.ok} ${theme.dim("lean — no single file is heavy enough to extract yet")}`)
