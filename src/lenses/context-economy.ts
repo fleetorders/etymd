@@ -1,5 +1,5 @@
 import { CONFIG_FILE, DEFAULT_CONFIG } from "../core/config.js"
-import { measureContext } from "../core/context.js"
+import { contextFileLabel, measureContext } from "../core/context.js"
 import type { Finding, Lens, LensReport } from "../engine/finding.js"
 
 const LENS_ID = "context-economy"
@@ -21,14 +21,18 @@ export const contextEconomyLens: Lens = {
     const budgets = ctx.config?.config.context ?? DEFAULT_CONFIG.context
     const budget = await measureContext(ctx.root, budgets.perFileWords)
     const findings: Finding[] = []
+    const aliased = budget.files.filter((f) => f.aliases?.length)
 
     for (const f of budget.extractionCandidates) {
+      // The label may name several aliases; the ID stays the primary path alone, because a
+      // ledger entry keyed on it has to survive a repo adding or dropping one of the names.
+      const label = contextFileLabel(f)
       findings.push({
         id: `${LENS_ID}/heavy-file:${f.path}`,
         lens: LENS_ID,
         tier: "gap",
-        claim: `${f.path} loads ${f.words} words (~${f.approxTokens} tokens) into every session`,
-        evidence: [`${f.path}: ${f.words} words`],
+        claim: `${label} loads ${f.words} words (~${f.approxTokens} tokens) into every session`,
+        evidence: [`${label}: ${f.words} words`],
         why: "Reference material that loads every session taxes attention and cost on tasks that never need it.",
         action: "Extract the reference bulk into an on-demand skill/doc and keep a pointer.",
         effort: "M",
@@ -42,7 +46,7 @@ export const contextEconomyLens: Lens = {
         lens: LENS_ID,
         tier: "gap",
         claim: `The always-loaded footprint is ${budget.totalWords} words (~${budget.totalApproxTokens} tokens) — over the ${budgets.totalWords}-word budget`,
-        evidence: budget.files.slice(0, 5).map((f) => `${f.path}: ${f.words}w`),
+        evidence: budget.files.slice(0, 5).map((f) => `${contextFileLabel(f)}: ${f.words}w`),
         why: "Every session pays this before the task begins; instruction-following degrades as the resident context grows.",
         action: "Run `etymd context` for the per-file breakdown and extract the heaviest block.",
         effort: "M",
@@ -58,6 +62,10 @@ export const contextEconomyLens: Lens = {
       status: "ran",
       disclosures: [
         ...(ctx.config?.problems ?? []),
+        ...aliased.map(
+          (f) =>
+            `${contextFileLabel(f)} are one file (same inode) — counted once, at ${f.words} words.`,
+        ),
         `Budgets: ${budgets.perFileWords} words/file, ${budgets.totalWords} words total (${
           budgets.perFileWords === DEFAULT_CONFIG.context.perFileWords &&
           budgets.totalWords === DEFAULT_CONFIG.context.totalWords

@@ -34,18 +34,59 @@ export function isAlwaysAppliedCursorRule(text: string): boolean {
   return /^\s*alwaysApply\s*:\s*true\s*$/m.test(frontmatter)
 }
 
+/**
+ * A stable identity for the BYTES behind a path — device plus inode, so a symlink and its
+ * target, or two hardlinks, resolve to the same key. `stat` follows symlinks, which is the point.
+ *
+ * Null where identity is not knowable (a filesystem reporting no inode, a stat that fails). The
+ * caller then counts the file as its own entry, which is the behaviour that predates this.
+ */
+async function inodeKey(abs: string): Promise<string | null> {
+  try {
+    const st = await fs.stat(abs)
+    return st.ino ? `${st.dev}:${st.ino}` : null
+  } catch {
+    return null
+  }
+}
+
+/** How a file is named in output: the entry's own path, plus any aliases pointing at it. */
+export function contextFileLabel(file: ContextFile): string {
+  return file.aliases?.length ? [file.path, ...file.aliases].join(" → ") : file.path
+}
+
 export async function measureContext(
   root: string,
   perFileWords: number = EXTRACTION_THRESHOLD,
 ): Promise<ContextBudget> {
   const files: ContextFile[] = []
+  /**
+   * Two instruction names are routinely ONE file — `AGENTS.md` symlinked to `CLAUDE.md` is the
+   * common shape, because most harnesses read one name and some read the other. The session
+   * loads those bytes once, so the footprint is that file's words once. Counting both inflates
+   * the total enough to manufacture an over-budget finding out of nothing, and fires the
+   * heavy-file finding twice for a single file — a measurement this lens exists to report
+   * honestly cannot be an artefact of how the repo spells its contract.
+   */
+  const byInode = new Map<string, ContextFile>()
+
+  const record = async (rel: string, role: string, text: string) => {
+    const words = wordCount(text)
+    const key = await inodeKey(path.join(root, rel))
+    const seen = key ? byInode.get(key) : undefined
+    if (seen) {
+      seen.aliases = [...(seen.aliases ?? []), rel]
+      return
+    }
+    const file: ContextFile = { path: rel, role, words, approxTokens: approxTokens(words) }
+    if (key) byInode.set(key, file)
+    files.push(file)
+  }
 
   for (const spec of ALWAYS_LOADED) {
-    const abs = path.join(root, spec.path)
-    const text = await readText(abs)
+    const text = await readText(path.join(root, spec.path))
     if (text === null) continue
-    const words = wordCount(text)
-    files.push({ path: spec.path, role: spec.role, words, approxTokens: approxTokens(words) })
+    await record(spec.path, spec.role, text)
   }
 
   const rulesDir = path.join(root, ".cursor", "rules")
@@ -55,13 +96,7 @@ export async function measureContext(
         if (!entry.endsWith(".mdc") && !entry.endsWith(".md")) continue
         const text = await readText(path.join(rulesDir, entry))
         if (text === null || !isAlwaysAppliedCursorRule(text)) continue
-        const words = wordCount(text)
-        files.push({
-          path: `.cursor/rules/${entry}`,
-          role: "Cursor rule (always applied)",
-          words,
-          approxTokens: approxTokens(words),
-        })
+        await record(`.cursor/rules/${entry}`, "Cursor rule (always applied)", text)
       }
     } catch {
       /* ignore */
