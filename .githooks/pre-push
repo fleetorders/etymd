@@ -24,11 +24,24 @@ run_gate npm run typecheck || exit 1
 echo "› npm run test"
 run_gate npm run test || exit 1
 # Shell correctness. Scripts are discovered by shebang over TRACKED files at push time, so a
-# script added later is covered without regenerating this hook.
+# script added later is covered without regenerating this hook. zsh is NOT in the checked set:
+# the checker cannot parse it (SC1071 is a parser-level error no inline directive can silence),
+# so checking it would fail every push on the parser, not on the script. Excluded — and said so
+# at run time below, because a coverage hole that is silent is indistinguishable from coverage.
+#
+# "the checker", not its name, on purpose: a comment whose first word is that name is read as
+# a DIRECTIVE, and an unparseable directive is itself an error (SC1072/SC1073). A hook that
+# explains why it skips a shell dialect must not break the checker while doing it.
 if command -v shellcheck >/dev/null 2>&1; then
   scripts=$(git ls-files -z \
-    | xargs -0 -I{} sh -c 'head -1 "{}" 2>/dev/null | grep -qE "^#!.*[/ ](ba|da|z)?sh( |$)" && echo "{}"' \
+    | xargs -0 -I{} sh -c 'head -1 "{}" 2>/dev/null | grep -qE "^#!.*[/ ](ba|da)?sh( |$)" && echo "{}"' \
     | sort)
+  zsh_scripts=$(git ls-files -z \
+    | xargs -0 -I{} sh -c 'head -1 "{}" 2>/dev/null | grep -qE "^#!.*[/ ]zsh( |$)" && echo "{}"' \
+    | sort)
+  if [ -n "$zsh_scripts" ]; then
+    echo "› shellcheck: $(printf '%s\n' "$zsh_scripts" | wc -l | tr -d ' ') zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
+  fi
   if [ -n "$scripts" ]; then
     echo "› shellcheck ($(printf '%s\n' "$scripts" | wc -l | tr -d ' ') scripts, blocking at severity=warning)"
     printf '%s\n' "$scripts" | xargs shellcheck -S warning || {
@@ -60,8 +73,11 @@ fi
 # never blocks the push): the blocking decision belongs at commit time, where the fix is cheap.
 GATE="${CONTENT_GATE:-$(if [ -x ./dist/cli.js ]; then echo ./dist/cli.js; else command -v etymd || true; fi)}"
 if [ -x "$GATE" ]; then
-  "$GATE" screen --tree --advisory || true
+  if ! "$GATE" screen --tree --advisory; then
+    "$GATE" screen --help >/dev/null 2>&1 ||
+      echo "etymd: this checker does not understand 'screen' (needs etymd 0.11+) — upgrade it, or set CONTENT_GATE to a checker that does." >&2
+  fi
 fi
 
 exit 0
-# etymd:generated pack-v11 a753a8033f9cf198
+# etymd:generated pack-v12 06afa443ef89caff

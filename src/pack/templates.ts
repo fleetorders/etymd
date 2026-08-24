@@ -433,9 +433,13 @@ function shellcheckStep(): string {
   return `
 # Shell correctness. Scripts are discovered by shebang over TRACKED files at push time, so a
 # script added later is covered without regenerating this hook. zsh is NOT in the checked set:
-# shellcheck cannot parse it (SC1071 is a parser-level error no inline directive can silence),
+# the checker cannot parse it (SC1071 is a parser-level error no inline directive can silence),
 # so checking it would fail every push on the parser, not on the script. Excluded — and said so
 # at run time below, because a coverage hole that is silent is indistinguishable from coverage.
+#
+# "the checker", not its name, on purpose: a comment whose first word is that name is read as
+# a DIRECTIVE, and an unparseable directive is itself an error (SC1072/SC1073). A hook that
+# explains why it skips a shell dialect must not break the checker while doing it.
 if command -v shellcheck >/dev/null 2>&1; then
   scripts=$(git ls-files -z \\
     | xargs -0 -I{} sh -c 'head -1 "{}" 2>/dev/null | grep -qE "^#!.*[/ ](ba|da)?sh( |$)" && echo "{}"' \\
