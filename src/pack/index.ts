@@ -8,4 +8,5 @@ export {
   generateAgentsMd,
   generatePreCommitHook,
   generatePrePushHook,
+  isSelfBuildRepo,
 } from "./templates.js"
