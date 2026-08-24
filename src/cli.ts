@@ -65,12 +65,13 @@ program
 
 program
   .command("init")
-  .description("Onboard the truth guard: approve the baseline; scaffold AGENTS.md only if missing")
+  .description("Onboard the truth guard: approve the baseline; scaffold AGENTS.md only if asked")
   .option("-y, --yes", "accept defaults without prompting (never overwrites)")
+  .option("--with-agents", "also scaffold a minimal AGENTS.md where none exists (off by default)")
   .action((opts, cmd) =>
     action(async () => {
       const { run } = await import("./commands/init.js")
-      await run({ cwd: resolveCwd(cmd), yes: opts.yes })
+      await run({ cwd: resolveCwd(cmd), yes: opts.yes, withAgents: opts.withAgents })
     }),
   )
 

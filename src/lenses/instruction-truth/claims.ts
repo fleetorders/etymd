@@ -399,6 +399,37 @@ export const KNOWN_DOC_REFS = [
   "GEMINI.md",
 ]
 
-export function extractDocRefs(text: string): string[] {
-  return KNOWN_DOC_REFS.filter((name) => text.includes(name))
+// The characters a path token is built from — walking back over these from a mention reaches the
+// token's head, which is where a `~` marking a HOME path would sit.
+const PATH_TOKEN_CHARS = /[A-Za-z0-9_.$~/-]/
+
+export interface DocRefs {
+  /** Well-known docs the file points at as files of THIS repo. */
+  refs: string[]
+  /** Mentions embedded in `~/`-home paths — outside the repo, unverifiable from it. */
+  tildeSkipped: number
+}
+
+/**
+ * A bare substring match is not enough: `~/.claude/CLAUDE.md` mentions CLAUDE.md but points at
+ * the reader's machine, never at the repo — treating it as a repo ref accused a true sentence of
+ * lying (the home file existed; the repo never had one). A home-path occurrence is skipped and
+ * counted like the absolute tokens below; one ordinary occurrence still makes the doc a claim.
+ */
+export function extractDocRefs(text: string): DocRefs {
+  const refs: string[] = []
+  let tildeSkipped = 0
+  for (const name of KNOWN_DOC_REFS) {
+    let claimed = false
+    let at = text.indexOf(name)
+    while (at !== -1) {
+      let head = at
+      while (head > 0 && PATH_TOKEN_CHARS.test(text[head - 1] as string)) head -= 1
+      if (text[head] === "~") tildeSkipped += 1
+      else claimed = true
+      at = text.indexOf(name, at + name.length)
+    }
+    if (claimed) refs.push(name)
+  }
+  return { refs, tildeSkipped }
 }

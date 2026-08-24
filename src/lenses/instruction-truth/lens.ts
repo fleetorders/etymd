@@ -170,6 +170,7 @@ export const instructionTruthLens: Lens = {
       (await pathExists(path.join(root, "package.json"))) || facts.packages.length > 0
 
     let totalFilteredSkipped = 0
+    let totalTildeSkipped = 0
     let binaryResolved = 0
     let unverifiableCommands = 0
     let gitignoredSkipped = 0
@@ -272,7 +273,9 @@ export const instructionTruthLens: Lens = {
       }
 
       // Cross-references to well-known docs must resolve.
-      for (const ref of extractDocRefs(file.text)) {
+      const { refs: docRefs, tildeSkipped } = extractDocRefs(file.text)
+      totalTildeSkipped += tildeSkipped
+      for (const ref of docRefs) {
         if (await pathExists(path.join(root, ref))) continue
         findings.push(
           finding({
@@ -391,6 +394,11 @@ export const instructionTruthLens: Lens = {
         `${placeholderSkipped} path claim(s) are naming stand-ins (e.g. \`my-custom-skill\`) rather than real references; skipped, not flagged.`,
       )
     }
+    if (totalTildeSkipped) {
+      disclosures.push(
+        `${totalTildeSkipped} well-known doc mention(s) sit inside \`~/\` home paths (e.g. \`~/.claude/CLAUDE.md\`) — machine-global files, not this repo's; skipped, not flagged.`,
+      )
+    }
     if (stateDocs.length) {
       disclosures.push(
         `Checked ${stateDocs.length} state document(s) for command, path, and decision-reference claims (same skip classes as instruction files); decision ids resolved against ${
@@ -424,7 +432,7 @@ export const instructionTruthLens: Lens = {
       )
     }
     disclosures.push(
-      `Checked ${files.length} instruction file(s); commands resolved against root + ${facts.packages.length} workspace manifest(s) plus installed binaries; paths matched against root and package roots. Heuristics: workspace-filtered commands skipped (${totalFilteredSkipped}); tokens without a recognized extension treated as prose (a dir claim needs a trailing slash); gitignored claims unverifiable; create-this and stand-in path claims skipped; absolute/globbed/placeholder tokens skipped; framework-pattern staleness not checked.`,
+      `Checked ${files.length} instruction file(s); commands resolved against root + ${facts.packages.length} workspace manifest(s) plus installed binaries; paths matched against root and package roots. Heuristics: workspace-filtered commands skipped (${totalFilteredSkipped}); tokens without a recognized extension treated as prose (a dir claim needs a trailing slash); gitignored claims unverifiable; create-this and stand-in path claims skipped; absolute/globbed/placeholder tokens skipped; doc mentions inside \`~/\` home paths skipped; framework-pattern staleness not checked.`,
     )
 
     return {

@@ -1,6 +1,7 @@
 import type { Finding, Lens, LensReport } from "../../engine/finding.js"
 import { isCiEnvironment } from "../../core/util.js"
 import { buildGateInventory, type GateInventory, type GateTool } from "./inventory.js"
+import { probeScreener, type ScreenerProbe } from "./screener.js"
 
 const LENS_ID = "gate-integrity"
 
@@ -197,6 +198,44 @@ function localToolInHook(inv: GateInventory, tool: GateTool): boolean {
   )
 }
 
+/**
+ * The content screen is the one gate whose runner is resolved at RUN time from outside the repo,
+ * so it is the one gate whose reachability cannot be read off the file. Ask it.
+ *
+ * Only one outcome is a finding: a runner resolved and did not understand `screen`. No runner
+ * installed is the pack's designed no-op (the hook guards on `[ -x "$GATE" ]`), and an
+ * unperformed probe claims nothing — both are disclosed instead.
+ */
+export function deriveScreenerFindings(probe: ScreenerProbe, disclosures: string[]): Finding[] {
+  if (!probe.present) return []
+  if (probe.skipped) {
+    disclosures.push(`Content screen: ${probe.skipped}`)
+    return []
+  }
+  if (probe.answersScreen !== false) return []
+
+  const via =
+    probe.source === "CONTENT_GATE"
+      ? "resolved from the CONTENT_GATE override"
+      : probe.source === "dev-build"
+        ? "resolved to this repo's own ./dist/cli.js build"
+        : "resolved from PATH"
+  return [
+    finding({
+      id: `${LENS_ID}/content-screen-unrunnable`,
+      tier: "risk",
+      kind: "truth",
+      claim: `The content screen resolves to \`${probe.runner}\`, which does not understand \`screen\` — the gate cannot run`,
+      evidence: [...probe.doors, `${probe.runner} screen --help → failed (${via})`],
+      why: "The commit door fails closed on an error that explains nothing, and the push door — advisory by design — skips the whole-tree pass in silence, so the repo reads as screened when nothing screened it.",
+      action:
+        "Install or upgrade etymd (`screen` needs 0.11+), or point CONTENT_GATE at a checker that provides it, then re-run `etymd gates` to refresh the hooks.",
+      effort: "S",
+      confidence: "high",
+    }),
+  ]
+}
+
 export const gateIntegrityLens: Lens = {
   id: LENS_ID,
   version: "1",
@@ -244,6 +283,7 @@ export const gateIntegrityLens: Lens = {
 
     // Derive before returning: it may add disclosures of its own (e.g. the CI hook-wiring skip).
     const findings = deriveGateFindings(inv, disclosures)
+    findings.push(...deriveScreenerFindings(await probeScreener(ctx.root, ctx.facts), disclosures))
 
     return {
       lens: LENS_ID,
