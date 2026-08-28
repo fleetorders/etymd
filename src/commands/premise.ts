@@ -9,7 +9,7 @@ import { theme } from "../ui/theme.js"
 export interface PremiseOptions {
   cwd: string
   task?: string
-  /** Read the task from a file — a plan, an issue, a prompt — instead of the argument. */
+  /** Read the task from a file — a plan, an issue, a prompt — instead of the argument; `-` = stdin. */
   file?: string
   json?: boolean
   /** Skip writing/printing the agent brief. */
@@ -18,13 +18,25 @@ export interface PremiseOptions {
   failOn?: string
 }
 
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = []
+  for await (const chunk of process.stdin) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk)
+  }
+  return Buffer.concat(chunks).toString("utf8")
+}
+
 export async function run(opts: PremiseOptions): Promise<void> {
   // Validate the gate tier BEFORE anything runs — a typo must never report success.
   const failOn = opts.failOn === undefined ? undefined : parseFailOnTier(opts.failOn)
 
   let task = opts.task
   let source = "argument"
-  if (opts.file) {
+  if (opts.file === "-") {
+    // Piped in by a hook or a pipeline — no temp file needed.
+    task = await readStdin()
+    source = "stdin"
+  } else if (opts.file) {
     const abs = path.resolve(opts.cwd, opts.file)
     const text = await readText(abs)
     if (text === null) throw new Error(`could not read the task file: ${opts.file}`)
@@ -32,7 +44,9 @@ export async function run(opts: PremiseOptions): Promise<void> {
     source = opts.file
   }
   if (!task?.trim()) {
-    throw new Error('give the task as an argument (etymd premise "…") or with --file <path>')
+    throw new Error(
+      'give the task as an argument (etymd premise "…"), with --file <path>, or on stdin (--file -)',
+    )
   }
 
   const result = await runPremise({

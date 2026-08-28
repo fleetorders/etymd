@@ -2,10 +2,16 @@ import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { run as premiseCommand } from "../src/commands/premise.js"
 import { meetsFailOn } from "../src/engine/finding.js"
-import { PREMISE_BRIEF_FILE, promoteBareTokens, runPremise } from "../src/engine/premise.js"
+import {
+  PREMISE_BRIEF_FILE,
+  promoteBareTokens,
+  renderBrief,
+  runPremise,
+} from "../src/engine/premise.js"
 
 let dir: string
 
@@ -32,10 +38,13 @@ async function fixture() {
   await write("DECISIONS.md", "# Decisions\n\n## D-001 — 2026-01-01 — first\n\nScope: repo.\n")
 }
 
+const ctx = { rootedDirs: new Set(["src", "docs"]) }
+
 describe("promoteBareTokens", () => {
-  it("wraps bare paths, dirs and package-manager invocations, leaving code spans alone", () => {
-    const out = promoteBareTokens(
+  it("wraps bare paths, dirs and `run` invocations, leaving code spans alone", () => {
+    const { text: out, skips } = promoteBareTokens(
       "Fix src/a.ts and docs/design/, then run npm run build; keep `src/b.ts` and Node.js as is. Skim docs/ too.",
+      ctx,
     )
     expect(out).toContain("`src/a.ts`")
     expect(out).toContain("`docs/design/`")
@@ -46,12 +55,65 @@ describe("promoteBareTokens", () => {
     expect(out).not.toContain("``src/b.ts``")
     // A bare file name without a directory is prose unless the author backticks it.
     expect(out).not.toContain("`Node.js`")
+    expect(skips).toEqual({ bareInvocations: 0, proseScripts: 0, hostnameLike: 0, unrootedDirs: 0 })
   })
 
   it("keeps trailing punctuation outside the span and skips URLs", () => {
-    const out = promoteBareTokens("Look at (src/x/y.ts). See https://example.com/a/b.ts too.")
+    const { text: out } = promoteBareTokens(
+      "Look at (src/x/y.ts). See https://example.com/a/b.ts too.",
+      ctx,
+    )
     expect(out).toContain("(`src/x/y.ts`).")
     expect(out).not.toContain("`https://example.com/a/b.ts`")
+  })
+
+  it("reads a bare `pnpm X` / `bun X` / `yarn X` in prose as a phrase, and counts it", () => {
+    const { text: out, skips } = promoteBareTokens(
+      "Migrate the pnpm monorepo to the bun runtime; regenerate the yarn lockfile; then npm run build and npm test.",
+      ctx,
+    )
+    expect(out).not.toContain("`pnpm monorepo`")
+    expect(out).not.toContain("`bun runtime`")
+    expect(out).not.toContain("`yarn lockfile`")
+    expect(out).toContain("`npm run build`")
+    expect(out).toContain("`npm test`")
+    expect(skips.bareInvocations).toBe(3)
+  })
+
+  it("leaves a function word or a one-letter stand-in after `run` as prose", () => {
+    const { text: out, skips } = promoteBareTokens(
+      "Make npm run the tests pass; the docs say `npm run X` where X is any script, e.g. pnpm run x.",
+      ctx,
+    )
+    expect(out).not.toContain("`npm run the`")
+    expect(out).not.toContain("`pnpm run x`")
+    // The author's own code span is untouched.
+    expect(out).toContain("`npm run X`")
+    expect(skips.proseScripts).toBe(2)
+  })
+
+  it("reads a host-shaped first segment as a URL, not a repo path", () => {
+    const { text: out, skips } = promoteBareTokens(
+      "See github.com/acme/repo/blob/main/src/x.ts and docs.example.co.uk/guide.md; compare v1.2/notes.md and .github/workflows/ci.yml.",
+      ctx,
+    )
+    expect(out).not.toContain("`github.com/acme/repo/blob/main/src/x.ts`")
+    expect(out).not.toContain("`docs.example.co.uk/guide.md`")
+    // A dotted segment that is not host-shaped (version, hidden dir) still promotes.
+    expect(out).toContain("`v1.2/notes.md`")
+    expect(out).toContain("`.github/workflows/ci.yml`")
+    expect(skips.hostnameLike).toBe(2)
+  })
+
+  it("promotes a directory claim only when it starts where a real directory does", () => {
+    const { text: out, skips } = promoteBareTokens(
+      "The input/output/ flow (read/write/ too) lives beside src/legacy/ now.",
+      ctx,
+    )
+    expect(out).not.toContain("`input/output/`")
+    expect(out).not.toContain("`read/write/`")
+    expect(out).toContain("`src/legacy/`")
+    expect(skips.unrootedDirs).toBe(2)
   })
 })
 
@@ -72,8 +134,16 @@ describe("runPremise", () => {
     expect(byId["premise/dead-decision-ref:task:D-009"]?.tier).toBe("gap")
     // The existing path is reported as checked and present, not as a finding.
     expect(result.entities).toContainEqual({ kind: "path", value: "src/real.ts", exists: true })
+    expect(result.entities).toContainEqual({ kind: "decision", value: "D-009", exists: false })
     expect(ids).not.toContain("premise/stale-path:task:src/real.ts")
     expect(meetsFailOn(result.findings, "risk")).toBe(true)
+  })
+
+  it("ranks a missing directory the task is about as risk when it starts at a real one", async () => {
+    await fixture()
+    const result = await runPremise({ root: dir, task: "Delete src/legacy/ and its tests." })
+    expect(result.findings.map((f) => f.id)).toEqual(["premise/stale-path:task:src/legacy"])
+    expect(result.findings[0]?.tier).toBe("risk")
   })
 
   it("reports a clean task with no findings and the premises handed to the agent", async () => {
@@ -84,6 +154,22 @@ describe("runPremise", () => {
     expect(result.brief).toContain("Premises only you can verify")
     expect(result.brief).toContain("Tidy src/real.ts")
     expect(result.disclosures.some((d) => d.includes("no ledger"))).toBe(true)
+  })
+
+  it("does not accuse prose — and discloses every class it read as prose", async () => {
+    await fixture()
+    const result = await runPremise({
+      root: dir,
+      task: "Migrate the pnpm monorepo; see github.com/acme/repo/src/x.ts; the input/output/ flow; make npm run the tests pass; read ~/.claude/CLAUDE.md first, then AGENTS.md.",
+    })
+    expect(result.findings).toEqual([])
+    expect(result.entities).toEqual([{ kind: "doc", value: "AGENTS.md", exists: true }])
+    const joined = result.disclosures.join("\n")
+    expect(joined).toMatch(/1 bare `pnpm X`/)
+    expect(joined).toMatch(/1 `… run X` mention/)
+    expect(joined).toMatch(/1 slash token\(s\) start with a host name/)
+    expect(joined).toMatch(/1 slash-joined phrase/)
+    expect(joined).toMatch(/1 well-known doc mention\(s\) sit inside `~\/` home paths/)
   })
 
   it("names the nothing-to-check case instead of looking clean by silence", async () => {
@@ -115,5 +201,46 @@ describe("runPremise", () => {
     const result = await runPremise({ root: dir, task: "Read src/real.ts", source: "PLAN.md" })
     expect(result.source).toBe("PLAN.md")
     expect(result.schema).toBe("premise/1")
+  })
+})
+
+describe("renderBrief", () => {
+  it("keeps the heading on one line for a multi-line task", () => {
+    const task = "Plan:\n\n- run npm run build\n\n```sh\nnpm run build\n```"
+    const [heading = ""] = renderBrief(task, [], []).split("\n")
+    expect(heading).toBe("# Premise brief — Plan: - run npm run build ```sh npm run build ```")
+  })
+})
+
+describe("premise command", () => {
+  it("reads the task with --file, reports it as the source, and gates on --fail-on", async () => {
+    await fixture()
+    await write("PLAN.md", "Fix src/legacy/foo.test.ts\n")
+    const out: string[] = []
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      out.push(String(chunk))
+      return true
+    })
+    const exitBefore = process.exitCode
+    try {
+      await premiseCommand({ cwd: dir, file: "PLAN.md", json: true, brief: false, failOn: "risk" })
+      const result = JSON.parse(out.join(""))
+      expect(result.source).toBe("PLAN.md")
+      expect(result.findings.map((f: { id: string }) => f.id)).toEqual([
+        "premise/stale-path:task:src/legacy/foo.test.ts",
+      ])
+      expect(process.exitCode).toBe(1)
+    } finally {
+      spy.mockRestore()
+      process.exitCode = exitBefore
+    }
+  })
+
+  it("refuses a bad --fail-on tier before running, and an empty task", async () => {
+    await fixture()
+    await expect(premiseCommand({ cwd: dir, task: "x", failOn: "bogus" })).rejects.toThrow(
+      /--fail-on must be/,
+    )
+    await expect(premiseCommand({ cwd: dir, task: "  " })).rejects.toThrow(/--file -/)
   })
 })

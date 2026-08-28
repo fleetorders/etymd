@@ -138,7 +138,10 @@ program
   .description(
     "Before acting on a task: verify what it names against the repo, then brief the agent on what only it can verify",
   )
-  .option("--file <path>", "read the task from a file (a plan, an issue, a prompt)")
+  .option(
+    "--file <path>",
+    "read the task from a file (a plan, an issue, a prompt); `-` reads stdin",
+  )
   .option("--json", "print the machine-stable result as JSON (schema premise/1)")
   .option("--no-brief", "do not write or print the agent brief")
   .option(
