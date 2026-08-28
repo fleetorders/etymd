@@ -213,12 +213,12 @@ export function extractCommandClaims(text: string): CommandClaims {
   return { scripts, filteredSkipped }
 }
 
-const PATH_TOKEN_RE = /^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.$-]+)+\/?$/
+export const PATH_TOKEN_RE = /^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.$-]+)+\/?$/
 
 // A file claim needs a RECOGNIZED extension, not just a dot suffix: Better-Auth hook notation
 // (`create/update.after`) reads as slash-joined prose with a dotted stage, and any bare
 // "ends in .xyz" rule accuses it. Unknown extensions fall back to prose — precision over recall.
-const KNOWN_EXTENSIONS = new Set([
+export const KNOWN_EXTENSIONS = new Set([
   ...(
     "ts tsx cts mts js jsx cjs mjs json jsonc json5 md mdx mdc yml yaml toml ini cfg conf " +
     "env sh bash zsh fish ps1 bat cmd css scss sass less html htm xml svg sql prisma graphql " +

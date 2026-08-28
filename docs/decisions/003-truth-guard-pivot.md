@@ -48,6 +48,9 @@ have ended the initiative).
 Everything ships under this objective or not at all. Gate-integrity folds under it naturally: a
 CI config is a claim the workflow makes; the lens verifies it.
 
+_Widened by one notch in [010](010-premise-the-task-is-an-instruction.md): the task an agent is
+handed is an instruction too. Where the two disagree on what counts as an instruction, 010 wins._
+
 ## The rename
 
 **clothaid → etymd.** From Greek _étymon_ (ἔτυμον) — "the TRUE sense of a word" (the root of

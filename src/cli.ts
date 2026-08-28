@@ -30,7 +30,7 @@ const program = new Command()
 program
   .name("etymd")
   .description(
-    "Keep your agent instructions true — verify AGENTS.md & friends against the actual repo, on a budget, with drift caught over time.",
+    "Keep your agent instructions true — verify AGENTS.md & friends, and the task you hand an agent, against the actual repo, on a budget, with drift caught over time.",
   )
   .version(VERSION, "-v, --version")
   .option("--cwd <dir>", "run against a different project directory", process.cwd())
@@ -129,6 +129,36 @@ program
     action(async () => {
       const { run } = await import("./commands/brief.js")
       await run({ cwd: resolveCwd(cmd), human: opts.human })
+    }),
+  )
+
+program
+  .command("premise")
+  .argument("[task]", "the task you are about to hand an agent, quoted")
+  .description(
+    "Before acting on a task: verify what it names against the repo, then brief the agent on what only it can verify",
+  )
+  .option(
+    "--file <path>",
+    "read the task from a file (a plan, an issue, a prompt); `-` reads stdin",
+  )
+  .option("--json", "print the machine-stable result as JSON (schema premise/1)")
+  .option("--no-brief", "do not write or print the agent brief")
+  .option(
+    "--fail-on <tier>",
+    "exit non-zero when findings at/above this tier exist (risk|gap|polish)",
+  )
+  .action((task, opts, cmd) =>
+    action(async () => {
+      const { run } = await import("./commands/premise.js")
+      await run({
+        cwd: resolveCwd(cmd),
+        task,
+        file: opts.file,
+        json: opts.json,
+        brief: opts.brief,
+        failOn: opts.failOn,
+      })
     }),
   )
 

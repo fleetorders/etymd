@@ -15,7 +15,8 @@ You wrote rules for your AI months ago. Since then a script got renamed, a folde
 changed — and the AI still trusts every word. The file never complains when it goes stale; it just
 keeps instructing, confidently, and you live with the results.
 
-Etymd reads those instruction files and checks every claim in them against your actual project.
+Etymd reads those instruction files — and, when you ask, the task you are about to hand an agent —
+and checks every claim against your actual project.
 
 One command, run in your project's folder (needs Node ≥ 18.17, nothing else): `npx etymd audit`.
 Here it is on a small demo project whose AGENTS.md still tells the AI to run `npm run start` and
@@ -110,6 +111,7 @@ cd your-project
 npx etymd audit         # verify every instruction claim against the repo
 npx etymd init          # opt in to drift: approve the baseline (+ scaffold AGENTS.md only if you have none)
 npx etymd audit --fail-on risk   # the CI gate
+npx etymd premise "fix the flaky test in src/legacy/foo.test.ts"   # is this the right task?
 ```
 
 `audit` needs no setup — without `init` you get the full findings report and lose only drift
@@ -131,6 +133,14 @@ gate into a pipeline, see [In CI](#in-ci).
 - **Cross-references** — pointer chains (`CLAUDE.md` → `AGENTS.md` → state docs) must resolve.
 - **Drift vs baseline** — documented commands/artifacts/layout that existed at approval and are
   now gone.
+
+**`premise`** (via `etymd premise`) — the task itself is an instruction. Before an agent acts on
+it, every path, script, well-known doc and decision id the task names is checked with the same
+rules instruction files get. A path the task is _about_ and that does not exist ranks as **risk**:
+the task would solve the wrong problem precisely. What cannot be read from files — that the named
+things are the ones meant, that the mechanism the task assumes actually runs, that the state it
+assumes holds — is handed to the agent in a brief, never guessed at. Nothing is remembered between
+runs.
 
 **`gate-integrity`** — a CI config is a claim too: checks enforced only in CI (failures surface a
 slow pipeline after the agent finished — `etymd gates` generates the local mirror), checks only in
@@ -161,24 +171,25 @@ personal and guarded-side repos. See [the fleet manifest](#the-fleet-manifest-ex
 
 ## Commands
 
-| Command                          | What it does                                                                                                                                                                                            |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `etymd audit`                    | Verify every claim; ranked findings (risk → gap → polish) + ledger diff. `--lens`, `--truth`, `--json`, `--no-ledger`, `--fail-on <tier>`.                                                              |
-| `etymd init`                     | Onboard: approve the committed baseline; scaffold a minimal AGENTS.md **only if missing**. Never overwrites.                                                                                            |
-| `etymd doctor`                   | Alias for `audit --truth`.                                                                                                                                                                              |
-| `etymd context`                  | The economy view: per-file always-loaded footprint + extraction candidates.                                                                                                                             |
-| `etymd gates`                    | Install local git-hook gates (pre-commit / commit-msg / pre-push, plus a publish screen where something ships) built from your own check scripts — and from the repo's shell surface, where it has one. |
-| `etymd screen`                   | Content screen: find text that must never be published. Four scopes — `--staged`, `--message`, `--tree`, `--dir`. Bring your own patterns; etymd ships none.                                            |
-| `etymd scan`                     | The deterministic reckoning behind everything. `--json`.                                                                                                                                                |
-| `etymd brief`                    | A grounded briefing your in-repo agent completes to author the semantic layer.                                                                                                                          |
-| `etymd approve`                  | Refresh the committed baseline non-interactively after intentional structural changes.                                                                                                                  |
-| `etymd ledger`                   | The findings memory: every tracked finding with status and history.                                                                                                                                     |
-| `etymd dismiss`                  | `dismiss <id> --reason <text>` — a dismissed finding never resurfaces without regressing.                                                                                                               |
-| `etymd accept`                   | `accept <id>` — record a finding as accepted reality; visible in the ledger, out of the report.                                                                                                         |
-| `etymd fleet`                    | Sweep every project in a fleet manifest: read-only per-repo audits + manifest/wall checks. `--manifest`, `--only`, `--profile`, `--truth`, `--persist-ledgers`, `--json`, `--fail-on`.                  |
-| `etymd fleet check`              | Validate the manifest pair alone (no lenses): dangling mappings, duplicate names, privacy leaks, undeclared trust, machine paths. Non-zero exit on any finding.                                         |
-| `etymd fleet add`                | `add <dir>` — register a project: scans it, asks for what no scan can derive, and refuses to write an entry missing a mandatory field. `--name`, `--kind`, `--profile`, `--trust`, `-y`.                |
-| `etymd fleet dismiss` / `accept` | `<name> <id>` — resolve a project's finding from any cwd; guarded findings persist beside the manifest, never in the guarded worktree.                                                                        |
+| Command                          | What it does                                                                                                                                                                                                      |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `etymd audit`                    | Verify every claim; ranked findings (risk → gap → polish) + ledger diff. `--lens`, `--truth`, `--json`, `--no-ledger`, `--fail-on <tier>`.                                                                        |
+| `etymd init`                     | Onboard: approve the committed baseline; scaffold a minimal AGENTS.md **only if missing**. Never overwrites.                                                                                                      |
+| `etymd doctor`                   | Alias for `audit --truth`.                                                                                                                                                                                        |
+| `etymd context`                  | The economy view: per-file always-loaded footprint + extraction candidates.                                                                                                                                       |
+| `etymd gates`                    | Install local git-hook gates (pre-commit / commit-msg / pre-push, plus a publish screen where something ships) built from your own check scripts — and from the repo's shell surface, where it has one.           |
+| `etymd screen`                   | Content screen: find text that must never be published. Four scopes — `--staged`, `--message`, `--tree`, `--dir`. Bring your own patterns; etymd ships none.                                                      |
+| `etymd scan`                     | The deterministic reckoning behind everything. `--json`.                                                                                                                                                          |
+| `etymd brief`                    | A grounded briefing your in-repo agent completes to author the semantic layer.                                                                                                                                    |
+| `etymd premise`                  | `premise "<task>"` — is this the right task? What it names, verified against the repo; a brief for what only the agent can verify. `--file` (`-` = stdin), `--json`, `--no-brief`, `--fail-on <tier>`. No ledger. |
+| `etymd approve`                  | Refresh the committed baseline non-interactively after intentional structural changes.                                                                                                                            |
+| `etymd ledger`                   | The findings memory: every tracked finding with status and history.                                                                                                                                               |
+| `etymd dismiss`                  | `dismiss <id> --reason <text>` — a dismissed finding never resurfaces without regressing.                                                                                                                         |
+| `etymd accept`                   | `accept <id>` — record a finding as accepted reality; visible in the ledger, out of the report.                                                                                                                   |
+| `etymd fleet`                    | Sweep every project in a fleet manifest: read-only per-repo audits + manifest/wall checks. `--manifest`, `--only`, `--profile`, `--truth`, `--persist-ledgers`, `--json`, `--fail-on`.                            |
+| `etymd fleet check`              | Validate the manifest pair alone (no lenses): dangling mappings, duplicate names, privacy leaks, undeclared trust, machine paths. Non-zero exit on any finding.                                                   |
+| `etymd fleet add`                | `add <dir>` — register a project: scans it, asks for what no scan can derive, and refuses to write an entry missing a mandatory field. `--name`, `--kind`, `--profile`, `--trust`, `-y`.                          |
+| `etymd fleet dismiss` / `accept` | `<name> <id>` — resolve a project's finding from any cwd; guarded findings persist beside the manifest, never in the guarded worktree.                                                                                  |
 
 `--cwd <dir>` targets another directory. Read-only probing of any repo leaves **zero trace**
 (`audit --no-ledger` writes nothing).
