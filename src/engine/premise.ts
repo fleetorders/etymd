@@ -1,3 +1,4 @@
+import { promises as fs } from "node:fs"
 import path from "node:path"
 
 import { ETYMD_DIR } from "../core/facts.js"
@@ -5,17 +6,15 @@ import { scanProject } from "../core/scan.js"
 import { pathExists } from "../core/util.js"
 import {
   buildTruthEnv,
+  checkDecisionRefs,
   checkDocRefs,
   checkTextClaims,
   emptyCounters,
   loadDecisionLedger,
+  type ExaminedClaim,
+  type TruthEnv,
 } from "../lenses/instruction-truth/checks.js"
-import {
-  extractCommandClaims,
-  extractDecisionRefs,
-  extractDocRefs,
-  extractPathClaims,
-} from "../lenses/instruction-truth/claims.js"
+import { KNOWN_EXTENSIONS, PATH_TOKEN_RE } from "../lenses/instruction-truth/claims.js"
 import { rankFindings, type Finding } from "./finding.js"
 
 // `etymd premise` — the task an agent is about to be handed is an instruction too (decision 010).
@@ -30,18 +29,14 @@ export const PREMISE_BRIEF_FILE = path.join(ETYMD_DIR, "premise-brief.md")
 const TASK_LABEL = "task"
 const MAX_PATH_FINDINGS = 15
 
-export interface PremiseEntity {
-  kind: "script" | "path" | "doc" | "decision"
-  value: string
-  /** `null` = could not be checked from the repo (disclosed), never a guess. */
-  exists: boolean | null
-}
+/** One thing the task named, found or not — the checked half of the brief. */
+export type PremiseEntity = ExaminedClaim
 
 export interface PremiseResult {
   /** The `--json` schema version. */
   schema: "premise/1"
   task: string
-  /** Where the task came from: `argument` or the file path it was read from. */
+  /** Where the task came from: `argument`, `stdin`, or the file path it was read from. */
   source: string
   /** The project name from the reckoning. */
   name: string
@@ -62,40 +57,124 @@ export interface PremiseOptions {
   writeBrief?: boolean
 }
 
+/** What the prose promotion declined to read as a claim — counted, then disclosed. */
+export interface PromotionSkips {
+  /** `pnpm X` / `yarn X` / `bun X` in prose without `run` — a phrase as often as an invocation. */
+  bareInvocations: number
+  /** `… run the`, `… run X` — a function word or a one-letter stand-in where a script would be. */
+  proseScripts: number
+  /** `github.com/org/repo/…` — a scheme-less URL, not a repo path. */
+  hostnameLike: number
+  /** `input/output/` — a slash-joined phrase whose first segment is no directory here. */
+  unrootedDirs: number
+}
+
+export interface PromotionContext {
+  /** Directory names that exist at the root, in a workspace package, or under their src/ scripts/. */
+  rootedDirs: ReadonlySet<string>
+}
+
+export interface PromotedText {
+  text: string
+  skips: PromotionSkips
+}
+
 const CODE_SPAN_RE = /(```[\s\S]*?```|`[^`\n]+`)/g
-// A bare token with a directory separator is a path mention even in plain prose; a bare file
-// name without one (`config.ts`, `Node.js`) is prose unless the author backticks it — the same
-// precision rule the instruction-file extractor applies to extensionless tokens.
-const PATHISH_RE = /^[A-Za-z0-9_.@-]+(?:\/[A-Za-z0-9_.@$-]+)+\/?$/
-const COMMAND_RE = /\b(?:pnpm|yarn|npm|bun)\s+(?:run\s+)?(?!-)[A-Za-z0-9:._-]+/g
+// In prose only `<pm> run <script>` (and the `npm test` / `npm start` shorthands) reads as an
+// invocation. A bare `pnpm X` / `yarn X` / `bun X` is a phrase as often as a command ("the pnpm
+// workspace", "bun will …"), so it stays prose unless the author backticked it — the extractor's
+// bare form is for code spans, where the backtick itself was the author's signal.
+const RUN_RE = /\b(?:pnpm|yarn|npm|bun)\s+run\s+(?!-)([A-Za-z0-9:._-]+)|\bnpm\s+(?:test|start)\b/g
+const BARE_PM_RE = /\b(?:pnpm|yarn|bun)\s+(?!run\b)(?!-)[A-Za-z0-9:._-]+/g
+// Function words that follow "run" in prose ("npm run the tests") — never script names.
+const STOP_WORDS = new Set(
+  (
+    "a an the this that these those it its them all any both each every some your our my their " +
+    "and or but to in on at of for with from by as is are was were be will would can could should " +
+    "may might must do does did not no so if then than when where which who what how also again " +
+    "now first once twice after before via into over only just too very"
+  ).split(" "),
+)
 const WRAP_RE = /^([([{"']*)(.*?)([.,;:!?)\]}"']*)$/
+const TRAIL_RE = /[.,;:!?)\]}"']*$/
+// A first segment shaped like a host (`github.com`, `docs.example.co.uk`) — a URL with its scheme
+// dropped, not a repo path. A dotted first segment whose suffix is a file extension is a file.
+const HOSTNAME_RE = /^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.([a-z]{2,})$/i
 
 /**
  * People do not backtick paths in a prompt. Promote the bare mentions the claim extractors would
- * otherwise treat as prose — `src/x.ts`, `docs/`, `npm run lint` — into code spans, leaving
- * anything already in a code span untouched. The extractors' own filters still decide what counts.
+ * otherwise treat as prose — `src/x.ts`, `docs/design/`, `npm run lint` — into code spans, leaving
+ * anything already in a code span untouched. Precision over recall: only what an instruction
+ * file's extractor would accept is promoted, and every class left as prose is counted.
  */
-export function promoteBareTokens(text: string): string {
-  return text
+export function promoteBareTokens(text: string, ctx: PromotionContext): PromotedText {
+  const skips: PromotionSkips = {
+    bareInvocations: 0,
+    proseScripts: 0,
+    hostnameLike: 0,
+    unrootedDirs: 0,
+  }
+  const promoted = text
     .split(CODE_SPAN_RE)
-    .map((segment, i) => (i % 2 === 1 ? segment : promoteProse(segment)))
+    .map((segment, i) => (i % 2 === 1 ? segment : promoteProse(segment, ctx, skips)))
     .join("")
+  return { text: promoted, skips }
 }
 
-function promoteProse(segment: string): string {
-  // A sentence-ending stop is not part of the script name: `npm run build.` names `build`.
-  const withCommands = segment.replace(COMMAND_RE, (m) => {
-    const trail = /[.,;:!?)\]}"']*$/.exec(m)?.[0] ?? ""
+function promoteProse(segment: string, ctx: PromotionContext, skips: PromotionSkips): string {
+  skips.bareInvocations += segment.match(BARE_PM_RE)?.length ?? 0
+  const withCommands = segment.replace(RUN_RE, (m, script?: string) => {
+    // A sentence-ending stop is not part of the script name: `npm run build.` names `build`.
+    const trail = TRAIL_RE.exec(m)?.[0] ?? ""
     const core = trail ? m.slice(0, -trail.length) : m
+    if (script !== undefined) {
+      const name = script.replace(TRAIL_RE, "")
+      if (name.length < 2 || STOP_WORDS.has(name.toLowerCase())) {
+        skips.proseScripts += 1
+        return m
+      }
+    }
     return `\`${core}\`${trail}`
   })
   return withCommands.replace(/[^\s`]+/g, (token) => {
     const m = WRAP_RE.exec(token)
     if (!m) return token
     const [, lead = "", core = "", trail = ""] = m
-    if (!core || core.includes("://") || !PATHISH_RE.test(core)) return token
+    if (!core || core.includes("://") || !PATH_TOKEN_RE.test(core)) return token
+    const first = core.slice(0, core.indexOf("/"))
+    const hostSuffix = HOSTNAME_RE.exec(first)?.[1]?.toLowerCase()
+    if (hostSuffix && !KNOWN_EXTENSIONS.has(hostSuffix)) {
+      skips.hostnameLike += 1
+      return token
+    }
+    if (core.endsWith("/")) {
+      // A directory claim in prose is only a claim when it starts where a real directory does;
+      // `input/output/` in a sentence is a slash-joined phrase, and prose is full of them.
+      if (!ctx.rootedDirs.has(first)) {
+        skips.unrootedDirs += 1
+        return token
+      }
+      return `${lead}\`${core}\`${trail}`
+    }
+    // The extractor reads a file claim only with a recognized extension; `and/or` stays prose.
+    const ext = core.toLowerCase().match(/\.([a-z0-9]{1,8})$/)?.[1]
+    if (!ext || !KNOWN_EXTENSIONS.has(ext)) return token
     return `${lead}\`${core}\`${trail}`
   })
+}
+
+/** Directory names a prose dir claim may start with — mirrors where `pathResolves` looks. */
+async function listRootedDirs(env: TruthEnv): Promise<Set<string>> {
+  const dirs = new Set<string>()
+  for (const base of env.bases) {
+    for (const sub of ["", "src", "scripts"]) {
+      const entries = await fs
+        .readdir(path.join(base, sub), { withFileTypes: true })
+        .catch(() => [])
+      for (const entry of entries) if (entry.isDirectory()) dirs.add(entry.name)
+    }
+  }
+  return dirs
 }
 
 export async function runPremise(opts: PremiseOptions): Promise<PremiseResult> {
@@ -104,10 +183,12 @@ export async function runPremise(opts: PremiseOptions): Promise<PremiseResult> {
   const facts = await scanProject(root)
   const env = await buildTruthEnv(root, facts)
   const counters = emptyCounters()
-  const text = { path: TASK_LABEL, text: promoteBareTokens(task) }
+  const promoted = promoteBareTokens(task, { rootedDirs: await listRootedDirs(env) })
+  const text = { path: TASK_LABEL, text: promoted.text }
 
   const findings: Finding[] = []
   const disclosures: string[] = []
+  const entities: PremiseEntity[] = []
 
   const claims = await checkTextClaims(
     env,
@@ -128,49 +209,28 @@ export async function runPremise(opts: PremiseOptions): Promise<PremiseResult> {
   )
   findings.push(...claims.findings)
   disclosures.push(...claims.disclosures)
-  findings.push(...(await checkDocRefs(env, text, PREMISE_LENS, counters, "The task")))
+  entities.push(...claims.examined)
+
+  const docs = await checkDocRefs(env, text, PREMISE_LENS, counters, "The task")
+  findings.push(...docs.findings)
+  entities.push(...docs.examined)
 
   // Decision references: a task citing a ruling the record never wrote presupposes a decision
   // that does not exist.
   const ledger = await loadDecisionLedger(root, facts)
-  const { refs, qualifiedSkipped } = extractDecisionRefs(task)
-  for (const [num, asWritten] of refs) {
-    if (ledger.ids === null || ledger.ids.has(num)) continue
-    findings.push({
-      lens: PREMISE_LENS,
-      id: `${PREMISE_LENS}/dead-decision-ref:${TASK_LABEL}:${asWritten}`,
-      tier: "gap",
-      claim: `The task cites ${asWritten} — no such entry exists in ${ledger.sources.join(", ")}`,
-      evidence: [TASK_LABEL, `${ledger.sources.join(", ")}: no ${asWritten} entry`],
+  const decisions = checkDecisionRefs(
+    text,
+    ledger,
+    {
+      lensId: PREMISE_LENS,
+      subject: "The task",
       why: "The task presupposes a ruling that was never recorded; an agent will act on a decision nobody made.",
       action: "Point the task at the entry that exists — or record the missing decision first.",
-      effort: "S",
-      confidence: "medium",
-    })
-  }
-
-  // What the task named, found or not — the checked half of the brief.
-  const entities: PremiseEntity[] = []
-  const { scripts } = extractCommandClaims(text.text)
-  for (const script of scripts.keys()) {
-    const known = env.knownScripts.has(script) || (await env.binResolves(script))
-    const unverifiable = !known && !env.nodeModulesInstalled && env.manifestExists
-    entities.push({ kind: "script", value: script, exists: unverifiable ? null : known })
-  }
-  const { paths } = extractPathClaims(text.text)
-  for (const claim of paths) {
-    entities.push({ kind: "path", value: claim, exists: await env.pathResolves(claim) })
-  }
-  for (const ref of extractDocRefs(text.text).refs) {
-    entities.push({ kind: "doc", value: ref, exists: await pathExists(path.join(root, ref)) })
-  }
-  for (const [num, asWritten] of refs) {
-    entities.push({
-      kind: "decision",
-      value: asWritten,
-      exists: ledger.ids === null ? null : ledger.ids.has(num),
-    })
-  }
+    },
+    counters,
+  )
+  findings.push(...decisions.findings)
+  entities.push(...decisions.examined)
 
   // Honest coverage — every class not checked is named, never silently dropped.
   if (!entities.length) {
@@ -179,8 +239,29 @@ export async function runPremise(opts: PremiseOptions): Promise<PremiseResult> {
     )
   }
   disclosures.push(
-    "Bare file names without a directory (e.g. a lone `config.ts`) are read as prose unless backticked; paths with a separator and `npm run` / `pnpm` / `yarn` invocations are checked as written.",
+    "In prose, a path needs a directory and a recognized extension (a directory claim needs a trailing slash and a first segment that exists here), and a script needs the `run` form (`npm run X`, `pnpm run X` …) or the `npm test` / `npm start` shorthands; anything backticked is read exactly as an instruction file would be. A bare file name (a lone `config.ts`) is prose.",
   )
+  const { skips } = promoted
+  if (skips.bareInvocations) {
+    disclosures.push(
+      `${skips.bareInvocations} bare \`pnpm X\` / \`yarn X\` / \`bun X\` mention(s) in prose were not read as scripts — in a sentence that shape is a phrase as often as an invocation; write \`… run X\` or backtick it to have it checked.`,
+    )
+  }
+  if (skips.proseScripts) {
+    disclosures.push(
+      `${skips.proseScripts} \`… run X\` mention(s) put a function word or a one-letter stand-in where a script name would be; read as prose, skipped.`,
+    )
+  }
+  if (skips.hostnameLike) {
+    disclosures.push(
+      `${skips.hostnameLike} slash token(s) start with a host name (e.g. \`github.com/…\`) — a URL, not a repo path; skipped.`,
+    )
+  }
+  if (skips.unrootedDirs) {
+    disclosures.push(
+      `${skips.unrootedDirs} slash-joined phrase(s) ending in \`/\` start with no directory that exists here (e.g. \`input/output/\`) — read as prose; skipped, not flagged. Backtick one to have it checked.`,
+    )
+  }
   if (counters.unverifiableCommands) {
     disclosures.push(
       `node_modules is not installed — ${counters.unverifiableCommands} command(s) matching no package script could not be checked against installed binaries; skipped, not flagged.`,
@@ -211,14 +292,19 @@ export async function runPremise(opts: PremiseOptions): Promise<PremiseResult> {
       `${counters.filteredSkipped} workspace-filtered command(s) (\`--filter\`, \`-C\` …) were not resolved; skipped.`,
     )
   }
-  if (qualifiedSkipped) {
+  if (counters.tildeSkipped) {
     disclosures.push(
-      `${qualifiedSkipped} decision reference(s) name another record — not this repo's; skipped.`,
+      `${counters.tildeSkipped} well-known doc mention(s) sit inside \`~/\` home paths (e.g. \`~/.claude/CLAUDE.md\`) — machine-global files, not this repo's; skipped, not flagged.`,
     )
   }
-  if (refs.size && ledger.ids === null) {
+  if (counters.qualifiedRefsSkipped) {
     disclosures.push(
-      `${refs.size} decision reference(s) could not be resolved — no decisions file with \`## D-NNN\` entries; skipped, not flagged.`,
+      `${counters.qualifiedRefsSkipped} decision reference(s) name another record — not this repo's; skipped.`,
+    )
+  }
+  if (counters.unresolvableRefs) {
+    disclosures.push(
+      `${counters.unresolvableRefs} decision reference(s) could not be resolved — no decisions file with \`## D-NNN\` entries; skipped, not flagged.`,
     )
   }
   disclosures.push(
@@ -232,7 +318,6 @@ export async function runPremise(opts: PremiseOptions): Promise<PremiseResult> {
   let briefPath: string | null = null
   if (opts.writeBrief !== false && (await pathExists(path.join(root, ETYMD_DIR)))) {
     // A repo that never opted in (`etymd init`) takes zero writes; the brief goes to stdout.
-    const { promises: fs } = await import("node:fs")
     await fs.writeFile(path.join(root, PREMISE_BRIEF_FILE), brief, "utf8")
     briefPath = PREMISE_BRIEF_FILE
   }
@@ -264,7 +349,10 @@ function kindLabel(kind: PremiseEntity["kind"]): string {
  * cannot answer. It never speculates about what the task "really" means.
  */
 export function renderBrief(task: string, findings: Finding[], entities: PremiseEntity[]): string {
-  const title = task.length > 100 ? `${task.slice(0, 97)}…` : task
+  // The heading is one line whatever the task's shape — a multi-line plan would otherwise put
+  // its own markdown (a fence opener, a list) inside the H1.
+  const oneLine = task.replace(/\s+/g, " ").trim()
+  const title = oneLine.length > 100 ? `${oneLine.slice(0, 97)}…` : oneLine
   const checked = entities.length
     ? entities
         .map(

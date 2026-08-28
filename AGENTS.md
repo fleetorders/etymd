@@ -112,10 +112,12 @@ over repo-wide scans.
   persist ledger resolutions for lenses that did not run.
 - `src/engine/finding.ts` `Finding` — the ONE finding schema every lens speaks;
   never introduce a parallel finding shape.
-- `src/lenses/instruction-truth/checks.ts` — the ONE implementation of the command, path, and
-  doc-reference truth checks. `instruction-truth` (files, state docs) and `premise` (the task)
-  both call it; a check re-implemented beside it would let the two surfaces drift apart, which
-  is the failure this tool exists to catch. Tier and wording are parameters, the rules are not.
+- `src/lenses/instruction-truth/checks.ts` — the ONE implementation of the command, path,
+  doc-reference, and decision-reference truth checks. `instruction-truth` (files, state docs) and
+  `premise` (the task) both call it; a check re-implemented beside it would let the two surfaces
+  drift apart, which is the failure this tool exists to catch. Tier and wording are parameters,
+  the rules are not. What a check examined is returned beside what it flagged, so a caller never
+  re-derives coverage by running the extractors a second time.
 - `src/lenses/instruction-truth/claims.ts` — claim extraction. Invariant: precision over recall;
   every skip class (builtins, flagged invocations, globs/URLs/placeholders, unrecognized
   extensions, gitignored claims, installed-binary commands, uninstalled node_modules,
@@ -123,8 +125,9 @@ over repo-wide scans.
   and disclosed by the lens, never silently dropped.
 - `src/core/facts.ts` — cache (`.etymd/cache/`, gitignored) vs baseline
   (`.etymd/baseline.json`, committed). Drift is measured against the baseline, never the cache.
-- `src/core/config.ts` — the optional committed config file under `.etymd/` (audit scope +
-  context budgets; etymd itself needs neither, so the file is absent here). Invariant: scoping
+- `src/core/config.ts` — the optional committed config file under `.etymd/` (audit scope,
+  context budgets, and the pinned gate commands; here it carries only the gate pin — etymd itself
+  needs no scoping and no budget override). Invariant: scoping
   must never buy silence — that holds in the LEDGER too. A tracked finding whose file the run
   excluded is absent because nobody looked, not because it was fixed: `reconcileLedger` holds it
   open (`outOfScope`), never `done`. Silently resolving it would let scoping rewrite unfixed

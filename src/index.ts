@@ -67,12 +67,18 @@ export {
   buildTruthEnv,
   checkTextClaims,
   checkDocRefs,
+  checkDecisionRefs,
   loadDecisionLedger,
   emptyCounters,
   type TruthEnv,
   type ClaimCounters,
   type ClaimText,
+  type ExaminedClaim,
   type TextClaimsOptions,
+  type TextClaimsResult,
+  type RefsResult,
+  type DecisionLedger,
+  type DecisionRefsOptions,
 } from "./lenses/instruction-truth/checks.js"
 export {
   runPremise,
@@ -83,6 +89,9 @@ export {
   type PremiseResult,
   type PremiseOptions,
   type PremiseEntity,
+  type PromotionContext,
+  type PromotionSkips,
+  type PromotedText,
 } from "./engine/premise.js"
 export {
   extractCommandClaims,

@@ -4,7 +4,12 @@ import type { Finding, FindingTier } from "../../engine/finding.js"
 import type { ProjectFacts } from "../../core/types.js"
 import { git, pathExists, readJson, readText } from "../../core/util.js"
 import { parseDecisionEntries } from "../state-freshness.js"
-import { extractCommandClaims, extractDocRefs, extractPathClaims } from "./claims.js"
+import {
+  extractCommandClaims,
+  extractDecisionRefs,
+  extractDocRefs,
+  extractPathClaims,
+} from "./claims.js"
 
 // The command/path/doc-reference truth checks, factored so that every surface that verifies text
 // against the repo — instruction files, state documents, and the task an agent is about to be
@@ -20,6 +25,8 @@ export interface TruthEnv {
   nodeModulesInstalled: boolean
   /** A manifest exists somewhere, so a script claim is checkable even without an install. */
   manifestExists: boolean
+  /** The root plus every workspace package dir — where claims are resolved. */
+  bases: string[]
   /** A repo-relative claim resolves in the root, any workspace package, or their src/ scripts/. */
   pathResolves(claim: string): Promise<boolean>
   /** `yarn X` / `pnpm X` may legitimately run an installed node_modules/.bin binary. */
@@ -66,6 +73,7 @@ export async function buildTruthEnv(root: string, facts: ProjectFacts): Promise<
     knownScripts,
     nodeModulesInstalled,
     manifestExists,
+    bases,
     pathResolves,
     binResolves,
   }
@@ -80,6 +88,10 @@ export interface ClaimCounters {
   gitignoredSkipped: number
   prospectiveSkipped: number
   placeholderSkipped: number
+  /** Decision references naming another record (a fleet-level ledger) — not this repo's. */
+  qualifiedRefsSkipped: number
+  /** Decision references with no `## D-NNN` ledger to resolve against. */
+  unresolvableRefs: number
 }
 
 export function emptyCounters(): ClaimCounters {
@@ -91,7 +103,20 @@ export function emptyCounters(): ClaimCounters {
     gitignoredSkipped: 0,
     prospectiveSkipped: 0,
     placeholderSkipped: 0,
+    qualifiedRefsSkipped: 0,
+    unresolvableRefs: 0,
   }
+}
+
+/**
+ * One thing a check looked for, and what it found. `null` = could not be checked from the repo
+ * (counted and disclosed), never a guess. The honest-coverage half of a report: what was
+ * examined, not only what failed.
+ */
+export interface ExaminedClaim {
+  kind: "script" | "path" | "doc" | "decision"
+  value: string
+  exists: boolean | null
 }
 
 /** A piece of text making claims about the repo: an instruction file, a state doc, a task. */
@@ -121,6 +146,8 @@ export interface TextClaimsOptions {
 export interface TextClaimsResult {
   findings: Finding[]
   disclosures: string[]
+  /** Every script and path claim the text made, found or not. */
+  examined: ExaminedClaim[]
 }
 
 /**
@@ -135,21 +162,28 @@ export async function checkTextClaims(
 ): Promise<TextClaimsResult> {
   const findings: Finding[] = []
   const disclosures: string[] = []
+  const examined: ExaminedClaim[] = []
   const subject = opts.subject ?? file.path
 
   // Command claims: a script the text tells agents to run must exist somewhere real.
   const { scripts: claimed, filteredSkipped } = extractCommandClaims(file.text)
   counters.filteredSkipped += filteredSkipped
   for (const [script, raw] of claimed) {
-    if (env.knownScripts.has(script)) continue
+    if (env.knownScripts.has(script)) {
+      examined.push({ kind: "script", value: script, exists: true })
+      continue
+    }
     if (await env.binResolves(script)) {
       counters.binaryResolved += 1
+      examined.push({ kind: "script", value: script, exists: true })
       continue
     }
     if (!env.nodeModulesInstalled && env.manifestExists) {
       counters.unverifiableCommands += 1
+      examined.push({ kind: "script", value: script, exists: null })
       continue
     }
+    examined.push({ kind: "script", value: script, exists: false })
     findings.push({
       lens: opts.lensId,
       id: `${opts.lensId}/stale-command:${file.path}:${script}`,
@@ -173,7 +207,8 @@ export async function checkTextClaims(
   counters.placeholderSkipped += placeholder.length
   const missing: string[] = []
   for (const claim of paths) {
-    if (!(await env.pathResolves(claim))) missing.push(claim)
+    if (await env.pathResolves(claim)) examined.push({ kind: "path", value: claim, exists: true })
+    else missing.push(claim)
   }
   // A gitignored claim (`.env`, local caches) is machine-local by design: absence in THIS
   // checkout does not make the text false — unverifiable, so skipped, never accused.
@@ -184,13 +219,19 @@ export async function checkTextClaims(
   for (const claim of missing) {
     if (gitignored.has(claim)) {
       counters.gitignoredSkipped += 1
+      examined.push({ kind: "path", value: claim, exists: null })
       continue
     }
+    examined.push({ kind: "path", value: claim, exists: false })
+    // Findings are capped, the examined list is not — the brief still names every miss.
     if (pathFindings >= opts.maxPathFindings) {
-      disclosures.push(
-        `${file.path}: more than ${opts.maxPathFindings} missing-path claims — truncated.`,
-      )
-      break
+      if (pathFindings === opts.maxPathFindings) {
+        disclosures.push(
+          `${file.path}: more than ${opts.maxPathFindings} missing-path claims — truncated.`,
+        )
+        pathFindings += 1
+      }
+      continue
     }
     pathFindings += 1
     findings.push({
@@ -208,7 +249,12 @@ export async function checkTextClaims(
     })
   }
 
-  return { findings, disclosures }
+  return { findings, disclosures, examined }
+}
+
+export interface RefsResult {
+  findings: Finding[]
+  examined: ExaminedClaim[]
 }
 
 /** Cross-references to well-known docs (AGENTS.md, CLAUDE.md, …) must resolve to real files. */
@@ -218,12 +264,15 @@ export async function checkDocRefs(
   lensId: string,
   counters: ClaimCounters,
   subject = file.path,
-): Promise<Finding[]> {
+): Promise<RefsResult> {
   const findings: Finding[] = []
+  const examined: ExaminedClaim[] = []
   const { refs, tildeSkipped } = extractDocRefs(file.text)
   counters.tildeSkipped += tildeSkipped
   for (const ref of refs) {
-    if (await pathExists(path.join(env.root, ref))) continue
+    const exists = await pathExists(path.join(env.root, ref))
+    examined.push({ kind: "doc", value: ref, exists })
+    if (exists) continue
     findings.push({
       lens: lensId,
       id: `${lensId}/dangling-ref:${file.path}:${ref}`,
@@ -236,7 +285,7 @@ export async function checkDocRefs(
       confidence: "high",
     })
   }
-  return findings
+  return { findings, examined }
 }
 
 /** The repo's own decision record: every `## D-NNN` id, and which files carried them. */
@@ -264,4 +313,57 @@ export async function loadDecisionLedger(
     sources.push(artifact.path)
   }
   return { ids, sources }
+}
+
+export interface DecisionRefsOptions {
+  lensId: string
+  /** How the text is named in a claim sentence — a file path, or "The task". */
+  subject?: string
+  why?: string
+  action?: string
+}
+
+/**
+ * `D-NNN` references in one text, resolved against the repo's own decision record. A citation
+ * the record cannot back is stale in a way age cannot reveal. Qualified refs (another record's)
+ * and refs with no ledger to resolve against are counted, never accused.
+ */
+export function checkDecisionRefs(
+  file: ClaimText,
+  ledger: DecisionLedger,
+  opts: DecisionRefsOptions,
+  counters: ClaimCounters,
+): RefsResult {
+  const findings: Finding[] = []
+  const examined: ExaminedClaim[] = []
+  const subject = opts.subject ?? file.path
+  const { refs, qualifiedSkipped } = extractDecisionRefs(file.text)
+  counters.qualifiedRefsSkipped += qualifiedSkipped
+  if (!refs.size) return { findings, examined }
+  if (!ledger.ids) {
+    counters.unresolvableRefs += refs.size
+    for (const asWritten of refs.values()) {
+      examined.push({ kind: "decision", value: asWritten, exists: null })
+    }
+    return { findings, examined }
+  }
+  for (const [num, asWritten] of refs) {
+    const exists = ledger.ids.has(num)
+    examined.push({ kind: "decision", value: asWritten, exists })
+    if (exists) continue
+    findings.push({
+      lens: opts.lensId,
+      id: `${opts.lensId}/dead-decision-ref:${file.path}:${asWritten}`,
+      tier: "gap",
+      claim: `${subject} cites ${asWritten} — no such entry exists in ${ledger.sources.join(", ")}`,
+      evidence: [file.path, `${ledger.sources.join(", ")}: no ${asWritten} entry`],
+      why:
+        opts.why ??
+        "A state doc is read as ground truth on return; a citation the decision record cannot back sends readers to a ruling that was never written.",
+      action: opts.action ?? "Fix the reference — or record the missing decision.",
+      effort: "S",
+      confidence: "medium",
+    })
+  }
+  return { findings, examined }
 }

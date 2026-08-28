@@ -5,13 +5,13 @@ import { BASELINE_FILE, baselineCarriesMachinePath } from "../../core/facts.js"
 import type { ProjectFacts } from "../../core/types.js"
 import {
   buildTruthEnv,
+  checkDecisionRefs,
   checkDocRefs,
   checkTextClaims,
   emptyCounters,
   loadDecisionLedger,
 } from "./checks.js"
 import {
-  extractDecisionRefs,
   listInstructionFiles,
   listStateDocuments,
   packageManagerUsage,
@@ -172,7 +172,7 @@ export const instructionTruthLens: Lens = {
       }
 
       // Cross-references to well-known docs must resolve.
-      findings.push(...(await checkDocRefs(env, file, LENS_ID, counters)))
+      findings.push(...(await checkDocRefs(env, file, LENS_ID, counters)).findings)
     }
 
     // ---- state documents: the same truth checks, plus decision-reference resolution ----
@@ -180,12 +180,9 @@ export const instructionTruthLens: Lens = {
     // for a false claim to sit. Age and size live in state-freshness; TRUTH is checked here.
     const auditedPaths = new Set(files.map((f) => f.path))
     const stateDocs = await listStateDocuments(root, facts)
-    let qualifiedRefsSkipped = 0
-    let unresolvableRefs = 0
     const ledger = stateDocs.length
       ? await loadDecisionLedger(root, facts)
       : { ids: null, sources: [] }
-    const ledgerIds = ledger.ids
     const ledgerSources = ledger.sources
     for (const doc of stateDocs) {
       // `instructions.include` may already have audited this file — never double-report.
@@ -193,28 +190,7 @@ export const instructionTruthLens: Lens = {
 
       // Decision references: a state doc citing an id the record never wrote is stale in a way
       // age cannot reveal — the file may have been edited yesterday and still cite nothing.
-      const { refs, qualifiedSkipped } = extractDecisionRefs(doc.text)
-      qualifiedRefsSkipped += qualifiedSkipped
-      if (!refs.size) continue
-      if (!ledgerIds) {
-        unresolvableRefs += refs.size
-        continue
-      }
-      for (const [num, asWritten] of refs) {
-        if (ledgerIds.has(num)) continue
-        findings.push(
-          finding({
-            id: `${LENS_ID}/dead-decision-ref:${doc.path}:${asWritten}`,
-            tier: "gap",
-            claim: `${doc.path} cites ${asWritten} — no such entry exists in ${ledgerSources.join(", ")}`,
-            evidence: [doc.path, `${ledgerSources.join(", ")}: no ${asWritten} entry`],
-            why: "A state doc is read as ground truth on return; a citation the decision record cannot back sends readers to a ruling that was never written.",
-            action: "Fix the reference — or record the missing decision.",
-            effort: "S",
-            confidence: "medium",
-          }),
-        )
-      }
+      findings.push(...checkDecisionRefs(doc, ledger, { lensId: LENS_ID }, counters).findings)
     }
 
     // Drift vs the committed baseline.
@@ -281,14 +257,14 @@ export const instructionTruthLens: Lens = {
         }.`,
       )
     }
-    if (qualifiedRefsSkipped) {
+    if (counters.qualifiedRefsSkipped) {
       disclosures.push(
-        `${qualifiedRefsSkipped} decision reference(s) name another record (e.g. a fleet-level ledger) — not claims about this repo's decisions; skipped, not flagged.`,
+        `${counters.qualifiedRefsSkipped} decision reference(s) name another record (e.g. a fleet-level ledger) — not claims about this repo's decisions; skipped, not flagged.`,
       )
     }
-    if (unresolvableRefs) {
+    if (counters.unresolvableRefs) {
       disclosures.push(
-        `${unresolvableRefs} decision reference(s) could not be resolved — no decisions file with \`## D-NNN\` entries; skipped, not flagged.`,
+        `${counters.unresolvableRefs} decision reference(s) could not be resolved — no decisions file with \`## D-NNN\` entries; skipped, not flagged.`,
       )
     }
     // Scoping narrows what this lens can see, so it is stated up front and by name — an audit
