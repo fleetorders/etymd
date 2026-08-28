@@ -1,7 +1,9 @@
 # etymd — roadmap
 
-One objective governs everything here: **keep your agent instructions true**. An item that does
-not serve it does not ship. Decision record: [`docs/decisions/003-truth-guard-pivot.md`](docs/decisions/003-truth-guard-pivot.md).
+One objective governs everything here: **keep your agent instructions true** — an instruction
+being anything told to an agent, in a file or in the prompt
+([010](docs/decisions/010-premise-the-task-is-an-instruction.md)). An item that does not serve it
+does not ship. Decision record: [`docs/decisions/003-truth-guard-pivot.md`](docs/decisions/003-truth-guard-pivot.md).
 
 ## Now (prove it in daily use)
 
@@ -20,6 +22,11 @@ not serve it does not ship. Decision record: [`docs/decisions/003-truth-guard-pi
 
 ### Shipped since 003
 
+- **`etymd premise`** (decision record
+  [`docs/decisions/010-premise-the-task-is-an-instruction.md`](docs/decisions/010-premise-the-task-is-an-instruction.md)):
+  the task an agent is handed is an instruction too — what it names is verified against the repo
+  with the shared truth checks, and a brief hands the agent the premises only it can verify.
+  Deterministic by construction (005); no ledger; zero trace without `.etymd/`.
 - **Fleet mode, slices 1–2** (2026-07-30/31, decision record
   [`docs/decisions/004-fleet-truth-guard.md`](docs/decisions/004-fleet-truth-guard.md)): the
   `state-freshness` truth lens (git-committer-date staleness, relative — a dormant repo's old
