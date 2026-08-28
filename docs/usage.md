@@ -1,8 +1,8 @@
 # etymd — usage guide
 
 A deeper walkthrough than the README. Every command is read-only unless it says it writes. The
-writes are: the `.etymd` cache/baseline/ledger, the files you approve in `init`/`gates`, and the
-briefing `brief` emits. Probing a repo that never opted in (`audit --no-ledger`) leaves zero trace.
+writes are: the `.etymd` cache/baseline/ledger, the files you approve in `init`/`gates`, the
+briefing `brief` emits, and the brief `premise` writes where `.etymd/` already exists. Probing a repo that never opted in (`audit --no-ledger`) leaves zero trace.
 
 ## Global options
 
@@ -82,6 +82,27 @@ committer dates only, never mtime:
 **`context-economy`** — the always-loaded footprint as findings: any single file ≥ 4000 words,
 total ≥ 8000 words (defaults; override under `context` in `.etymd/config.json`). Only genuinely
 `alwaysApply` Cursor rules count.
+
+## `etymd premise` — is this the right task?
+
+The task you are about to hand an agent is an instruction too. `etymd premise "<task>"` (or
+`--file <path>` for a plan, an issue, a prompt) checks what the task **names** against the repo with
+the same rules instruction files get — paths with a directory separator, `npm run` / `pnpm` /
+`yarn` invocations, well-known docs, `D-NNN` decision ids — and then writes a **brief** handing the
+agent the premises only it can verify:
+
+1. the named things are the ones _meant_ (a file that exists can still be the wrong file);
+2. the mechanism the task assumes is working (run it once);
+3. the state the task assumes holds (read it).
+
+Tiers: a missing path the task is _about_ is **risk** (the task would solve the wrong problem
+precisely), a dead script is **risk**, a dead doc or decision reference is **gap**. Bare file names
+without a directory are prose unless you backtick them — precision over recall, as everywhere else.
+
+Writes: `.etymd/premise-brief.md`, only where `.etymd/` already exists; otherwise the brief is
+printed and nothing is written. No ledger — task findings are not remembered between runs.
+
+Flags: `--file <path>` · `--json` (schema `premise/1`) · `--no-brief` · `--fail-on <tier>`.
 
 ## `etymd init` — onboarding
 

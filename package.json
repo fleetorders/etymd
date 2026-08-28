@@ -1,7 +1,7 @@
 {
   "name": "etymd",
   "version": "0.14.0",
-  "description": "Keep your agent instructions true — verify AGENTS.md, CLAUDE.md, rules & skills against the actual repo, with drift caught over time and a regression ledger.",
+  "description": "Keep your agent instructions true — verify AGENTS.md, CLAUDE.md, rules, skills, and the task you hand an agent against the actual repo, with drift caught over time and a regression ledger.",
   "keywords": [
     "cli",
     "ai",

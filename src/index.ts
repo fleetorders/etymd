@@ -64,6 +64,27 @@ export {
 } from "./engine/ledger.js"
 export { instructionTruthLens } from "./lenses/instruction-truth/lens.js"
 export {
+  buildTruthEnv,
+  checkTextClaims,
+  checkDocRefs,
+  loadDecisionLedger,
+  emptyCounters,
+  type TruthEnv,
+  type ClaimCounters,
+  type ClaimText,
+  type TextClaimsOptions,
+} from "./lenses/instruction-truth/checks.js"
+export {
+  runPremise,
+  promoteBareTokens,
+  renderBrief,
+  PREMISE_LENS,
+  PREMISE_BRIEF_FILE,
+  type PremiseResult,
+  type PremiseOptions,
+  type PremiseEntity,
+} from "./engine/premise.js"
+export {
   extractCommandClaims,
   extractPathClaims,
   listInstructionFiles,
