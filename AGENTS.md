@@ -12,10 +12,11 @@ standard — this file is audited by the tool itself, so every claim below must 
 
 ## What this project is
 
-**The truth guard for agent instruction files**, distributed as the npm package `etymd` (from
+**The truth guard for agent instructions**, distributed as the npm package `etymd` (from
 Greek _étymon_, a word's true sense, + the `.md` family it guards). One objective: **keep your
-agent instructions true**. It verifies the agent context layer (AGENTS.md, CLAUDE.md, rules,
-skills) against the actual repo — command claims, path claims, consistency, CI↔local gate parity,
+agent instructions true** — an instruction being anything told to an agent, in a file or in the
+prompt (decision 010). It verifies the agent context layer (AGENTS.md, CLAUDE.md, rules,
+skills) and, on request, the task an agent is handed, against the actual repo — command claims, path claims, consistency, CI↔local gate parity,
 context economy — with drift measured against a committed baseline and a regression ledger.
 Distilled from a frontrunner project workflow, validated against a sibling-repo corpus
 (`sources.json`). Solo developer; published on npm as `etymd`.
@@ -37,7 +38,8 @@ Distilled from a frontrunner project workflow, validated against a sibling-repo 
 - **Minimal diffs.** Never touch files outside the task's scope.
 - **Commits stay unattributed.** No `Co-authored-by:` trailers, no "Generated with …" credits.
 - **Pin every dependency to an exact version** (`.npmrc` has `save-exact=true`) — no `^`/`~`.
-- **One objective.** Every addition serves "keep your agent instructions true" or it does not
+- **One objective.** Every addition serves "keep your agent instructions true" — where an
+  instruction is anything told to an agent, in a file or in the prompt (010) — or it does not
   ship — features off that axis were deliberately cut in 003; do not reintroduce them casually.
 - **Two tests before shipping any opinion.** Can the tool mechanize the check? _And_ would a user
   who is not us ever set this? A field can pass the first and fail the second — that is how a
@@ -74,8 +76,8 @@ over repo-wide scans.
 
 - `src/cli.ts` — commander wiring; per-command dynamic imports (keep startup thin)
 - `src/commands/` — thin command adapters (audit · init · approve · scan · doctor · context ·
-  brief · gates · ledger[dismiss/accept] · fleet[sweep/check/dismiss/accept]); no business
-  logic here
+  brief · premise · gates · ledger[dismiss/accept] · fleet[sweep/check/dismiss/accept]); no
+  business logic here
 - `src/core/` — the deterministic engine: `scan.ts` (orchestrator) · `detect.ts` (detectors +
   classifier ladders + glob expansion) · `facts.ts` (cache vs committed baseline, profile,
   baseline-drift summary for `approve`) · `config.ts` (the optional committed config file under
@@ -84,9 +86,11 @@ over repo-wide scans.
   (onboarding planner) · `apply.ts` (idempotent writes) · `types.ts` · `util.ts`
 - `src/engine/` — the findings engine: `finding.ts` (Finding/Lens/ranking) · `ledger.ts`
   (committed improvement memory + `resolveEntry` for dismiss/accept) · `run.ts` (lens registry +
-  audit composition) · `fleet.ts` (sweep + manifest check + fleet-scope wall findings)
-- `src/lenses/` — the lenses: `instruction-truth/` (claims extraction + the headline truth lens —
-  instruction files AND state documents, incl. decision-reference resolution) ·
+  audit composition) · `fleet.ts` (sweep + manifest check + fleet-scope wall findings) ·
+  `premise.ts` (the task-as-instruction check: bare-token promotion, entities, the agent brief)
+- `src/lenses/` — the lenses: `instruction-truth/` (claims extraction, the shared truth checks
+  in `checks.ts`, and the headline truth lens — instruction files AND state documents, incl.
+  decision-reference resolution) ·
   `state-freshness.ts` (state/decisions freshness — git committer dates, never mtime) ·
   `gate-integrity/` (inventory + lens) · `context-economy.ts`
 - `src/pack/` — the versioned pack: `templates.ts` (minimal scaffold + hooks) · `version.ts`
@@ -95,7 +99,8 @@ over repo-wide scans.
   (read-only sibling-repo smokes)
 - `docs/decisions/` — the decision record (001 founding · 002 foundation re-lock · 003 truth-guard
   pivot — the current identity · 004 fleet mode · 005 declared rules, design only · 006 local gate
-  provenance · 007 declared entry fields · 008 derived gate tier · 009 state-doc truth)
+  provenance · 007 declared entry fields · 008 derived gate tier · 009 state-doc truth · 010
+  premise — the task is an instruction)
 - `ROADMAP.md` — now/next/later, accepted heuristic trade-offs (release mechanics are a
   machine-local runbook, deliberately untracked: operating detail attracts account and
   environment specifics a public repo must not carry)
@@ -107,6 +112,10 @@ over repo-wide scans.
   persist ledger resolutions for lenses that did not run.
 - `src/engine/finding.ts` `Finding` — the ONE finding schema every lens speaks;
   never introduce a parallel finding shape.
+- `src/lenses/instruction-truth/checks.ts` — the ONE implementation of the command, path, and
+  doc-reference truth checks. `instruction-truth` (files, state docs) and `premise` (the task)
+  both call it; a check re-implemented beside it would let the two surfaces drift apart, which
+  is the failure this tool exists to catch. Tier and wording are parameters, the rules are not.
 - `src/lenses/instruction-truth/claims.ts` — claim extraction. Invariant: precision over recall;
   every skip class (builtins, flagged invocations, globs/URLs/placeholders, unrecognized
   extensions, gitignored claims, installed-binary commands, uninstalled node_modules,
