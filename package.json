@@ -19,11 +19,11 @@
   "author": "Alkis Yuv",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/triartleet/etymd.git"
+    "url": "git+https://github.com/fleetorders/etymd.git"
   },
-  "homepage": "https://github.com/triartleet/etymd#readme",
+  "homepage": "https://github.com/fleetorders/etymd#readme",
   "bugs": {
-    "url": "https://github.com/triartleet/etymd/issues"
+    "url": "https://github.com/fleetorders/etymd/issues"
   },
   "type": "module",
   "bin": {
