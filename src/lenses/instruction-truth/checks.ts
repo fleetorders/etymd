@@ -92,6 +92,10 @@ export interface ClaimCounters {
   qualifiedRefsSkipped: number
   /** Decision references with no `## D-NNN` ledger to resolve against. */
   unresolvableRefs: number
+  /** Path claims whose every mention sits behind a namespace prefix (`pc:`) — another repo's. */
+  namespacedSkipped: number
+  /** Missing paths starting at no directory of this repo — quoted from elsewhere (task only). */
+  outsideRepoSkipped: number
 }
 
 export function emptyCounters(): ClaimCounters {
@@ -105,6 +109,8 @@ export function emptyCounters(): ClaimCounters {
     placeholderSkipped: 0,
     qualifiedRefsSkipped: 0,
     unresolvableRefs: 0,
+    namespacedSkipped: 0,
+    outsideRepoSkipped: 0,
   }
 }
 
@@ -141,6 +147,19 @@ export interface TextClaimsOptions {
   actionCommand?: string
   whyPath?: string
   actionPath?: string
+  /**
+   * Directories a missing path may start from and still be plausibly repo-relative — the root,
+   * workspace packages, and their src/ scripts/. Supplied by the task surface (`etymd premise`)
+   * only: a task quoting a path from ANOTHER repository (a clone in a scratchpad) starts where
+   * no directory of this repo does, and its absence here proves nothing. Instruction files keep
+   * the stricter reading — their references are written against this repo.
+   */
+  rootedFirstSegments?: ReadonlySet<string>
+  /**
+   * Read namespace-prefixed path mentions (`pc: `src/x.ts``) as another repo's tree — the task
+   * surface only; instruction files keep every backticked span as a claim of this repo.
+   */
+  treatNamespacedPrefixes?: boolean
 }
 
 export interface TextClaimsResult {
@@ -202,9 +221,12 @@ export async function checkTextClaims(
   }
 
   // Path claims: a path the text points agents at must exist.
-  const { paths, prospective, placeholder } = extractPathClaims(file.text)
+  const { paths, prospective, placeholder, namespaced } = extractPathClaims(file.text, {
+    namespaces: opts.treatNamespacedPrefixes,
+  })
   counters.prospectiveSkipped += prospective.length
   counters.placeholderSkipped += placeholder.length
+  counters.namespacedSkipped += namespaced.length
   const missing: string[] = []
   for (const claim of paths) {
     if (await env.pathResolves(claim)) examined.push({ kind: "path", value: claim, exists: true })
@@ -217,6 +239,13 @@ export async function checkTextClaims(
   const gitignored = new Set((ignoredOut ?? "").split("\n").filter(Boolean))
   let pathFindings = 0
   for (const claim of missing) {
+    // Outside this repo (task surface only): a path that starts at no directory the repo has
+    // is quoted from elsewhere, and "missing here" would be a false accusation.
+    if (opts.rootedFirstSegments && !opts.rootedFirstSegments.has(claim.split("/")[0] ?? claim)) {
+      counters.outsideRepoSkipped += 1
+      examined.push({ kind: "path", value: claim, exists: null })
+      continue
+    }
     if (gitignored.has(claim)) {
       counters.gitignoredSkipped += 1
       examined.push({ kind: "path", value: claim, exists: null })

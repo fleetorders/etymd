@@ -103,6 +103,12 @@ would be. A bare `pnpm X` in a sentence, a scheme-less URL (`github.com/…`), a
 (`input/output/`) and a bare file name (`config.ts`) are prose — each class is counted and
 disclosed, never flagged; backtick one to have it checked.
 
+A task routinely quotes other people's trees, so for the task surface a path is only accused of
+missing when it is plausibly repo-relative: the mention carries no namespace prefix (`pc:`,
+`lk:`, a repo shorthand — another repo's tree, skipped and disclosed), and the path's first
+segment starts where a directory of this repo does. A path that starts elsewhere is outside this
+repo — reported as unverifiable, never as a missing file here.
+
 Tiers: a missing path the task is _about_ is **risk** (the task would solve the wrong problem
 precisely), a dead script is **risk**, a dead doc or decision reference is **gap**.
 
