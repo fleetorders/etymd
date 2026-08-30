@@ -38,6 +38,13 @@ async function fixture() {
   await write("DECISIONS.md", "# Decisions\n\n## D-001 — 2026-01-01 — first\n\nScope: repo.\n")
 }
 
+/** The shape the false positives came from: `bootstrap/` and `docs/` exist, no `src/`. */
+async function noSrcFixture() {
+  await write("package.json", JSON.stringify({ name: "nosrc", private: true }))
+  await write("bootstrap/queue-entry.sh", "#!/bin/sh\n")
+  await write("docs/fleet.md", "# Fleet\n")
+}
+
 const ctx = { rootedDirs: new Set(["src", "docs"]) }
 
 describe("promoteBareTokens", () => {
@@ -55,7 +62,13 @@ describe("promoteBareTokens", () => {
     expect(out).not.toContain("``src/b.ts``")
     // A bare file name without a directory is prose unless the author backticks it.
     expect(out).not.toContain("`Node.js`")
-    expect(skips).toEqual({ bareInvocations: 0, proseScripts: 0, hostnameLike: 0, unrootedDirs: 0 })
+    expect(skips).toEqual({
+      bareInvocations: 0,
+      proseScripts: 0,
+      hostnameLike: 0,
+      unrootedDirs: 0,
+      namespaced: 0,
+    })
   })
 
   it("keeps trailing punctuation outside the span and skips URLs", () => {
@@ -115,6 +128,19 @@ describe("promoteBareTokens", () => {
     expect(out).toContain("`src/legacy/`")
     expect(skips.unrootedDirs).toBe(2)
   })
+
+  it("never promotes a namespace-prefixed path — attached, separated, or before a code span", () => {
+    const { text: out, skips } = promoteBareTokens(
+      "Compare pc:src/other-kit/services/stt_service.py and lk: Sources/OtherKit/x.swift, but the note: src/real.ts line stays ours.",
+      ctx,
+    )
+    expect(out).not.toContain("`pc:src/other-kit")
+    expect(out).not.toContain("`src/other-kit")
+    expect(out).not.toContain("`Sources/OtherKit")
+    // A prose introducer is not a namespace — the path after it is still this repo's.
+    expect(out).toContain("`src/real.ts`")
+    expect(skips.namespaced).toBe(2)
+  })
 })
 
 describe("runPremise", () => {
@@ -144,6 +170,27 @@ describe("runPremise", () => {
     const result = await runPremise({ root: dir, task: "Delete src/legacy/ and its tests." })
     expect(result.findings.map((f) => f.id)).toEqual(["premise/stale-path:task:src/legacy"])
     expect(result.findings[0]?.tier).toBe("risk")
+  })
+
+  it("treats a path quoted from another repo as outside this one, never as missing", async () => {
+    await noSrcFixture()
+    const result = await runPremise({
+      root: dir,
+      task: "Port the gate from src/other-kit/services/stt_service.py (see pc:src/other-kit/services/stt_service.py and oc: `docs/gateway/protocol.md`) to bootstrap/does-not-exist.sh.",
+    })
+    // Only the path rooted in THIS repo is accused; the quoted ones are not missing here.
+    expect(result.findings.map((f) => f.id)).toEqual([
+      "premise/stale-path:task:bootstrap/does-not-exist.sh",
+    ])
+    // Outside the repo is "could not be checked", never "missing here".
+    expect(result.entities).toContainEqual({
+      kind: "path",
+      value: "src/other-kit/services/stt_service.py",
+      exists: null,
+    })
+    const joined = result.disclosures.join("\n")
+    expect(joined).toMatch(/outside this repo/)
+    expect(joined).toMatch(/namespace prefix/)
   })
 
   it("reports a clean task with no findings and the premises handed to the agent", async () => {

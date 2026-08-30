@@ -51,9 +51,15 @@ brief.
   recognized extension; a directory claim needs its trailing slash AND a first segment that
   exists here; a script needs the `run` form (or `npm test` / `npm start`) — a bare `pnpm X` in
   a sentence is a phrase as often as an invocation; a first segment shaped like a host name is a
-  URL. Everything backticked is read exactly as an instruction file would be. Every class left as
+  URL. Everything backticked is read exactly as an instruction file would be — with one
+  task-surface exception: a mention behind a namespace prefix (`pc:`, `lk:`, a repo shorthand)
+  points into another repo's tree, not this one. Every class left as
   prose is counted and disclosed, never silently dropped — the same skip-class discipline as the
-  file lens.
+  file lens. And a missing path is only accused when it is plausibly repo-relative at all: its
+  first segment must start where a directory of this repo does. A task routinely quotes paths
+  from OTHER repositories (a clone in a scratchpad, a legend-prefixed token); absence of such a
+  path here proves nothing, and calling it "missing in the repo" was a live false positive that
+  outranked the task's real content.
 - **Handed over, never guessed:** the three semantic premises, in `.etymd/premise-brief.md`
   (only where `.etymd/` exists — a repo that never opted in takes zero writes and gets the brief on
   stdout). The brief lists what was checked, found or not, then the questions only an agent can
