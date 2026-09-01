@@ -87,7 +87,8 @@ over repo-wide scans.
 - `src/engine/` — the findings engine: `finding.ts` (Finding/Lens/ranking) · `ledger.ts`
   (committed improvement memory + `resolveEntry` for dismiss/accept) · `run.ts` (lens registry +
   audit composition) · `fleet.ts` (sweep + manifest check + fleet-scope wall findings) ·
-  `premise.ts` (the task-as-instruction check: bare-token promotion, entities, the agent brief)
+  `premise.ts` (the task-as-instruction check: bare-token promotion, foreign-path scoping,
+  entities, the agent brief)
 - `src/lenses/` — the lenses: `instruction-truth/` (claims extraction, the shared truth checks
   in `checks.ts`, and the headline truth lens — instruction files AND state documents, incl.
   decision-reference resolution) ·
@@ -115,8 +116,8 @@ over repo-wide scans.
 - `src/lenses/instruction-truth/checks.ts` — the ONE implementation of the command, path,
   doc-reference, and decision-reference truth checks. `instruction-truth` (files, state docs) and
   `premise` (the task) both call it; a check re-implemented beside it would let the two surfaces
-  drift apart, which is the failure this tool exists to catch. Tier and wording are parameters,
-  the rules are not. What a check examined is returned beside what it flagged, so a caller never
+  drift apart, which is the failure this tool exists to catch. Tier, wording, and the task-only
+  outside-repo path scope are parameters, the rules are not. What a check examined is returned beside what it flagged, so a caller never
   re-derives coverage by running the extractors a second time.
 - `src/lenses/instruction-truth/claims.ts` — claim extraction. Invariant: precision over recall;
   every skip class (builtins, flagged invocations, globs/URLs/placeholders, unrecognized
