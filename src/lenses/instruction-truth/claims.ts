@@ -245,6 +245,26 @@ function isPlaceholderClaim(token: string): boolean {
     .some((seg) => PLACEHOLDER_PREFIX_RE.test(seg) || PLACEHOLDER_SEGMENTS.has(seg.toLowerCase()))
 }
 
+// A namespace prefix (`pc:`, `lk:`, a repo shorthand) directly before a path mention labels it
+// as ANOTHER repo's tree — a legend token in a multi-repo prompt, not a reference into this
+// repo. Such a mention is skipped and counted, never resolved against the cwd — on the task
+// surface only, where quoting foreign trees is routine. Prose introducers that merely happen to
+// precede a path ("note:", "facts:") are not namespaces; the stop-list is grown from corpus
+// finds, and an unlisted one costs a disclosed skip, never a false accusation.
+export const NAMESPACE_IDENT = "[A-Za-z][A-Za-z0-9-]{0,15}"
+export const NAMESPACE_STOP = new Set(
+  (
+    "note notes see warning caution caveat caveats example examples ex eg ie nb ps re per " +
+    "file files path paths hint tip tips todo fixme step steps rule rules ref refs " +
+    "fact facts output outputs input inputs result results summary status overview " +
+    "next prev then thus hence plus goal goals spec specs context"
+  ).split(" "),
+)
+
+function isNamespace(ident: string | undefined): boolean {
+  return Boolean(ident) && !NAMESPACE_STOP.has((ident as string).toLowerCase())
+}
+
 /**
  * The prose around one occurrence: its own line, plus the lead-in line when the claim sits in a
  * list item or table row ("Files this creates:" followed by bulleted paths is the common shape).
@@ -275,19 +295,33 @@ export interface PathClaims {
   paths: string[]
   /** Claims whose every mention sits in create-this prose — skipped, counted, disclosed. */
   prospective: string[]
+  /** Claims whose every mention sits behind a namespace prefix (`pc:`) — another repo's tree. */
+  namespaced: string[]
   /** Naming stand-ins (`my-custom-skill`) — never real claims. */
   placeholder: string[]
+}
+
+export interface PathClaimOptions {
+  /**
+   * Read namespace-prefixed mentions (`pc: `src/x.ts``) as another repo's tree — the task
+   * surface, where prompts quote foreign repos behind a legend. Instruction files keep every
+   * backticked span as a claim of this repo.
+   */
+  namespaces?: boolean
 }
 
 /**
  * Repo-relative path claims from single-token inline spans, conservatively filtered. The
  * load-bearing precision rule (learned from real corpus prose): an extensionless bare token
  * (`research/trust`, `milestone/mNN`) is prose — a dir claim must end with `/`, a file claim
- * must carry an extension.
+ * must carry an extension. With `namespaces`, a span whose every mention sits behind a
+ * namespace prefix names another repo's tree, not this one.
  */
-export function extractPathClaims(text: string): PathClaims {
-  // Per claim: does EVERY mention sit in create-this prose? One plain reference makes it a claim.
+export function extractPathClaims(text: string, opts: PathClaimOptions = {}): PathClaims {
+  // Per claim: does EVERY mention sit in create-this prose / behind a namespace prefix? One
+  // plain reference makes it a claim.
   const prospectiveOnly = new Map<string, boolean>()
+  const namespacedOnly = new Map<string, boolean>()
   const placeholder = new Set<string>()
 
   for (const m of text.matchAll(/`([^`\n]+)`/g)) {
@@ -317,15 +351,24 @@ export function extractPathClaims(text: string): PathClaims {
     }
     const prospective = CREATION_CONTEXT_RE.test(claimContext(text, m.index ?? 0))
     prospectiveOnly.set(claim, (prospectiveOnly.get(claim) ?? true) && prospective)
+    if (opts.namespaces) {
+      // A namespace prefix ends the text right before this mention (`pc: `, `lk:`) — the span
+      // points into another repo's tree.
+      const nsLead = new RegExp(`(${NAMESPACE_IDENT}):[ \\t]*$`).exec(text.slice(0, m.index ?? 0))
+      const prefixed = isNamespace(nsLead?.[1])
+      namespacedOnly.set(claim, (namespacedOnly.get(claim) ?? true) && prefixed)
+    }
   }
 
   const paths: string[] = []
   const prospective: string[] = []
+  const namespaced: string[] = []
   for (const [claim, only] of prospectiveOnly) {
     if (only) prospective.push(claim)
+    else if (namespacedOnly.get(claim)) namespaced.push(claim)
     else paths.push(claim)
   }
-  return { paths, prospective, placeholder: [...placeholder] }
+  return { paths, prospective, namespaced, placeholder: [...placeholder] }
 }
 
 export interface DecisionRefs {

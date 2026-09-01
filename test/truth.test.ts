@@ -117,6 +117,18 @@ describe("claim extraction", () => {
     expect(placeholder).toEqual([".claude/skills/my-custom-skill/SKILL.md"])
     expect(paths).toEqual([".claude/skills/deploy/SKILL.md"])
   })
+
+  it("keeps every backticked span as a claim for instruction files — a prose introducer is not a namespace", () => {
+    // Corpus find: `facts: `docs/seo-strategy.md`` in a committed skill file — the label reads
+    // as prose, and only the task surface (opts.namespaces) reads prefixes at all.
+    const text = "Two facts: `docs/seo-strategy.md` locks the cadence; see pc: `docs/other.md` too."
+    const plain = extractPathClaims(text)
+    expect(plain.paths).toEqual(["docs/seo-strategy.md", "docs/other.md"])
+    expect(plain.namespaced).toEqual([])
+    const task = extractPathClaims(text, { namespaces: true })
+    expect(task.namespaced).toEqual(["docs/other.md"])
+    expect(task.paths).toEqual(["docs/seo-strategy.md"])
+  })
 })
 
 describe("doc-ref extraction (home paths are not repo paths)", () => {

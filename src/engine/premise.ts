@@ -14,15 +14,24 @@ import {
   type ExaminedClaim,
   type TruthEnv,
 } from "../lenses/instruction-truth/checks.js"
-import { KNOWN_EXTENSIONS, PATH_TOKEN_RE } from "../lenses/instruction-truth/claims.js"
+import {
+  KNOWN_EXTENSIONS,
+  NAMESPACE_IDENT,
+  NAMESPACE_STOP,
+  PATH_TOKEN_RE,
+} from "../lenses/instruction-truth/claims.js"
 import { rankFindings, type Finding } from "./finding.js"
 
 // `etymd premise` — the task an agent is about to be handed is an instruction too (decision 010).
 // Before anything acts on it, the things it NAMES are checked against the repo with the same
-// precision rules instruction files get; the premises only an agent can verify — that the named
-// things are the ones meant, that the mechanism the task assumes actually runs, that the state it
-// assumes holds — are handed over in a brief, never guessed at here. Reading files is the whole
-// of what this command does (decision 005: anything beyond that is out of scope by construction).
+// precision rules instruction files get — except that a task routinely QUOTES other people's
+// trees (a scratchpad clone, a legend-prefixed token), so a path is only accused of missing when
+// it is plausibly repo-relative: no namespace prefix on the mention, and a first segment that
+// starts where a directory of this repo does. The premises only an agent can verify — that the
+// named things are the ones meant, that the mechanism the task assumes actually runs, that the
+// state it assumes holds — are handed over in a brief, never guessed at here. Reading files is
+// the whole of what this command does (decision 005: anything beyond that is out of scope by
+// construction).
 
 export const PREMISE_LENS = "premise"
 export const PREMISE_BRIEF_FILE = path.join(ETYMD_DIR, "premise-brief.md")
@@ -67,6 +76,8 @@ export interface PromotionSkips {
   hostnameLike: number
   /** `input/output/` — a slash-joined phrase whose first segment is no directory here. */
   unrootedDirs: number
+  /** `pc:src/x.ts`, `lk: src/x.ts` — a namespace-prefixed mention of ANOTHER repo's tree. */
+  namespaced: number
 }
 
 export interface PromotionContext {
@@ -113,6 +124,7 @@ export function promoteBareTokens(text: string, ctx: PromotionContext): Promoted
     proseScripts: 0,
     hostnameLike: 0,
     unrootedDirs: 0,
+    namespaced: 0,
   }
   const promoted = text
     .split(CODE_SPAN_RE)
@@ -136,31 +148,60 @@ function promoteProse(segment: string, ctx: PromotionContext, skips: PromotionSk
     }
     return `\`${core}\`${trail}`
   })
-  return withCommands.replace(/[^\s`]+/g, (token) => {
-    const m = WRAP_RE.exec(token)
-    if (!m) return token
-    const [, lead = "", core = "", trail = ""] = m
-    if (!core || core.includes("://") || !PATH_TOKEN_RE.test(core)) return token
-    const first = core.slice(0, core.indexOf("/"))
-    const hostSuffix = HOSTNAME_RE.exec(first)?.[1]?.toLowerCase()
-    if (hostSuffix && !KNOWN_EXTENSIONS.has(hostSuffix)) {
-      skips.hostnameLike += 1
+  // Token-wise with one token of lookback: a legend prefix (`pc:`) reaches the path AFTER it.
+  const parts = withCommands.split(/(\s+)/)
+  for (let i = 0; i < parts.length; i += 2) {
+    parts[i] = promoteToken(parts[i] as string, i >= 2 ? (parts[i - 2] as string) : "", ctx, skips)
+  }
+  return parts.join("")
+}
+
+// The namespace label on a path mention — attached to it (`pc:src/x.ts`) or in the previous
+// token (`pc: src/x.ts`). Prose introducers ("note:", "see:") are not namespaces (claims.ts).
+function namespaceOf(core: string, prev: string): string | null {
+  const ns =
+    new RegExp(`^(${NAMESPACE_IDENT}):`).exec(core)?.[1] ??
+    new RegExp(`^(${NAMESPACE_IDENT}):$`).exec(prev)?.[1]
+  return ns && !NAMESPACE_STOP.has(ns.toLowerCase()) ? ns : null
+}
+
+function promoteToken(
+  token: string,
+  prev: string,
+  ctx: PromotionContext,
+  skips: PromotionSkips,
+): string {
+  const m = WRAP_RE.exec(token)
+  if (!m) return token
+  const [, lead = "", core = "", trail = ""] = m
+  if (!core || core.includes("://")) return token
+  const namespace = namespaceOf(core, prev)
+  const body =
+    namespace && core.startsWith(`${namespace}:`) ? core.slice(namespace.length + 1) : core
+  if (!PATH_TOKEN_RE.test(body)) return token
+  const first = body.slice(0, body.indexOf("/"))
+  const hostSuffix = HOSTNAME_RE.exec(first)?.[1]?.toLowerCase()
+  if (hostSuffix && !KNOWN_EXTENSIONS.has(hostSuffix)) {
+    skips.hostnameLike += 1
+    return token
+  }
+  if (body.endsWith("/")) {
+    // A directory claim in prose is only a claim when it starts where a real directory does;
+    // `input/output/` in a sentence is a slash-joined phrase, and prose is full of them.
+    if (!ctx.rootedDirs.has(first)) {
+      skips.unrootedDirs += 1
       return token
     }
-    if (core.endsWith("/")) {
-      // A directory claim in prose is only a claim when it starts where a real directory does;
-      // `input/output/` in a sentence is a slash-joined phrase, and prose is full of them.
-      if (!ctx.rootedDirs.has(first)) {
-        skips.unrootedDirs += 1
-        return token
-      }
-      return `${lead}\`${core}\`${trail}`
-    }
+  } else {
     // The extractor reads a file claim only with a recognized extension; `and/or` stays prose.
-    const ext = core.toLowerCase().match(/\.([a-z0-9]{1,8})$/)?.[1]
+    const ext = body.toLowerCase().match(/\.([a-z0-9]{1,8})$/)?.[1]
     if (!ext || !KNOWN_EXTENSIONS.has(ext)) return token
-    return `${lead}\`${core}\`${trail}`
-  })
+  }
+  if (namespace) {
+    skips.namespaced += 1
+    return token
+  }
+  return `${lead}\`${body}\`${trail}`
 }
 
 /** Directory names a prose dir claim may start with — mirrors where `pathResolves` looks. */
@@ -183,7 +224,10 @@ export async function runPremise(opts: PremiseOptions): Promise<PremiseResult> {
   const facts = await scanProject(root)
   const env = await buildTruthEnv(root, facts)
   const counters = emptyCounters()
-  const promoted = promoteBareTokens(task, { rootedDirs: await listRootedDirs(env) })
+  // One rooting notion for both halves: where prose dir claims may start, and where a missing
+  // path's first segment must start to be plausibly repo-relative at all.
+  const rootedDirs = await listRootedDirs(env)
+  const promoted = promoteBareTokens(task, { rootedDirs })
   const text = { path: TASK_LABEL, text: promoted.text }
 
   const findings: Finding[] = []
@@ -198,6 +242,8 @@ export async function runPremise(opts: PremiseOptions): Promise<PremiseResult> {
       subject: "The task",
       missingPathTier: "risk",
       maxPathFindings: MAX_PATH_FINDINGS,
+      rootedFirstSegments: rootedDirs,
+      treatNamespacedPrefixes: true,
       whyCommand:
         "The task is built on a command that does not exist — an agent will run it and fail, or quietly substitute something else and report success.",
       actionCommand: "Fix the task before handing it over: name the real script, or restore it.",
@@ -260,6 +306,21 @@ export async function runPremise(opts: PremiseOptions): Promise<PremiseResult> {
   if (skips.unrootedDirs) {
     disclosures.push(
       `${skips.unrootedDirs} slash-joined phrase(s) ending in \`/\` start with no directory that exists here (e.g. \`input/output/\`) — read as prose; skipped, not flagged. Backtick one to have it checked.`,
+    )
+  }
+  if (skips.namespaced) {
+    disclosures.push(
+      `${skips.namespaced} path mention(s) in prose carry a namespace prefix (\`pc:src/x.ts\`, \`lk: src/x.ts\`) — another repo's tree, never this one; skipped, not flagged.`,
+    )
+  }
+  if (counters.namespacedSkipped) {
+    disclosures.push(
+      `${counters.namespacedSkipped} backticked path mention(s) sit directly after a namespace prefix (\`pc: \`src/x.ts\`\`) — another repo's tree, not this one; skipped, not flagged.`,
+    )
+  }
+  if (counters.outsideRepoSkipped) {
+    disclosures.push(
+      `${counters.outsideRepoSkipped} path(s) the task names start at no directory of this repo — typical of a path quoted from another repository or a scratchpad clone; outside this repo, not missing here. Skipped, not flagged.`,
     )
   }
   if (counters.unverifiableCommands) {
