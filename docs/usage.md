@@ -83,6 +83,21 @@ committer dates only, never mtime:
 total ≥ 8000 words (defaults; override under `context` in `.etymd/config.json`). Only genuinely
 `alwaysApply` Cursor rules count.
 
+**`comment-truth`** (truth) — the same four claim checks (command, path, doc-reference,
+decision id) over comments in tracked source files, extracted per language (JS/TS, C-family,
+shell/Python/Ruby-style `#`, CSS, markup, SQL) with a string-aware scanner — string content is
+never read as a comment. Findings name the file and line. Comments are prose, so bare mentions are
+promoted with the premise surface's stricter rules; test/fixture/vendor files and
+mixed-language templates (`.vue`/`.svelte`/`.astro`) are skipped, counted, and disclosed, and
+skipped files are held out of scope so the ledger never reads them as fixed.
+
+**`pin-integrity`** (truth) — dependency pins judged by lockfile arithmetic alone: an
+`overrides` / `resolutions` / `pnpm.overrides` entry whose package nothing in the lock (or any
+manifest, workspace included) requests any more, and a `patchedDependencies` target the lock no
+longer carries at the named version (either key direction; `pnpm-workspace.yaml` too). No
+registry, no network, no tool run; unverifiable shapes (no lockfile, nested-path override keys,
+range selectors — verified by name only) are disclosed, never flagged.
+
 ## `etymd premise` — is this the right task?
 
 The task you are about to hand an agent is an instruction too. `etymd premise "<task>"` (or

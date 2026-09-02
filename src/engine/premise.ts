@@ -69,13 +69,13 @@ export interface PremiseOptions {
 
 /** What the prose promotion declined to read as a claim — counted, then disclosed. */
 export interface PromotionSkips {
-  /** `pnpm X` / `yarn X` / `bun X` in prose without `run` — a phrase as often as an invocation. */
+  /** A pm-plus-name mention in prose without `run` — a phrase as often as an invocation. */
   bareInvocations: number
   /** `… run the`, `… run X` — a function word or a one-letter stand-in where a script would be. */
   proseScripts: number
   /** `github.com/org/repo/…` — a scheme-less URL, not a repo path. */
   hostnameLike: number
-  /** `input/output/` — a slash-joined phrase whose first segment is no directory here. */
+  /** input/output/ — a slash-joined phrase whose first segment is no directory here. */
   unrootedDirs: number
   /** `pc:src/x.ts`, `lk: src/x.ts` — a namespace-prefixed mention of ANOTHER repo's tree. */
   namespaced: number
@@ -205,7 +205,7 @@ function promoteToken(
 }
 
 /** Directory names a prose dir claim may start with — mirrors where `pathResolves` looks. */
-async function listRootedDirs(env: TruthEnv): Promise<Set<string>> {
+export async function listRootedDirs(env: TruthEnv): Promise<Set<string>> {
   const dirs = new Set<string>()
   for (const base of env.bases) {
     for (const sub of ["", "src", "scripts"]) {
