@@ -347,7 +347,7 @@ export const stateFreshnessLens: Lens = {
     for (const a of decisionArtifacts) {
       const text = await readText(path.join(ctx.root, a.path))
       if (text === null) {
-        // Directory conventions (docs/adr/ …): recognized and age-exempt; not parsed per entry.
+        // Directory conventions (the adr-dir spec): recognized and age-exempt; not parsed per entry.
         disclosures.push(
           `${a.path} recognized as a decisions convention (directory) — age-exempt; per-entry format checks apply only to marker-carrying decisions files.`,
         )

@@ -16,7 +16,9 @@ standard — this file is audited by the tool itself, so every claim below must 
 Greek _étymon_, a word's true sense, + the `.md` family it guards). One objective: **keep your
 agent instructions true** — an instruction being anything told to an agent, in a file or in the
 prompt (decision 010). It verifies the agent context layer (AGENTS.md, CLAUDE.md, rules,
-skills) and, on request, the task an agent is handed, against the actual repo — command claims, path claims, consistency, CI↔local gate parity,
+skills), the source comments citing it, the dependency pins binding the tree, and, on request,
+the task an agent is handed, against the actual repo — command claims, path claims,
+decision references, consistency, CI↔local gate parity,
 context economy — with drift measured against a committed baseline and a regression ledger.
 Distilled from a frontrunner project workflow, validated against a sibling-repo corpus
 (`sources.json`). Solo developer; published on npm as `etymd`.
@@ -88,9 +90,11 @@ over repo-wide scans.
   (committed improvement memory + `resolveEntry` for dismiss/accept) · `run.ts` (lens registry +
   audit composition) · `fleet.ts` (sweep + manifest check + fleet-scope wall findings) ·
   `premise.ts` (the task-as-instruction check: bare-token promotion, entities, the agent brief)
-- `src/lenses/` — the lenses: `instruction-truth/` (claims extraction, the shared truth checks
-  in `checks.ts`, and the headline truth lens — instruction files AND state documents, incl.
-  decision-reference resolution) ·
+- `src/lenses/` — the lenses: `instruction-truth/` (claims extraction + per-language comment
+  extraction, the shared truth checks in `checks.ts`, and the headline truth lens — instruction
+  files AND state documents, incl. decision-reference resolution) ·
+  `comment-truth.ts` (the same checks over source comments — decision 011) ·
+  `pin-integrity.ts` (offline lockfile arithmetic over dependency pins) ·
   `state-freshness.ts` (state/decisions freshness — git committer dates, never mtime) ·
   `gate-integrity/` (inventory + lens) · `context-economy.ts`
 - `src/pack/` — the versioned pack: `templates.ts` (minimal scaffold + hooks) · `version.ts`
@@ -100,7 +104,7 @@ over repo-wide scans.
 - `docs/decisions/` — the decision record (001 founding · 002 foundation re-lock · 003 truth-guard
   pivot — the current identity · 004 fleet mode · 005 declared rules, design only · 006 local gate
   provenance · 007 declared entry fields · 008 derived gate tier · 009 state-doc truth · 010
-  premise — the task is an instruction)
+  premise — the task is an instruction · 011 source comments + dependency pins)
 - `ROADMAP.md` — now/next/later, accepted heuristic trade-offs (release mechanics are a
   machine-local runbook, deliberately untracked: operating detail attracts account and
   environment specifics a public repo must not carry)
@@ -113,9 +117,10 @@ over repo-wide scans.
 - `src/engine/finding.ts` `Finding` — the ONE finding schema every lens speaks;
   never introduce a parallel finding shape.
 - `src/lenses/instruction-truth/checks.ts` — the ONE implementation of the command, path,
-  doc-reference, and decision-reference truth checks. `instruction-truth` (files, state docs) and
-  `premise` (the task) both call it; a check re-implemented beside it would let the two surfaces
-  drift apart, which is the failure this tool exists to catch. Tier and wording are parameters,
+  doc-reference, and decision-reference truth checks. `instruction-truth` (files, state docs),
+  `premise` (the task), and `comment-truth` (source comments) all call it; a check re-implemented
+  beside it would let the surfaces drift apart, which is the failure this tool exists to catch.
+  Tier and wording are parameters,
   the rules are not. What a check examined is returned beside what it flagged, so a caller never
   re-derives coverage by running the extractors a second time.
 - `src/lenses/instruction-truth/claims.ts` — claim extraction. Invariant: precision over recall;

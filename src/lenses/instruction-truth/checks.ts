@@ -29,7 +29,7 @@ export interface TruthEnv {
   bases: string[]
   /** A repo-relative claim resolves in the root, any workspace package, or their src/ scripts/. */
   pathResolves(claim: string): Promise<boolean>
-  /** `yarn X` / `pnpm X` may legitimately run an installed node_modules/.bin binary. */
+  /** A pm-plus-name invocation may legitimately run an installed node_modules/.bin binary. */
   binResolves(name: string): Promise<boolean>
 }
 

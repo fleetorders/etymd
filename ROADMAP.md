@@ -22,6 +22,15 @@ does not ship. Decision record: [`docs/decisions/003-truth-guard-pivot.md`](docs
 
 ### Shipped since 003
 
+- **Source comments + dependency pins** (decision record
+  [`docs/decisions/011-source-comments-and-pins.md`](docs/decisions/011-source-comments-and-pins.md)):
+  the four claim checks run over source-code comments too (per-language, string-aware
+  extraction; the shared checks and the premise surface's prose promotion; findings carry file
+  and line; test/fixture/vendor files skipped, disclosed, and held out of scope), and a new
+  `pin-integrity` lens judges manifest pins by lockfile arithmetic alone — a dead override
+  rewrites nothing, a dead patch targets a version the lock no longer carries. Strictly offline,
+  pinned by a test that scans `src/` for network calls. What needs a tool run or a network probe
+  stays parked (011).
 - **`etymd premise`** (decision record
   [`docs/decisions/010-premise-the-task-is-an-instruction.md`](docs/decisions/010-premise-the-task-is-an-instruction.md)):
   the task an agent is handed is an instruction too — what it names is verified against the repo
