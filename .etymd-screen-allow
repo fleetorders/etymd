@@ -94,3 +94,10 @@ pattern paths are banned in tracked files
 reason test fixture text
 date 2026-08-15
 author nightly
+
+# The vocabulary-class fixture for the generated-data exemption — its tests and docs must
+# name a credential-shaped English word, and this is the canonical one (period prose).
+pattern passkey
+reason vocabulary-class fixture for the generated-data path exemption
+date 2026-09-04
+author nightly

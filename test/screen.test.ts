@@ -76,7 +76,7 @@ describe("content screen", () => {
 
 describe("allow-file records", () => {
   it("reads a labeled record: the pattern is the rest of its line, verbatim", () => {
-    const entries = compileAllow(
+    const { lines: entries } = compileAllow(
       ["pattern ^AcmeInc$", "reason fixture text", "date 2026-08-15", "author nightly"].join("\n"),
     )
     expect(entries).toHaveLength(1)
@@ -90,7 +90,7 @@ describe("allow-file records", () => {
     // The format this replaces split entries on `|`, so an alternation truncated at its
     // first branch and the rest could masquerade as provenance — a silent narrowing of the
     // gate. Labeled lines cannot express that misparse: the pattern runs to end of line.
-    const entries = compileAllow(
+    const { lines: entries } = compileAllow(
       ["pattern AcmeInc|BetaInc", "reason either name", "date 2026-08-15", "author nightly"].join(
         "\n",
       ),
@@ -104,21 +104,23 @@ describe("allow-file records", () => {
   })
 
   it("a bare unlabeled line is a complete pattern-only record (self-name shorthand)", () => {
-    const entries = compileAllow("^widget$")
+    const { lines: entries } = compileAllow("^widget$")
     expect(entries).toHaveLength(1)
     expect(entries[0]?.pattern.source).toBe("^widget$")
     expect(entries[0]?.reason).toBeUndefined()
   })
 
   it("comments, blanks and indentation do not become patterns", () => {
-    const entries = compileAllow(["# a comment", "", "  pattern ^a$  ", "\treason r"].join("\n"))
+    const { lines: entries } = compileAllow(
+      ["# a comment", "", "  pattern ^a$  ", "\treason r"].join("\n"),
+    )
     expect(entries).toHaveLength(1)
     expect(entries[0]?.pattern.source).toBe("^a$")
     expect(entries[0]?.reason).toBe("r")
   })
 
   it("malformed regex falls back to a literal match, never a silent drop", () => {
-    const entries = compileAllow(
+    const { lines: entries } = compileAllow(
       ["pattern ([unclosed", "reason broken", "date 2026-08-15", "author x"].join("\n"),
     )
     expect(entries).toHaveLength(1)
@@ -128,14 +130,16 @@ describe("allow-file records", () => {
   it("an orphan provenance line exempts nothing and creates no record", () => {
     // Fail-safe by design: an orphan can only under-exempt, and under-exemption reports
     // its own gap at the door that sees the hit.
-    const entries = compileAllow(["reason no pattern above me", "pattern ^a$"].join("\n"))
+    const { lines: entries } = compileAllow(
+      ["reason no pattern above me", "pattern ^a$"].join("\n"),
+    )
     expect(entries).toHaveLength(1)
     expect(entries[0]?.pattern.source).toBe("^a$")
     expect(entries[0]?.reason).toBeUndefined()
   })
 
   it("reads several records in sequence, each with its own fields", () => {
-    const entries = compileAllow(
+    const { lines: entries } = compileAllow(
       [
         "pattern ^a$",
         "reason first",
@@ -153,7 +157,7 @@ describe("allow-file records", () => {
   })
 
   it("a pattern with spaces runs to the end of the line, not to the first space", () => {
-    const entries = compileAllow(
+    const { lines: entries } = compileAllow(
       [
         "pattern AcmeInc and its friends",
         "reason prose pattern",
@@ -386,5 +390,135 @@ describe("upstream exemption end to end (run, config-resolved)", () => {
     const blocked = process.exitCode
     process.exitCode = 0
     expect(blocked).toBe(1) // modified → no longer upstream-owned → vocabulary applies → blocked
+  })
+})
+
+describe("generated-data records (allow file)", () => {
+  it("reads a `generated` path record with provenance, beside line-exemption records", () => {
+    const { lines, generated } = compileAllow(
+      [
+        "pattern ^AcmeInc$",
+        "reason fixture",
+        "date 2026-08-15",
+        "author x",
+        "generated ^src/data/corpus\\.json$",
+        "reason public-domain corpus, regenerated yearly",
+        "date 2026-09-04",
+        "author owner",
+      ].join("\n"),
+    )
+    expect(lines).toHaveLength(1) // the pattern record keeps its own provenance…
+    expect(lines[0]?.reason).toBe("fixture")
+    expect(generated).toHaveLength(1) // …and never absorbs the generated record's
+    // Compared against a reference RegExp built the same way: V8 canonicalizes `/` inside
+    // `.source`, and spelling the canonical form by hand just re-guesses it.
+    expect(generated[0]?.path.source).toBe(new RegExp("^src/data/corpus\\.json$", "i").source)
+    expect(generated[0]?.reason).toBe("public-domain corpus, regenerated yearly")
+    expect(generated[0]?.author).toBe("owner")
+    // The declaration matches the path it names, and nothing else.
+    expect(generated[0]?.path.test("src/data/corpus.json")).toBe(true)
+    expect(generated[0]?.path.test("src/data/notes.md")).toBe(false)
+  })
+
+  it("a `generated` line is a path record, never a stray line-exemption pattern", () => {
+    // Without its own record kind, the line would fall through to the bare-line shorthand and
+    // exempt every LINE containing its text — a hole in the gate wearing a path's clothes.
+    const { lines, generated } = compileAllow(
+      ["generated ^src/data/corpus\\.json$", "reason r", "date 2026-09-04", "author x"].join("\n"),
+    )
+    expect(lines).toHaveLength(0)
+    expect(generated).toHaveLength(1)
+  })
+
+  it("generatedData drops vocabulary patterns but KEEPS secret-class AND the machine-path check", () => {
+    // The asymmetry with upstream-owned is deliberate and is the point: upstream bytes are proven
+    // public, generated bytes are not — a generator that embeds a home path in provenance metadata
+    // is exactly the quiet leak the screen exists for.
+    const pats = [
+      { re: /passkey/i, cls: "vocabulary" as const },
+      { re: /supersecret/i, cls: "secret" as const },
+    ]
+    const home = `/${"Users"}/someone/x` // assembled so the source is not a literal home path
+    const text = ["the universal passkey of imagination", "mentions supersecret", home].join("\n")
+    expect(screenText(text, "f", pats, [], false, false)).toHaveLength(3)
+    const kept = screenText(text, "f", pats, [], false, true)
+    expect(kept.map((h) => h.line)).toEqual([2, 3]) // secret-class AND machine path survive
+  })
+})
+
+describe("generated-data exemption end to end (run)", () => {
+  // The case the feature exists for: a regenerated public-domain corpus whose period English
+  // trips credential vocabulary on a schedule, training `--no-verify` on a security hook.
+  const corpusLine = "With the universal passkey of imagination we open the dingy door"
+
+  async function initStagedRepo(): Promise<{
+    dir: string
+    stage: (rel: string, text: string) => Promise<void>
+    patterns: string
+  }> {
+    const { execFile } = await import("node:child_process")
+    const { promisify } = await import("node:util")
+    const pexec = promisify(execFile)
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-gen-"))
+    const g = (args: string[]) => pexec("git", args, { cwd: dir })
+    await g(["init", "-q"])
+    await g(["config", "user.email", "t@example.com"])
+    await g(["config", "user.name", "t"])
+    await g(["commit", "-q", "--allow-empty", "-m", "init"])
+    const stage = async (rel: string, text: string) => {
+      await fs.mkdir(path.join(dir, path.dirname(rel)), { recursive: true })
+      await fs.writeFile(path.join(dir, rel), text)
+      await g(["add", rel])
+    }
+    const patterns = path.join(dir, "patterns.txt")
+    await fs.writeFile(patterns, "# class: vocabulary\npasskey\n")
+    return { dir, stage, patterns }
+  }
+
+  it("exempts the declared path, still blocks the same word elsewhere and real secrets inside it", async () => {
+    const { run } = await import("../src/commands/screen.js")
+    const { dir, stage, patterns } = await initStagedRepo()
+    await stage(
+      ".etymd-screen-allow",
+      [
+        "generated ^src/data/corpus\\.json$",
+        "reason public-domain corpus, regenerated yearly",
+        "date 2026-09-04",
+        "author owner",
+      ].join("\n"),
+    )
+    await stage("src/data/corpus.json", `${corpusLine}\n`)
+    await stage("src/data/notes.md", `${corpusLine}\n`)
+
+    process.exitCode = 0
+    await run({ cwd: dir, scope: "staged", patterns })
+    const first = process.exitCode
+    process.exitCode = 0
+    // notes.md carries the same word but is not declared generated — it blocks, proving the
+    // exemption reached only the declared path.
+    expect(first).toBe(1)
+
+    // A secret-class pattern inside the exempted file still blocks — the exemption is exactly as
+    // wide as the words a natural-language corpus cannot help containing.
+    const secretPatterns = path.join(dir, "secret.txt")
+    await fs.writeFile(secretPatterns, "supersecret-token\n")
+    process.exitCode = 0
+    await stage("src/data/corpus.json", `${corpusLine}\nsupersecret-token\n`)
+    await run({ cwd: dir, scope: "staged", patterns: secretPatterns })
+    const second = process.exitCode
+    process.exitCode = 0
+    expect(second).toBe(1)
+  })
+
+  it("a generated record without provenance does not apply — the path is screened in full", async () => {
+    const { run } = await import("../src/commands/screen.js")
+    const { dir, stage, patterns } = await initStagedRepo()
+    await stage(".etymd-screen-allow", "generated ^src/data/corpus\\.json$\n")
+    await stage("src/data/corpus.json", `${corpusLine}\n`)
+    process.exitCode = 0
+    await run({ cwd: dir, scope: "staged", patterns })
+    const blocked = process.exitCode
+    process.exitCode = 0
+    expect(blocked).toBe(1) // unsigned hole in the gate → refused, vocabulary applies
   })
 })
