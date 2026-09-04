@@ -48,6 +48,17 @@ export {
   type FleetProjectSweep,
 } from "./engine/fleet.js"
 export {
+  parseRubric,
+  buildProposals,
+  RUBRIC_CRITERIA,
+  PROPOSAL_SCHEMA,
+  type Rubric,
+  type RubricLine,
+  type RubricCriterion,
+  type Proposal,
+  type ProposeResult,
+} from "./engine/propose.js"
+export {
   rankFindings,
   type Finding,
   type Lens,

@@ -171,26 +171,27 @@ personal and guarded-side repos. See [the fleet manifest](#the-fleet-manifest-ex
 
 ## Commands
 
-| Command                          | What it does                                                                                                                                                                                                      |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `etymd audit`                    | Verify every claim; ranked findings (risk → gap → polish) + ledger diff. `--lens`, `--truth`, `--json`, `--no-ledger`, `--fail-on <tier>`.                                                                        |
-| `etymd init`                     | Onboard: approve the committed baseline; scaffold a minimal AGENTS.md **only if missing**. Never overwrites.                                                                                                      |
-| `etymd doctor`                   | Alias for `audit --truth`.                                                                                                                                                                                        |
-| `etymd context`                  | The economy view: per-file always-loaded footprint + extraction candidates.                                                                                                                                       |
-| `etymd gates`                    | Install local git-hook gates (pre-commit / commit-msg / pre-push, plus a publish screen where something ships) built from your own check scripts — and from the repo's shell surface, where it has one.           |
-| `etymd screen`                   | Content screen: find text that must never be published. Four scopes — `--staged`, `--message`, `--tree`, `--dir`. Bring your own patterns; etymd ships none.                                                      |
-| `etymd scan`                     | The deterministic reckoning behind everything. `--json`.                                                                                                                                                          |
-| `etymd brief`                    | A grounded briefing your in-repo agent completes to author the semantic layer.                                                                                                                                    |
-| `etymd premise`                  | `premise "<task>"` — is this the right task? What it names, verified against the repo; a brief for what only the agent can verify. `--file` (`-` = stdin), `--json`, `--no-brief`, `--fail-on <tier>`. No ledger. |
-| `etymd approve`                  | Refresh the committed baseline non-interactively after intentional structural changes.                                                                                                                            |
-| `etymd ledger`                   | The findings memory: every tracked finding with status and history.                                                                                                                                               |
-| `etymd dismiss`                  | `dismiss <id> --reason <text>` — a dismissed finding never resurfaces without regressing.                                                                                                                         |
-| `etymd accept`                   | `accept <id>` — record a finding as accepted reality; visible in the ledger, out of the report.                                                                                                                   |
-| `etymd fleet`                    | Sweep every project in a fleet manifest: read-only per-repo audits + manifest/wall checks. `--manifest`, `--only`, `--profile`, `--truth`, `--persist-ledgers`, `--json`, `--fail-on`.                            |
-| `etymd fleet check`              | Validate the manifest pair alone (no lenses): dangling mappings, duplicate names, privacy leaks, undeclared trust, machine paths. Non-zero exit on any finding.                                                   |
-| `etymd fleet add`                | `add <dir>` — register a project: scans it, asks for what no scan can derive, and refuses to write an entry missing a mandatory field. `--name`, `--kind`, `--profile`, `--trust`, `-y`.                          |
-| `etymd fleet board`              | Render the fleet board: every project's `MILESTONES.md` (contract key `milestones`, shape-checked by the sweep) plus a ranked initiatives table on one page. `--initiatives <file>`, `--out <file>`, `--json`.    |
-| `etymd fleet dismiss` / `accept` | `<name> <id>` — resolve a project's finding from any cwd; guarded findings persist beside the manifest, never in the guarded worktree.                                                                                  |
+| Command                          | What it does                                                                                                                                                                                                                                                     |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `etymd audit`                    | Verify every claim; ranked findings (risk → gap → polish) + ledger diff. `--lens`, `--truth`, `--json`, `--no-ledger`, `--fail-on <tier>`.                                                                                                                       |
+| `etymd init`                     | Onboard: approve the committed baseline; scaffold a minimal AGENTS.md **only if missing**. Never overwrites.                                                                                                                                                     |
+| `etymd doctor`                   | Alias for `audit --truth`.                                                                                                                                                                                                                                       |
+| `etymd context`                  | The economy view: per-file always-loaded footprint + extraction candidates.                                                                                                                                                                                      |
+| `etymd gates`                    | Install local git-hook gates (pre-commit / commit-msg / pre-push, plus a publish screen where something ships) built from your own check scripts — and from the repo's shell surface, where it has one.                                                          |
+| `etymd screen`                   | Content screen: find text that must never be published. Four scopes — `--staged`, `--message`, `--tree`, `--dir`. Bring your own patterns; etymd ships none.                                                                                                     |
+| `etymd scan`                     | The deterministic reckoning behind everything. `--json`.                                                                                                                                                                                                         |
+| `etymd brief`                    | A grounded briefing your in-repo agent completes to author the semantic layer.                                                                                                                                                                                   |
+| `etymd premise`                  | `premise "<task>"` — is this the right task? What it names, verified against the repo; a brief for what only the agent can verify. `--file` (`-` = stdin), `--json`, `--no-brief`, `--fail-on <tier>`. No ledger.                                                |
+| `etymd approve`                  | Refresh the committed baseline non-interactively after intentional structural changes.                                                                                                                                                                           |
+| `etymd ledger`                   | The findings memory: every tracked finding with status and history.                                                                                                                                                                                              |
+| `etymd dismiss`                  | `dismiss <id> --reason <text>` — a dismissed finding never resurfaces without regressing.                                                                                                                                                                        |
+| `etymd accept`                   | `accept <id>` — record a finding as accepted reality; visible in the ledger, out of the report.                                                                                                                                                                  |
+| `etymd fleet`                    | Sweep every project in a fleet manifest: read-only per-repo audits + manifest/wall checks. `--manifest`, `--only`, `--profile`, `--truth`, `--persist-ledgers`, `--json`, `--fail-on`.                                                                           |
+| `etymd fleet check`              | Validate the manifest pair alone (no lenses): dangling mappings, duplicate names, privacy leaks, undeclared trust, machine paths. Non-zero exit on any finding.                                                                                                  |
+| `etymd fleet add`                | `add <dir>` — register a project: scans it, asks for what no scan can derive, and refuses to write an entry missing a mandatory field. `--name`, `--kind`, `--profile`, `--trust`, `-y`.                                                                         |
+| `etymd fleet board`              | Render the fleet board: every project's `MILESTONES.md` (contract key `milestones`, shape-checked by the sweep) plus a ranked initiatives table on one page. `--initiatives <file>`, `--out <file>`, `--json`.                                                   |
+| `etymd propose`                  | Score the sweep's improvement findings + recurring classes against a fleet-authored rubric — stable `proposal/1` records, read-only, deterministic, guarded entries excluded. `--rubric <file>` (required), `--manifest <file>` or `--from <fleet.json>`, `--json`. |
+| `etymd fleet dismiss` / `accept` | `<name> <id>` — resolve a project's finding from any cwd; guarded findings persist beside the manifest, never in the guarded worktree.                                                                                                                                 |
 
 `--cwd <dir>` targets another directory. Read-only probing of any repo leaves **zero trace**
 (`audit --no-ledger` writes nothing).
@@ -539,6 +540,40 @@ status | next | effort | projects | depends-on |`, the one hand-edited fleet-lev
 Formatter interop for the `.etymd` state the sweep resolves: same rule as everywhere — see
 [the files Etymd keeps](#the-files-etymd-keeps).
 
+### Rubric-scored proposals (`etymd propose`)
+
+The sweep already gives every improvement finding an action, an effort and a confidence, and
+names the classes open in two or more projects. `etymd propose` adds the scoring step — against
+a rubric **your fleet authors**, because what is worth doing is your call, not the tool's:
+
+```
+severity: 2      # risk=3 · gap=2 · polish=1
+economy: 3       # S=3 · M=2 · L=1
+confidence: 1    # high=3 · medium=2 · low=1
+breadth: 4       # projects carrying it, capped at 3
+```
+
+One criterion per line (`#` comments and blanks ignored). Those four criteria are the whole
+vocabulary — each is computed from finding facts, so a score is arithmetic, not an opinion; a
+line naming anything else is refused quoting the line. `score` is Σ weight × value; a line
+**fires** (listed in `matched`) when the subject reads at/above the criterion's midpoint.
+
+```bash
+etymd propose --manifest registry.json --rubric opportunity.rubric --json
+# or, without re-sweeping: --from <fleet.json> (a stored `etymd fleet --json` output)
+```
+
+Subjects are every `kind: improvement` finding from personal projects plus every recurring
+class, recomputed over personal projects only — **guarded entries are excluded from the output
+entire, by name**. A class is scored conservatively (worst tier, dearest effort, weakest
+confidence). Each `proposal/1` record carries id, class, projects, action, effort, confidence,
+score, the fired rubric lines, and an `implications` block (projects, files, gates,
+reversibility) extracted from the findings' evidence — files are path-shaped evidence tokens,
+and `undetermined` reversibility says so rather than guessing. Read-only and deterministic: no
+timestamps, nothing written, identical input → identical bytes, so a filed proposal can be
+re-derived and compared. Decision record:
+[`docs/decisions/012-propose-rubric-scored-proposals.md`](https://github.com/fleetorders/etymd/blob/main/docs/decisions/012-propose-rubric-scored-proposals.md).
+
 ## Programmatic use
 
 ```ts
@@ -572,7 +607,8 @@ Without it — on a fresh clone or in CI — those suites skip cleanly and the r
 [`docs/decisions/`](https://github.com/fleetorders/etymd/tree/main/docs/decisions) — 001 founding · 002 foundation re-lock · **003 the truth-guard
 pivot** (the current identity; includes the state-of-the-field investigation it rests on) ·
 **004 fleet mode** (the truth guard across your repositories) · 005 declared rules (design only) ·
-**006 local gate provenance** (what the tool may read, and what it may rewrite).
+**006 local gate provenance** (what the tool may read, and what it may rewrite) · 011 milestones
+& the fleet board · 012 `etymd propose` (rubric-scored proposals).
 [`ROADMAP.md`](https://github.com/fleetorders/etymd/blob/main/ROADMAP.md) — what's now / next / later, and the accepted heuristic
 trade-offs.
 
