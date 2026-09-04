@@ -462,12 +462,12 @@ so a pack number cited in a baseline always means exactly one pack.
 
 ### Patch Changes
 
-- 88492b5: Fix: `fleet add --profile guarded` was silently ignored, registering guarded-side repos as personal.
+- 88492b5: Fix: `fleet add --profile guarded` was silently ignored, registering guarded repos as personal.
 
   `fleet` declares its own `--profile` (the sweep filter), and commander hands a parent-declared
   option the value even when it is typed after the subcommand. So `fleet add <dir> --profile guarded`
   left the subcommand's own option undefined, the placement fell back to personal, and the
-  personal branch records `path` and the RAW `remote` — writing the guarded-side host and its internal
+  personal branch records `path` and the RAW `remote` — writing the guarded host and its internal
   group structure into a manifest that is tracked and pushed. That is precisely the disclosure the
   alias convention exists to prevent. The same shadowing class was already fixed for `--manifest`
   and `--json`; `--profile` was missed.

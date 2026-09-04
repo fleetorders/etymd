@@ -217,7 +217,7 @@ export function isSelfBuildRepo(facts: ProjectFacts): boolean {
  * patterns, and a machine without a checker installed runs a no-op instead of failing.
  *
  * The indirection is the whole design. Screening patterns are the very strings being screened
- * for (guarded-side names, hostnames, identities), so they can never live in a tracked file — the
+ * for (organisation names, hostnames, identities), so they can never live in a tracked file — the
  * hook names an executable, and the executable reads the pattern file. Etymd ships the screener
  * (`etymd screen`) but never ships patterns: the mechanism is general, the policy is the user's.
  *

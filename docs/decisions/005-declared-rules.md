@@ -235,9 +235,9 @@ end.
 
 ## Properties, not zones
 
-`FleetProfile = "personal" | "guarded"` encodes one fleet's guarded-side separation as the fleet model's
+`FleetProfile = "personal" | "guarded"` encodes one fleet's guarded separation as the fleet model's
 architecture: **63 `guarded` references in the fleet engine, 30 in the loader, 10 in commands**. A
-stranger with a fleet has no guarded-side wall; they have repositories with different exposure.
+stranger with a fleet has no guarded wall; they have repositories with different exposure.
 
 The obvious fix — rename `guarded` to `restricted`, or add a richer zone vocabulary — is the wrong
 shape. A zone is a **taxonomy**, and a taxonomy forces a judgment at registration time
@@ -259,7 +259,7 @@ All four combinations are meaningful, so no cell requires a judgment call:
 |                    | `localOnly: false`                                | `localOnly: true`                          |
 | ------------------ | ------------------------------------------------- | ------------------------------------------ |
 | `aliasOnly: false` | an ordinary repository                            | scratch work that never leaves the machine |
-| `aliasOnly: true`  | client work, synced but unnamed in a tracked file | what `guarded` means today                    |
+| `aliasOnly: true`  | client work, synced but unnamed in a tracked file | what `guarded` means today                 |
 
 A user who needs neither writes nothing. Nobody picks a category; they state two facts.
 
@@ -267,7 +267,7 @@ A user who needs neither writes nothing. Nobody picks a category; they state two
 `machineProfile` stays, because it describes the _machine_, not a repository.
 
 **Explicitly parked: the relational checks.** The guarded-email check (`src/engine/fleet.ts:597`) runs
-on _personal_ entries and flags guarded-side-domain authors; the hygiene-needle check is the same
+on _personal_ entries and flags guarded-domain authors; the hygiene-needle check is the same
 shape. Neither is a property of a repository — both assert _"identifiers associated with A must
 not appear in B"_, which is a relationship. Forcing them into properties would reintroduce exactly
 the complexity this section removes. They stay as they are until a second user gives evidence for

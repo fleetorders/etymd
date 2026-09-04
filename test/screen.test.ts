@@ -257,9 +257,13 @@ describe("pattern classes", () => {
 
   it("a `# class: vocabulary` directive switches the class of the lines beneath it, and back", () => {
     const pats = compilePatterns(
-      ["always-secret", "# class: vocabulary", "two-factor", "# class: secret", "guarded-name"].join(
-        "\n",
-      ),
+      [
+        "always-secret",
+        "# class: vocabulary",
+        "two-factor",
+        "# class: secret",
+        "guarded-name",
+      ].join("\n"),
     )
     expect(pats.map((p) => [p.re.source, p.cls])).toEqual([
       ["always-secret", "secret"],

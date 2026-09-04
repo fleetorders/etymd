@@ -164,7 +164,10 @@ describe("fleet loader — the registry shape", () => {
     await initRepo("alpha")
     await initRepo("guarded-zz-worktree")
     const manifestPath = await writeHub([personal("alpha"), guarded("c-one")], {
-      local: { machineProfile: "guarded", dirs: { "c-one": path.join(dir, "guarded-zz-worktree") } },
+      local: {
+        machineProfile: "guarded",
+        dirs: { "c-one": path.join(dir, "guarded-zz-worktree") },
+      },
     })
     const manifest = await manifestAt(manifestPath)
     expect(manifest.shape).toBe("registry")
@@ -283,7 +286,10 @@ describe("fleet sweep — pinned invariants", () => {
       "utf8",
     )
     const manifestPath = await writeHub([guarded("c-one")], {
-      local: { machineProfile: "guarded", dirs: { "c-one": path.join(dir, "guarded-zz-worktree") } },
+      local: {
+        machineProfile: "guarded",
+        dirs: { "c-one": path.join(dir, "guarded-zz-worktree") },
+      },
     })
 
     const result = await sweepFleet(await manifestAt(manifestPath), { persistLedgers: true })
@@ -304,7 +310,10 @@ describe("fleet sweep — pinned invariants", () => {
   it("PINNED: guarded dismiss writes only under <manifestDir>/guarded/<name>/ and quiets the sweep", async () => {
     await initRepo("guarded-zz-worktree")
     const manifestPath = await writeHub([guarded("c-one")], {
-      local: { machineProfile: "guarded", dirs: { "c-one": path.join(dir, "guarded-zz-worktree") } },
+      local: {
+        machineProfile: "guarded",
+        dirs: { "c-one": path.join(dir, "guarded-zz-worktree") },
+      },
     })
 
     await fleetDismiss({
@@ -354,7 +363,10 @@ describe("fleet sweep — pinned invariants", () => {
   it("PINNED: partition invariant — a sweep leaves zero guarded-resolved content under the manifest repo's tracked paths", async () => {
     await initRepo("guarded-zz-worktree", { stateAt: "2026-01-01T10:00:00Z" })
     const manifestPath = await writeHub([guarded("c-one")], {
-      local: { machineProfile: "guarded", dirs: { "c-one": path.join(dir, "guarded-zz-worktree") } },
+      local: {
+        machineProfile: "guarded",
+        dirs: { "c-one": path.join(dir, "guarded-zz-worktree") },
+      },
     })
     // The hub is a git repo tracking the manifest (the local file stays untracked, as designed).
     const hub = path.join(dir, "hub")
@@ -638,7 +650,10 @@ describe("fleet wall findings", () => {
   it("flags a guarded worktree carrying PROJECT_CONTEXT.md or DECISIONS.md at its root", async () => {
     await initRepo("guarded-zz-worktree", { stateAt: "2026-01-01T10:00:00Z" })
     const manifestPath = await writeHub([guarded("c-one")], {
-      local: { machineProfile: "guarded", dirs: { "c-one": path.join(dir, "guarded-zz-worktree") } },
+      local: {
+        machineProfile: "guarded",
+        dirs: { "c-one": path.join(dir, "guarded-zz-worktree") },
+      },
     })
     const { findings } = await collectWallFindings(await manifestAt(manifestPath))
     const hit = findings.find(
@@ -674,7 +689,9 @@ describe("fleet wall findings", () => {
       local: { machineProfile: "guarded" },
     })
     const withoutHosts = await collectWallFindings(await manifestAt(bare))
-    expect(withoutHosts.findings.some((f) => f.id.includes("unregistered-guarded-remote"))).toBe(false)
+    expect(withoutHosts.findings.some((f) => f.id.includes("unregistered-guarded-remote"))).toBe(
+      false,
+    )
     expect(withoutHosts.disclosures.some((d) => d.includes("Coverage check skipped"))).toBe(true)
   })
 
@@ -1031,8 +1048,8 @@ describe("fleet add — the guarded perimeter", () => {
 
   it("PINNED: refuses a guarded-host remote registered as personal", async () => {
     // The shipped failure this pins: `fleet add <dir> --profile guarded` silently registered an
-    // guarded-side repo as PERSONAL, because commander gave the parent's --profile the value. The
-    // personal branch records `path` plus the RAW remote, so the guarded-side host and its internal
+    // guarded repo as PERSONAL, because commander gave the parent's --profile the value. The
+    // personal branch records `path` plus the RAW remote, so the guarded host and its internal
     // group structure landed in a manifest that is tracked and pushed. The CLI plumbing is
     // fixed; this guard is what survives someone forgetting the flag entirely.
     const target = await repoWithRemote("svc", `git@${GUARDED}:group/sub/svc.git`)
@@ -1103,7 +1120,11 @@ describe("fleet add — guarded registration writes both halves", () => {
     // registering used to leave a dangling entry that `fleet check` reported immediately.
     const target = await repoWithRemote("svc3", `git@${GUARDED2}:group/sub/svc3.git`)
     const manifestPath = await writeHub([], {
-      local: { machineProfile: "guarded", dirs: { existing: "~/keep/me" }, guardedHosts: [GUARDED2] },
+      local: {
+        machineProfile: "guarded",
+        dirs: { existing: "~/keep/me" },
+        guardedHosts: [GUARDED2],
+      },
     })
     await add({
       cwd: path.dirname(manifestPath),

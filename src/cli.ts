@@ -308,7 +308,7 @@ fleet
         // `fleet` declares its own --profile (the sweep filter), and commander hands a
         // parent-declared option the value even when it is typed AFTER the subcommand — so
         // `fleet add <dir> --profile guarded` left opts.profile undefined and the flag silently
-        // did nothing, registering guarded-side repos as personal. Reading the merged view is what
+        // did nothing, registering guarded repos as personal. Reading the merged view is what
         // makes the flag work; the guarded-remote guard in add() is what makes forgetting it safe.
         profile: opts.profile ?? shared.profile,
         trust: opts.trust,

@@ -424,7 +424,10 @@ export async function checkManifest(
 // wall findings — fleet-scope checks with no single repo root
 // ---------------------------------------------------------------------------------------------
 
-async function checkGuardedWallArtifacts(entries: FleetEntry[], findings: Finding[]): Promise<void> {
+async function checkGuardedWallArtifacts(
+  entries: FleetEntry[],
+  findings: Finding[],
+): Promise<void> {
   for (const entry of entries) {
     if (entry.profile !== "guarded" || !entry.resolvedRoot) continue
     for (const artifact of GUARDED_WALL_ARTIFACTS) {
@@ -481,7 +484,7 @@ async function checkCoverage(
           "risk",
           `\`${d.name}\` under the fleet root has a guarded remote but is not registered`,
           [`${dir}: remote matches ${guardedRemote}`],
-          "The wall is only as good as its census — an unregistered guarded-side checkout is guarded material no sweep, wall check, or transfer plan knows exists.",
+          "The wall is only as good as its census — an unregistered guarded checkout is guarded material no sweep, wall check, or transfer plan knows exists.",
           "Register it as a guarded entry (opaque alias + local dirs mapping) or move it out of the fleet root.",
         ),
       )
@@ -569,7 +572,7 @@ async function checkHygieneNeedles(
             "risk",
             `${file} in public-repo \`${entry.name}\` carries a needle from the fleet's private local manifest`,
             [`${file}: contains "${needle}"`],
-            "A public repo that names a private label, guarded directory, or guarded host joins the public and guarded-side identities for anyone who greps.",
+            "A public repo that names a private label, guarded directory, or guarded host joins the public and guarded identities for anyone who greps.",
             "Scrub the needle from the tracked file (rewrite history if it already shipped).",
           ),
         )
@@ -606,7 +609,9 @@ async function checkGuardedEmails(
       continue
     }
     const lines = emails.split("\n").filter(Boolean)
-    const matched = [...new Set(lines.filter((e) => emailMatchesGuardedHosts(e, manifest.guardedHosts)))]
+    const matched = [
+      ...new Set(lines.filter((e) => emailMatchesGuardedHosts(e, manifest.guardedHosts))),
+    ]
     if (matched.length) {
       const count = lines.filter((e) => matched.includes(e)).length
       findings.push(

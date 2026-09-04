@@ -9,7 +9,7 @@ import { glyph, theme } from "../ui/theme.js"
  * The content screen: does this repo carry text that must never be published?
  *
  * Etymd ships the MECHANISM and no policy. There are no built-in patterns and there never will
- * be — the strings worth screening for (an guarded side's name, a hostname, an account identifier)
+ * be — the strings worth screening for (an organisation's name, a hostname, an account identifier)
  * are themselves the sensitive material, so a shipped list would be both useless to everyone
  * else and a leak for whoever wrote it. The user supplies a pattern file; without one this
  * command is inert and says so.

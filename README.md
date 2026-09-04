@@ -167,31 +167,31 @@ append race is a defect in the file's own convention, not a format opinion.
 
 **`fleet-manifest`** (via `etymd fleet`) — one truth guard across every repo you registered:
 per-repo audits plus checks on the fleet manifest itself and on the placement wall between
-personal and guarded-side repos. See [the fleet manifest](#the-fleet-manifest-experimental) below.
+personal and guarded repos. See [the fleet manifest](#the-fleet-manifest-experimental) below.
 
 ## Commands
 
-| Command                          | What it does                                                                                                                                                                                                                                                     |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `etymd audit`                    | Verify every claim; ranked findings (risk → gap → polish) + ledger diff. `--lens`, `--truth`, `--json`, `--no-ledger`, `--fail-on <tier>`.                                                                                                                       |
-| `etymd init`                     | Onboard: approve the committed baseline; scaffold a minimal AGENTS.md **only if missing**. Never overwrites.                                                                                                                                                     |
-| `etymd doctor`                   | Alias for `audit --truth`.                                                                                                                                                                                                                                       |
-| `etymd context`                  | The economy view: per-file always-loaded footprint + extraction candidates.                                                                                                                                                                                      |
-| `etymd gates`                    | Install local git-hook gates (pre-commit / commit-msg / pre-push, plus a publish screen where something ships) built from your own check scripts — and from the repo's shell surface, where it has one.                                                          |
-| `etymd screen`                   | Content screen: find text that must never be published. Four scopes — `--staged`, `--message`, `--tree`, `--dir`. Bring your own patterns; etymd ships none.                                                                                                     |
-| `etymd scan`                     | The deterministic reckoning behind everything. `--json`.                                                                                                                                                                                                         |
-| `etymd brief`                    | A grounded briefing your in-repo agent completes to author the semantic layer.                                                                                                                                                                                   |
-| `etymd premise`                  | `premise "<task>"` — is this the right task? What it names, verified against the repo; a brief for what only the agent can verify. `--file` (`-` = stdin), `--json`, `--no-brief`, `--fail-on <tier>`. No ledger.                                                |
-| `etymd approve`                  | Refresh the committed baseline non-interactively after intentional structural changes.                                                                                                                                                                           |
-| `etymd ledger`                   | The findings memory: every tracked finding with status and history.                                                                                                                                                                                              |
-| `etymd dismiss`                  | `dismiss <id> --reason <text>` — a dismissed finding never resurfaces without regressing.                                                                                                                                                                        |
-| `etymd accept`                   | `accept <id>` — record a finding as accepted reality; visible in the ledger, out of the report.                                                                                                                                                                  |
-| `etymd fleet`                    | Sweep every project in a fleet manifest: read-only per-repo audits + manifest/wall checks. `--manifest`, `--only`, `--profile`, `--truth`, `--persist-ledgers`, `--json`, `--fail-on`.                                                                           |
-| `etymd fleet check`              | Validate the manifest pair alone (no lenses): dangling mappings, duplicate names, privacy leaks, undeclared trust, machine paths. Non-zero exit on any finding.                                                                                                  |
-| `etymd fleet add`                | `add <dir>` — register a project: scans it, asks for what no scan can derive, and refuses to write an entry missing a mandatory field. `--name`, `--kind`, `--profile`, `--trust`, `-y`.                                                                         |
-| `etymd fleet board`              | Render the fleet board: every project's `MILESTONES.md` (contract key `milestones`, shape-checked by the sweep) plus a ranked initiatives table on one page. `--initiatives <file>`, `--out <file>`, `--json`.                                                   |
+| Command                          | What it does                                                                                                                                                                                                                                                        |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `etymd audit`                    | Verify every claim; ranked findings (risk → gap → polish) + ledger diff. `--lens`, `--truth`, `--json`, `--no-ledger`, `--fail-on <tier>`.                                                                                                                          |
+| `etymd init`                     | Onboard: approve the committed baseline; scaffold a minimal AGENTS.md **only if missing**. Never overwrites.                                                                                                                                                        |
+| `etymd doctor`                   | Alias for `audit --truth`.                                                                                                                                                                                                                                          |
+| `etymd context`                  | The economy view: per-file always-loaded footprint + extraction candidates.                                                                                                                                                                                         |
+| `etymd gates`                    | Install local git-hook gates (pre-commit / commit-msg / pre-push, plus a publish screen where something ships) built from your own check scripts — and from the repo's shell surface, where it has one.                                                             |
+| `etymd screen`                   | Content screen: find text that must never be published. Four scopes — `--staged`, `--message`, `--tree`, `--dir`. Bring your own patterns; etymd ships none.                                                                                                        |
+| `etymd scan`                     | The deterministic reckoning behind everything. `--json`.                                                                                                                                                                                                            |
+| `etymd brief`                    | A grounded briefing your in-repo agent completes to author the semantic layer.                                                                                                                                                                                      |
+| `etymd premise`                  | `premise "<task>"` — is this the right task? What it names, verified against the repo; a brief for what only the agent can verify. `--file` (`-` = stdin), `--json`, `--no-brief`, `--fail-on <tier>`. No ledger.                                                   |
+| `etymd approve`                  | Refresh the committed baseline non-interactively after intentional structural changes.                                                                                                                                                                              |
+| `etymd ledger`                   | The findings memory: every tracked finding with status and history.                                                                                                                                                                                                 |
+| `etymd dismiss`                  | `dismiss <id> --reason <text>` — a dismissed finding never resurfaces without regressing.                                                                                                                                                                           |
+| `etymd accept`                   | `accept <id>` — record a finding as accepted reality; visible in the ledger, out of the report.                                                                                                                                                                     |
+| `etymd fleet`                    | Sweep every project in a fleet manifest: read-only per-repo audits + manifest/wall checks. `--manifest`, `--only`, `--profile`, `--truth`, `--persist-ledgers`, `--json`, `--fail-on`.                                                                              |
+| `etymd fleet check`              | Validate the manifest pair alone (no lenses): dangling mappings, duplicate names, privacy leaks, undeclared trust, machine paths. Non-zero exit on any finding.                                                                                                     |
+| `etymd fleet add`                | `add <dir>` — register a project: scans it, asks for what no scan can derive, and refuses to write an entry missing a mandatory field. `--name`, `--kind`, `--profile`, `--trust`, `-y`.                                                                            |
+| `etymd fleet board`              | Render the fleet board: every project's `MILESTONES.md` (contract key `milestones`, shape-checked by the sweep) plus a ranked initiatives table on one page. `--initiatives <file>`, `--out <file>`, `--json`.                                                      |
 | `etymd propose`                  | Score the sweep's improvement findings + recurring classes against a fleet-authored rubric — stable `proposal/1` records, read-only, deterministic, guarded entries excluded. `--rubric <file>` (required), `--manifest <file>` or `--from <fleet.json>`, `--json`. |
-| `etymd fleet dismiss` / `accept` | `<name> <id>` — resolve a project's finding from any cwd; guarded findings persist beside the manifest, never in the guarded worktree.                                                                                                                                 |
+| `etymd fleet dismiss` / `accept` | `<name> <id>` — resolve a project's finding from any cwd; guarded findings persist beside the manifest, never in the guarded worktree.                                                                                                                              |
 
 `--cwd <dir>` targets another directory. Read-only probing of any repo leaves **zero trace**
 (`audit --no-ledger` writes nothing).
@@ -326,7 +326,7 @@ the generated pre-push now carries a `shellcheck` step. Three properties are del
 ### The content screen (`etymd screen`)
 
 A separate question from "are the instructions true?": **does this repo carry text that must
-never be published?** Absolute home paths, an guarded side's name, an internal hostname, an account
+never be published?** Absolute home paths, an organisation's name, an internal hostname, an account
 identifier — permanent the moment they are committed, because publishing exposes all history,
 not the current tree.
 
@@ -421,7 +421,7 @@ steps:
 **repositories**, not a fleet of agents. The manifest, `registry.json`, is itself an
 agent-context file: claims about your fleet (what exists, where, under which **profile** — the
 side of the wall an entry belongs to, `personal` or `guarded`; the **wall** is the placement
-boundary between personal and guarded-side content that the sweep polices). It rots like any
+boundary between personal and guarded content that the sweep polices). It rots like any
 AGENTS.md does, and `etymd fleet` keeps it true. Decision record:
 [`docs/decisions/004-fleet-truth-guard.md`](https://github.com/fleetorders/etymd/blob/main/docs/decisions/004-fleet-truth-guard.md). Both the
 registry schema and the fleet `--json` schema are **experimental through 0.2.x**.
@@ -461,7 +461,13 @@ Two files beside each other — the split is the privacy model:
       "trust": "public-repo", // hygiene needles apply (see below)
     },
     // Guarded entries: opaque alias, private, NO path — real dirs live only in the local file.
-    { "name": "c-one", "kind": "repo", "profile": "guarded", "private": true, "staleAfterDays": 45 },
+    {
+      "name": "c-one",
+      "kind": "repo",
+      "profile": "guarded",
+      "private": true,
+      "staleAfterDays": 45,
+    },
   ],
 }
 ```

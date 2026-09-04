@@ -55,7 +55,7 @@ Distilled from a frontrunner project workflow, validated against a sibling-repo 
   claim-extraction heuristics filter aggressively and disclose what they skip.
 - **Public repo.** Publishing exposes ALL history, not just the current tree, so no tracked
   file or commit message may carry: absolute paths, hostnames or other machine and
-  environment detail; guarded-side, client or internal project names and ticket identifiers;
+  environment detail; client or internal project names and ticket identifiers;
   identity or credential configuration written into prose (author metadata belongs in
   `LICENSE` and `package.json`); the names of the developer's other projects; or internal
   deliberation and provenance. Documentation examples must not name a real private project

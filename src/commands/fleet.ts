@@ -426,7 +426,7 @@ export async function add(opts: FleetAddCmdOptions): Promise<void> {
       initialValue: "personal",
       options: [
         { value: "personal", label: "personal — your own work" },
-        { value: "guarded", label: "guarded — guarded-side work (alias-only, machine-pinned)" },
+        { value: "guarded", label: "guarded — kept apart: alias-only, machine-pinned" },
       ],
     })
     if (isCancel(picked)) {
@@ -516,7 +516,7 @@ export async function add(opts: FleetAddCmdOptions): Promise<void> {
   // — so a guarded repo landing as a personal entry is a failure the tool has every fact needed to
   // prevent. It matters because the two branches differ exactly where it is dangerous: the
   // personal one records `path` and the RAW `remote`, so a mis-profiled guarded repo writes the
-  // guarded-side host and its internal group structure into a manifest that is tracked and pushed.
+  // guarded host and its internal group structure into a manifest that is tracked and pushed.
   // That is the leak the alias convention exists to prevent, and it sat one forgotten flag away.
   // Refuse rather than auto-correct: placement is the user's call, but it may not be made by
   // omission.

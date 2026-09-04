@@ -7,7 +7,7 @@ cannot see. The fleet `--json` schema and the registry schema are **EXPERIMENTAL
 ## What "fleet" means here
 
 Your fleet of **repositories** — not a fleet of agents. One developer's work is spread across
-personal projects, tools, forks of active upstreams, and guarded-side checkouts that must never mix
+personal projects, tools, forks of active upstreams, and guarded checkouts that must never mix
 with any of them. Each repo can keep its own instructions true with `etymd audit`; nothing keeps
 true the layer ABOVE them:
 
@@ -19,7 +19,7 @@ true the layer ABOVE them:
 - **state docs' implicit claim** — "this describes now" is only checkable against each repo's
   own clock, entry by entry, with per-entry thresholds (a fork is judged on fork-authored
   commits; a slow-moving repo gets a longer window).
-- the **wall** — when part of the fleet belongs to an guarded-side, placement itself is a truth
+- the **wall** — when part of the fleet is guarded, placement itself is a truth
   claim: guarded contract files live outside guarded worktrees, guarded directories stay out of tracked
   files, public repos carry no private vocabulary. A wall nobody verifies is a wall that erodes.
 
@@ -45,7 +45,7 @@ Two files beside each other; the split IS the security model:
   `stateBudget`, contract-file overrides, upward links, `trust: "public-repo"` markers. Guarded
   entries are **opaque aliases with no path**.
 - `registry.local.json` (gitignored, machine-local): `machineProfile`, the real `dirs` behind
-  guarded aliases, human-readable `labels`, and `guardedHosts` — each of which is itself an guarded-side
+  guarded aliases, human-readable `labels`, and `guardedHosts` — each of which is itself a guarded-side
   identifier and therefore never tracked.
 
 `~` expansion is consumer-side; the tracked file never records a machine home. A guarded entry with

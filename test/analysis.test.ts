@@ -253,7 +253,7 @@ describe("planWorkflow", () => {
     }
     // The screen must never be inlined into a tracked file — the patterns ARE the secret.
     for (const hook of hooks) {
-      expect(hook).not.toMatch(/grep -[a-zA-Z]*f? ['"]?(guarded-side|guarded|@)/i)
+      expect(hook).not.toMatch(/grep -[a-zA-Z]*f? ['"]?(guarded|@)/i)
     }
   })
 
