@@ -22,6 +22,15 @@ import {
   type FleetSweepResult,
 } from "../engine/fleet.js"
 import {
+  BOARD_JSON_SCHEMA,
+  MILESTONES_FILE,
+  parseInitiatives,
+  parseMilestones,
+  renderBoard,
+  type BoardProject,
+  type Initiative,
+} from "../engine/milestones.js"
+import {
   print,
   renderFindings,
   renderFleetNotes,
@@ -529,7 +538,12 @@ export async function add(opts: FleetAddCmdOptions): Promise<void> {
           profile,
           path: path.relative(manifest.root ?? manifest.dir, absTarget),
           trust,
-          contract: {},
+          // A milestones file present at registration is registered as the project's plan
+          // surface; absent, the board shows the project as "not declared" until one lands —
+          // never a silent default to `none`, which is a decision only the owner takes.
+          contract: (await pathExists(path.join(absTarget, MILESTONES_FILE)))
+            ? { milestones: MILESTONES_FILE }
+            : {},
           links: {},
           // The remote is deliberately NOT recorded. Nothing reads it — it was persisted only
           // because it happened to be derivable — and it is the field that turns a mis-profiled
@@ -632,4 +646,111 @@ export async function dismiss(opts: FleetResolveCmdOptions): Promise<void> {
 
 export async function accept(opts: FleetResolveCmdOptions): Promise<void> {
   await resolveFleetFinding(opts, "accepted")
+}
+
+// ---------------------------------------------------------------------------------------------
+// etymd fleet board — every project's milestones, plus the ranked initiatives, on one page
+// ---------------------------------------------------------------------------------------------
+
+export interface FleetBoardCmdOptions {
+  cwd: string
+  manifest?: string
+  /** The hand-edited initiatives table (rank | id | initiative | …); optional. */
+  initiatives?: string
+  /** Write the Markdown board here instead of printing it. */
+  out?: string
+  json?: boolean
+}
+
+export async function board(opts: FleetBoardCmdOptions): Promise<void> {
+  const { manifest, autoNote } = await loadManifest(opts.cwd, opts.manifest)
+  const projects: BoardProject[] = []
+  for (const entry of manifest.entries) {
+    // Guarded entries never reach a board: the board is a publishable artifact of the personal
+    // side, and a guarded plan is exactly the content the wall exists to keep out of it.
+    if (entry.profile === "guarded") continue
+    const file = entry.contract.milestones
+    const base = { name: entry.name, kind: entry.kind, rows: [], problems: [] as string[] }
+    if (!file) {
+      projects.push({ ...base, state: "not-declared" })
+      continue
+    }
+    if (file === "none") {
+      projects.push({ ...base, file, state: "none" })
+      continue
+    }
+    if (!entry.resolvedRoot) {
+      projects.push({
+        ...base,
+        file,
+        state: "unresolved",
+        problems: [entry.unresolved ?? "unresolved"],
+      })
+      continue
+    }
+    const text = await readText(path.join(entry.resolvedRoot, file))
+    if (text === null) {
+      projects.push({ ...base, file, state: "missing" })
+      continue
+    }
+    const doc = parseMilestones(text)
+    projects.push({
+      ...base,
+      file,
+      rows: doc.rows,
+      problems: doc.problems,
+      state: doc.problems.length ? "invalid" : doc.rows.length ? "ok" : "declared-empty",
+    })
+  }
+
+  let initiatives: Initiative[] | null = null
+  let initiativesProblems: string[] = []
+  if (opts.initiatives) {
+    const abs = path.resolve(opts.cwd, opts.initiatives)
+    const text = await readText(abs)
+    if (text === null) throw new Error(`initiatives file not found: ${abs}`)
+    const parsed = parseInitiatives(text)
+    initiatives = parsed.rows
+    initiativesProblems = parsed.problems
+  }
+
+  const generatedOn = new Date().toISOString().slice(0, 10)
+  const input = {
+    generatedOn,
+    manifest: path.basename(manifest.manifestPath),
+    initiatives,
+    initiativesProblems,
+    projects,
+  }
+  const trouble = projects.filter((p) => p.state === "missing" || p.state === "invalid")
+  // A board with holes still renders — the holes ARE the information — but the exit code says
+  // so, and the notes name each one, so an unattended render never passes as a clean one.
+  if (trouble.length || initiativesProblems.length) process.exitCode = 1
+
+  if (opts.json) {
+    print(JSON.stringify({ schema: BOARD_JSON_SCHEMA, ...input }, null, 2))
+    return
+  }
+  const markdown = renderBoard(input)
+  if (opts.out) {
+    const abs = path.resolve(opts.cwd, opts.out)
+    await fs.mkdir(path.dirname(abs), { recursive: true })
+    await fs.writeFile(abs, markdown, "utf8")
+    const total = projects.reduce((n, p) => n + p.rows.length, 0)
+    if (autoNote) print(`  ${theme.dim(`◦ ${autoNote}`)}`)
+    print(
+      `  ${glyph.bullet} wrote ${opts.out} — ${projects.length} project${projects.length === 1 ? "" : "s"}, ${total} milestone${total === 1 ? "" : "s"}` +
+        (initiatives
+          ? `, ${initiatives.length} initiative${initiatives.length === 1 ? "" : "s"}`
+          : ""),
+    )
+    for (const p of trouble) {
+      print(
+        `  ${TIER_BADGE.gap} ${p.name}: ${p.state === "missing" ? `\`${p.file}\` declared and absent` : p.problems.join("; ")}`,
+      )
+    }
+    for (const problem of initiativesProblems) print(`  ${TIER_BADGE.gap} initiatives: ${problem}`)
+    return
+  }
+  print(markdown)
 }

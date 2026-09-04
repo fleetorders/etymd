@@ -60,6 +60,12 @@ export interface FleetContract {
   state?: string
   decisions?: string
   goals?: string
+  /**
+   * The project's milestones file (`MILESTONES.md` by convention), rolled up by `etymd fleet
+   * board`; its shape is checked by the sweep. `"none"` declares the project deliberately
+   * carries no milestones (a state, not a gap).
+   */
+  milestones?: string
   /** `"none"` = the contract file is legitimately absent (a declared state, not a gap). */
   placement?: string
 }

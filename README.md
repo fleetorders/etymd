@@ -189,6 +189,7 @@ personal and guarded-side repos. See [the fleet manifest](#the-fleet-manifest-ex
 | `etymd fleet`                    | Sweep every project in a fleet manifest: read-only per-repo audits + manifest/wall checks. `--manifest`, `--only`, `--profile`, `--truth`, `--persist-ledgers`, `--json`, `--fail-on`.                            |
 | `etymd fleet check`              | Validate the manifest pair alone (no lenses): dangling mappings, duplicate names, privacy leaks, undeclared trust, machine paths. Non-zero exit on any finding.                                                   |
 | `etymd fleet add`                | `add <dir>` — register a project: scans it, asks for what no scan can derive, and refuses to write an entry missing a mandatory field. `--name`, `--kind`, `--profile`, `--trust`, `-y`.                          |
+| `etymd fleet board`              | Render the fleet board: every project's `MILESTONES.md` (contract key `milestones`, shape-checked by the sweep) plus a ranked initiatives table on one page. `--initiatives <file>`, `--out <file>`, `--json`.    |
 | `etymd fleet dismiss` / `accept` | `<name> <id>` — resolve a project's finding from any cwd; guarded findings persist beside the manifest, never in the guarded worktree.                                                                                  |
 
 `--cwd <dir>` targets another directory. Read-only probing of any repo leaves **zero trace**
@@ -521,6 +522,19 @@ How the sweep behaves:
   a risk finding; each check that cannot run is disclosed.
 - **No global pointer.** `--manifest` is required unless the cwd holds `registry.json` — there
   is deliberately no env var and no home-directory pointer.
+- **Milestones and the fleet board.** A project declares its plan in one file — `MILESTONES.md`,
+  registered as `"contract": { "milestones": "MILESTONES.md" }` (`fleet add` registers it when the
+  file is present; `"none"` declares a project deliberately carries no plan). The file has a fixed
+  shape so the fleet can read every plan without an agent: a `# Milestones` heading, then a table
+  `| id | milestone | goal | status | next | effort | depends-on |` — `id` is `M<n>`, `goal` is 1, 2
+  or 3 (your fleet's own ordered goals, declared outside this tool), `status` is planned | active |
+  blocked | done, `next` is the one concrete next step, `effort` the S | M | L remaining,
+  `depends-on` a list of ids or `—`. Prose after the table is free. The sweep files a gap when a
+  declared file is absent or off-shape. `etymd fleet board --initiatives <file> --out <file>`
+  renders every project's rows, a ranked initiatives table (`| rank | id | initiative | goal |
+status | next | effort | projects | depends-on |`, the one hand-edited fleet-level surface), and
+  totals; guarded entries never appear on it. Day-precision stamp, deterministic output, exit code 1
+  when any project is missing or invalid — a board with holes still renders, and says so.
 
 Formatter interop for the `.etymd` state the sweep resolves: same rule as everywhere — see
 [the files Etymd keeps](#the-files-etymd-keeps).
