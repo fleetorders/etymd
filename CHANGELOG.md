@@ -9,7 +9,7 @@
   files a gap when a declared file is absent or off-shape; `fleet add` registers the file when
   present; `fleet board --initiatives <file> --out <file>` renders every project's rows plus a ranked
   initiatives table and totals, deterministic, guarded entries excluded, exit 1 on holes.
-- b3fb81a: The fleet manifest's second profile is now `guarded` (was `guarded`), with every derived name
+- b3fb81a: The fleet manifest's second profile is now `guarded` (it had another name before), with every derived name
   following: `guardedHosts` in the local file, `--profile guarded`, the `guarded/<name>/` persistence
   zone beside the manifest, and the guarded-worktree wall checks. No alias for the old value: a
   manifest still carrying it fails `fleet check` and names the entry. Prose and examples describe the
