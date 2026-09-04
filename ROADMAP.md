@@ -22,6 +22,13 @@ does not ship. Decision record: [`docs/decisions/003-truth-guard-pivot.md`](docs
 
 ### Shipped since 003
 
+- **`etymd propose`** (decision record
+  [`docs/decisions/012-propose-rubric-scored-proposals.md`](docs/decisions/012-propose-rubric-scored-proposals.md)):
+  the scoring step between the sweep and a filed proposal — improvement findings and recurring
+  classes scored against a fleet-authored rubric file (`criterion: <weight>` labeled lines;
+  four computable criteria, unknown names refused quoting the line), emitted as deterministic
+  `proposal/1` records with an evidence-derived implications block. Read-only; corp entries
+  excluded from the output entire.
 - **`etymd premise`** (decision record
   [`docs/decisions/010-premise-the-task-is-an-instruction.md`](docs/decisions/010-premise-the-task-is-an-instruction.md)):
   the task an agent is handed is an instruction too — what it names is verified against the repo

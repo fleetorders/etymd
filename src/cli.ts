@@ -358,6 +358,34 @@ fleet
   )
 
 program
+  .command("propose")
+  .description(
+    "Score improvement findings + recurring classes against a fleet rubric — proposal records, read-only (schema proposal/1, EXPERIMENTAL)",
+  )
+  .requiredOption(
+    "--rubric <file>",
+    "the rubric file — one `criterion: <weight>` line per criterion; etymd ships none",
+  )
+  .option(
+    "--manifest <file>",
+    "the fleet manifest — runs a read-only sweep now (no delta baseline move)",
+  )
+  .option("--from <file>", "read a stored `etymd fleet --json` output instead of sweeping")
+  .option("--json", "print the proposal/1 records as JSON (EXPERIMENTAL)")
+  .action((opts, cmd) =>
+    action(async () => {
+      const { run } = await import("./commands/propose.js")
+      await run({
+        cwd: resolveCwd(cmd),
+        manifest: opts.manifest,
+        from: opts.from,
+        rubric: opts.rubric,
+        json: opts.json,
+      })
+    }),
+  )
+
+program
   .command("screen")
   .description(
     "Content screen: check for text that must never be published. Bring your own patterns — etymd ships none.",
