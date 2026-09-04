@@ -10,6 +10,7 @@ import { FLEET_TRUST_VALUES } from "../core/fleet.js"
 import { git, isDirectory, pathExists, readText } from "../core/util.js"
 import type { Finding, FindingTier, LensKind } from "./finding.js"
 import { readLedger } from "./ledger.js"
+import { MILESTONE_COLUMNS, parseMilestones } from "./milestones.js"
 import { runAudit } from "./run.js"
 
 const pExecFile = promisify(execFile)
@@ -832,6 +833,41 @@ async function sweepEntry(
     // legitimately absent here — the fleet view honors it, or every sweep re-reports a decision.
     project.findings = project.findings.filter((f) => !f.id.endsWith("/no-contract"))
   }
+  // A declared milestones file is a claim the fleet board consumes verbatim, so it is held to
+  // its shape here — not existence-checked only like the other contract overrides. Absent and
+  // malformed are both findings: an empty board row is a plan nobody can read.
+  const milestonesFile = entry.contract.milestones
+  if (milestonesFile && milestonesFile !== "none") {
+    const text = await readText(path.join(root, milestonesFile))
+    if (text === null) {
+      project.findings.push(
+        finding(
+          `${FLEET_LENS}/milestones-missing:${entry.name}`,
+          "gap",
+          `\`${entry.name}\` declares milestones at \`${milestonesFile}\` and the file is absent`,
+          [
+            `${path.basename(manifest.manifestPath)}: ${entry.name}.contract.milestones = ${milestonesFile}`,
+          ],
+          "The fleet board rolls every project's plan up from this file; a declared file that is absent is a row the board cannot fill.",
+          'Create it (heading `# Milestones`, then the standard table), or declare `milestones: "none"` if this project deliberately carries no plan.',
+        ),
+      )
+    } else {
+      const doc = parseMilestones(text)
+      doc.problems.forEach((problem, i) => {
+        project.findings.push(
+          finding(
+            `${FLEET_LENS}/milestones-shape:${entry.name}:${i + 1}`,
+            "gap",
+            `\`${entry.name}\` ${milestonesFile}: ${problem}`,
+            [`${milestonesFile}`],
+            "A milestones file the board cannot parse is a plan the fleet cannot see.",
+            `Fix the table to the standard shape: \`| ${MILESTONE_COLUMNS.join(" | ")} |\`.`,
+          ),
+        )
+      })
+    }
+  }
   for (const f of project.findings) project.counts[f.tier] += 1
   project.stateAgeDays = stateAgeDays(result.facts)
   // The row's denominator must be the threshold the audit ACTUALLY applied — repo config plus
@@ -839,7 +875,8 @@ async function sweepEntry(
   project.staleAfterDays = result.config.config.state.staleAfterDays
 
   for (const [key, value] of Object.entries(entry.contract)) {
-    if (key === "placement" || !value) continue
+    // `milestones` is shape-checked above, so the "existence-checked only" note would be a lie.
+    if (key === "placement" || key === "milestones" || !value) continue
     const exists = await pathExists(path.join(root, value.replace(/#.*$/, "")))
     project.disclosures.push(
       `contract override \`${key}: ${value}\` — registered, existence-checked only (${exists ? "present" : "MISSING"})`,

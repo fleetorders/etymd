@@ -1192,3 +1192,62 @@ describe("fleet add — the manifest records no remote", () => {
     expect(JSON.stringify(doc)).not.toContain("github.com")
   })
 })
+
+describe("fleet sweep — the milestones contract (board input, shape-checked)", () => {
+  const GOOD =
+    "# Milestones\n\n| id | milestone | goal | status | next | effort | depends-on |\n|---|---|---|---|---|---|---|\n| M1 | ship | 2 | active | write it | S | — |\n"
+
+  it("a declared milestones file that is absent is a gap finding, never a disclosure-only note", async () => {
+    await initRepo("planless")
+    const hub = await writeHub([
+      personal("planless", { contract: { milestones: "MILESTONES.md" } }),
+    ])
+    const result = await sweepFleet(await manifestAt(hub), {})
+    const project = result.projects[0]
+    const hit = project?.findings.find((f) => f.id === "fleet-manifest/milestones-missing:planless")
+    expect(hit?.tier).toBe("gap")
+    expect(hit?.claim).toContain("declares milestones at `MILESTONES.md` and the file is absent")
+    expect(project?.disclosures.some((d) => d.includes("milestones"))).toBe(false)
+    expect(project?.counts.gap).toBeGreaterThanOrEqual(1)
+  })
+
+  it("a malformed file names each shape problem; a well-formed one is silent", async () => {
+    await initRepo("planned")
+    await write("planned/MILESTONES.md", GOOD)
+    await commitAllIn("planned", "plan", "2026-06-02T10:00:00Z")
+    const good = await sweepFleet(
+      await manifestAt(
+        await writeHub([personal("planned", { contract: { milestones: "MILESTONES.md" } })]),
+      ),
+      {},
+    )
+    expect(good.projects[0]?.findings.filter((f) => f.id.includes("/milestones-"))).toEqual([])
+
+    await write("planned/MILESTONES.md", "# Plan\n\n| id | milestone |\n|---|---|\n| M1 | x |\n")
+    const bad = await sweepFleet(
+      await manifestAt(
+        await writeHub([personal("planned", { contract: { milestones: "MILESTONES.md" } })]),
+      ),
+      {},
+    )
+    const shape =
+      bad.projects[0]?.findings.filter((f) =>
+        f.id.startsWith("fleet-manifest/milestones-shape:planned:"),
+      ) ?? []
+    expect(shape.map((f) => f.claim)).toEqual([
+      "`planned` MILESTONES.md: line 1: first heading is `# Plan`; it must be `# Milestones`",
+      "`planned` MILESTONES.md: line 3: table columns are `id | milestone`; the standard is `id | milestone | goal | status | next | effort | depends-on`",
+    ])
+  })
+
+  it('PINNED: `milestones: "none"` and an undeclared key both stay silent — absence is a decision, not a gap', async () => {
+    await initRepo("bare")
+    for (const contract of [{}, { milestones: "none" }]) {
+      const result = await sweepFleet(
+        await manifestAt(await writeHub([personal("bare", { contract })])),
+        {},
+      )
+      expect(result.projects[0]?.findings.some((f) => f.id.includes("/milestones-"))).toBe(false)
+    }
+  })
+})

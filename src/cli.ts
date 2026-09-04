@@ -260,6 +260,29 @@ fleet
   )
 
 fleet
+  .command("board")
+  .description(
+    "Render the fleet board: every project's milestones (contract key `milestones`) plus a ranked initiatives table",
+  )
+  .option("--manifest <file>", "the fleet manifest — required unless the cwd holds registry.json")
+  .option("--initiatives <file>", "the hand-edited initiatives table (rank | id | initiative | …)")
+  .option("--out <file>", "write the Markdown board here instead of printing it")
+  .option("--json", "print the board as JSON (EXPERIMENTAL)")
+  .action((opts, cmd) =>
+    action(async () => {
+      const { board } = await import("./commands/fleet.js")
+      const shared = cmd.optsWithGlobals() as FleetSharedOpts
+      await board({
+        cwd: resolveCwd(cmd),
+        manifest: shared.manifest,
+        initiatives: opts.initiatives,
+        out: opts.out,
+        json: opts.json ?? shared.json,
+      })
+    }),
+  )
+
+fleet
   .command("add")
   .argument("<dir>", "directory of the project to register")
   .description("Register a project — refuses to write an entry missing a mandatory field")
