@@ -1,5 +1,27 @@
 # etymd
 
+## 0.16.0
+
+### Minor Changes
+
+- dc77a1f: `contract.milestones` and `etymd fleet board` — a project declares its plan in `MILESTONES.md`
+  (`# Milestones`, then `| id | milestone | goal | status | next | effort | depends-on |`); the sweep
+  files a gap when a declared file is absent or off-shape; `fleet add` registers the file when
+  present; `fleet board --initiatives <file> --out <file>` renders every project's rows plus a ranked
+  initiatives table and totals, deterministic, guarded entries excluded, exit 1 on holes.
+- b3fb81a: The fleet manifest's second profile is now `guarded` (was `guarded`), with every derived name
+  following: `guardedHosts` in the local file, `--profile guarded`, the `guarded/<name>/` persistence
+  zone beside the manifest, and the guarded-worktree wall checks. No alias for the old value: a
+  manifest still carrying it fails `fleet check` and names the entry. Prose and examples describe the
+  feature as a second, guarded workspace whose entries stay alias-only and machine-pinned.
+- 79af085: `etymd propose` — score the sweep's improvement findings and recurring classes against a
+  fleet-authored rubric file (`criterion: <weight>` labeled lines; criteria: severity, economy,
+  confidence, breadth — an unknown criterion is refused quoting the line) and emit deterministic,
+  read-only `proposal/1` records carrying score, the fired rubric lines, and an implications block
+  (projects, files, gates, reversibility) extracted from finding evidence. Guarded entries are
+  excluded from the output entire. `--manifest` (fresh read-only sweep) or `--from <fleet.json>`
+  (stored sweep), `--json`. Decision record: docs/decisions/012.
+
 ## 0.15.0
 
 ### Minor Changes
