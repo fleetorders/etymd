@@ -27,6 +27,23 @@ describe("content screen", () => {
     expect(hits[1]).toMatchObject({ line: 3, reason: "absolute home path" })
   })
 
+  it("home paths inside a longer token or a URL are not machine paths", () => {
+    // Every fixture is assembled from segments, so no line here is a literal home
+    // path for the installed screener that guards this repo's own pushes.
+    const u = "Users"
+    const h = "home"
+    const fixture = `mkdir -p "$ROOT/${h}/projects/x"` // a test's temp root
+    const url = `see https://docs.example/${h}/x/ for the page` // a URL segment
+    const glued = `foo/${u}/someone/x` // inside another path
+    for (const line of [fixture, url, glued]) expect(screenText(line, "f", [])).toHaveLength(0)
+    const quoted = `"/${h}/someone/x"`
+    const afterEquals = `HOME=/${u}/someone/`
+    const afterColon = `PATH=/opt/bin:/${h}/someone/bin`
+    const lineStart = `/${u}/someone/projects/x`
+    for (const line of [quoted, afterEquals, afterColon, lineStart])
+      expect(screenText(line, "f", []).map((h) => h.reason)).toEqual(["absolute home path"])
+  })
+
   it("is case-insensitive — a leak does not stop being one in lower case", () => {
     expect(screenText("acmeinc", "f", patterns)).toHaveLength(1)
   })
