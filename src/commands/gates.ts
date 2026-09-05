@@ -259,6 +259,9 @@ export async function run(opts: GatesOptions): Promise<void> {
       agents: false,
       gates: true,
       gateConfig,
+      // A pinned tier is a decision planWorkflow must not lower; an unpinned one it derives —
+      // the same flag the fleet's drift comparison passes, so both generate identical bytes.
+      gateFailOnPinned: explicit.gatesFailOn,
     })
     return files.filter((f) => f.executable)
   }

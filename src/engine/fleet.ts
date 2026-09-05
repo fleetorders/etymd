@@ -678,9 +678,17 @@ async function checkGateDrift(
       continue
     }
 
-    const { config } = await readConfig(root)
+    // `explicit` rides along: the drift comparison must honor a tier the repo PINNED exactly as
+    // `etymd gates` does, and derive one it did not — one reading of the key in this check and
+    // the other in the generator is itself drift (the tier divergence this check used to carry).
+    const { config, explicit } = await readConfig(root)
     const planned = (
-      await planWorkflow(root, facts, { agents: false, gates: true, gateConfig: config.gates })
+      await planWorkflow(root, facts, {
+        agents: false,
+        gates: true,
+        gateConfig: config.gates,
+        gateFailOnPinned: explicit.gatesFailOn,
+      })
     ).filter((f) => f.executable)
 
     const missing = planned.filter((f) => !f.exists).map((f) => f.path)

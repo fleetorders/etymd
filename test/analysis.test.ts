@@ -523,6 +523,33 @@ describe("deriveFailOn — a gate that cannot fail is not a gate", () => {
     })
     expect(out.failOn).toBe("polish")
   })
+
+  it("PINNED: planWorkflow applies the derivation itself — and never lowers a pinned tier", async () => {
+    // The documents-repo shape again, at the level where the bug lived: `etymd gates` derived
+    // `gap`, every other planWorkflow caller planned with the raw `risk`, and the fleet's drift
+    // comparison read its own plan as proof the repo's hook was stale — unclearable by the
+    // action the finding named. The derivation must resolve identically wherever the hook is
+    // built, which means inside planWorkflow, not in one command.
+    const unreachable = facts({ publishRoute: "none", artifacts: [] })
+    const plan = await planWorkflow("/nonexistent-root", unreachable, {
+      agents: false,
+      gates: true,
+      gateConfig: { commands: [], failOn: "risk", allowWriting: [] },
+    })
+    expect(plan.find((p) => p.path === ".githooks/pre-push")?.contents).toContain("--fail-on gap")
+
+    // A tier the repo pinned is a decision, not a default — the derivation must not lower it,
+    // or a regeneration quietly reverts a choice the repo made.
+    const pinned = await planWorkflow("/nonexistent-root", unreachable, {
+      agents: false,
+      gates: true,
+      gateConfig: { commands: [], failOn: "risk", allowWriting: [] },
+      gateFailOnPinned: true,
+    })
+    expect(pinned.find((p) => p.path === ".githooks/pre-push")?.contents).toContain(
+      "--fail-on risk",
+    )
+  })
 })
 
 describe("gate config _why annotations", () => {

@@ -119,6 +119,14 @@ export interface PlanOptions {
   publishGate?: boolean
   /** Recorded gate choices; absent means derive everything from the scan. */
   gateConfig?: GateConfig
+  /**
+   * Whether `gateConfig.failOn` was PINNED by the repo's committed config, versus a default the
+   * config loader filled in. The tier derivation may only choose between defaults — a recorded
+   * tier is a decision and is never lowered (see `deriveFailOn`). Callers that read the config
+   * pass `explicit.gatesFailOn` from `readConfig`; callers planning from a bare scan leave it
+   * unset, which is the same as unpinned.
+   */
+  gateFailOnPinned?: boolean
 }
 
 /** Build the file set an onboarding would write, flagging which exist and which differ. */
@@ -193,9 +201,20 @@ export async function planWorkflow(
           allowWriting: opts.gateConfig?.allowWriting ?? [],
         }
 
+    // The tier derivation is decided HERE, not in the command that installs the hook. `etymd
+    // gates` has always derived it (a repo where no risk-tier finding can fire gets `gap`, or
+    // its audit line is a gate that always passes — 008); the fleet's drift comparison
+    // planned with the RAW config value, so for exactly those repos its "what your own inputs
+    // generate" permanently differed from what `etymd gates` writes — a gate-stale finding
+    // unclearable by the action it names. Every caller must generate the same hook, so the
+    // derivation lives where the hook is built. Idempotent for a caller that already derived.
+    const tier = deriveFailOn(facts, {
+      failOn: gateConfig.failOn,
+      explicit: opts.gateFailOnPinned ?? false,
+    })
     await add(
       ".githooks/pre-push",
-      generatePrePushHook(facts, gateConfig, selfBuild),
+      generatePrePushHook(facts, { ...gateConfig, failOn: tier.failOn }, selfBuild),
       "Correctness gate (pre-push)",
       true,
     )
