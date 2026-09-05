@@ -291,6 +291,25 @@ describe("instruction-truth lens (the lying-AGENTS.md fixture)", () => {
     expect(report.disclosures.some((d) => d.includes("gitignored"))).toBe(true)
   })
 
+  it("skips a dir-only gitignore pattern even when the directory does not exist", async () => {
+    // check-ignore matches a trailing-slash pattern only against an EXISTING directory, so
+    // fresh checkouts lost the gitignored skip until the slash-terminated probe was added.
+    await write("package.json", JSON.stringify({ name: "cardgen", scripts: {} }))
+    await write("pnpm-lock.yaml", "")
+    await write("node_modules/.bin/.keep", "")
+    await write(".gitignore", "assets/cards/\n")
+    await write(
+      "AGENTS.md",
+      "# AGENTS.md\n\nLocal decks sit in `assets/cards/` on this machine.\nSource art lives in `assets/gone.ts`.\n",
+    )
+    await git(dir, ["init"])
+    const report = await runTruth()
+    const ids = report.findings.map((f) => f.id)
+    expect(ids).not.toContain("instruction-truth/stale-path:AGENTS.md:assets/cards")
+    expect(ids).toContain("instruction-truth/stale-path:AGENTS.md:assets/gone.ts")
+    expect(report.disclosures.some((d) => d.includes("gitignored"))).toBe(true)
+  })
+
   it("does not accuse a path the file tells the agent to create", async () => {
     await write("package.json", JSON.stringify({ name: "prospective", scripts: {} }))
     await write("pnpm-lock.yaml", "")
