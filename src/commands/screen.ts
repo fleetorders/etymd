@@ -69,7 +69,11 @@ export interface ScreenOptions {
 }
 
 /** Absolute home paths name the machine (and usually the person) — checked structurally. */
-const MACHINE_PATH_RE = /\/(?:Users|home)\/[A-Za-z0-9._-]+\//
+// Anchored at a path boundary: line start, whitespace, a quote, `=`, `(`, `[` or `:`.
+// A home path inside a longer token or a URL is not a machine path — `$ROOT/home/x/`
+// (a test fixture's temp root) and `https://docs.example/home/x/` each printed the
+// same advisory line on every push for weeks and buried real hits.
+const MACHINE_PATH_RE = /(?:^|[\s"'=(\[:])\/(?:Users|home)\/[A-Za-z0-9._-]+\//
 
 /** An inline escape hatch for a line that must legitimately contain a screened string. */
 const ALLOW_MARKER = "allow-published-string"
