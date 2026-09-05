@@ -8,6 +8,7 @@ import { promisify } from "node:util"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { loadFleetManifest } from "../src/core/fleet.js"
+import { readConfig } from "../src/core/config.js"
 import { planWorkflow } from "../src/core/generate.js"
 import { scanProject } from "../src/core/scan.js"
 import { parseFailOnTier } from "../src/engine/finding.js"
@@ -963,6 +964,36 @@ describe("fleet gate drift", () => {
     expect(drift?.evidence.join(" ")).not.toContain(editedPath)
     expect(disclosures.join(" ")).toContain(editedPath)
     expect(disclosures.join(" ")).toContain("not drift")
+  })
+
+  it("PINNED: a repo whose gate tier is DERIVED does not read as stale to the drift check", async () => {
+    // The seed-repo shape the false finding lived in: no package manifest, no state doc — no
+    // risk-tier rule can fire, so `etymd gates` derives `gap` (008). The drift check planned
+    // with the RAW config tier (`risk`), so its expectation permanently differed from the hook
+    // the generator itself writes: a gate-stale finding unclearable by the very action it
+    // names, on every repo of this shape. The generator and the comparison must agree — the
+    // files below are written exactly as `etymd gates` writes them (derived tier, config read).
+    await initRepo("seed")
+    const root = path.join(dir, "seed")
+    const { config, explicit } = await readConfig(root)
+    const facts = await scanProject(root)
+    const written = (
+      await planWorkflow(root, facts, {
+        agents: false,
+        gates: true,
+        gateConfig: config.gates,
+        gateFailOnPinned: explicit.gatesFailOn,
+      })
+    ).filter((p) => p.executable)
+    const prePush = written.find((p) => p.path === ".githooks/pre-push")
+    // The premise of the test: this repo's own gate is the DERIVED one, not the raw default.
+    expect(prePush?.contents).toContain("--fail-on gap")
+    await fs.mkdir(path.join(root, ".githooks"), { recursive: true })
+    for (const f of written) await write(path.join("seed", f.path), f.contents)
+
+    const manifestPath = await writeHub([personal("seed")])
+    const { findings } = await collectWallFindings(await manifestAt(manifestPath))
+    expect(findings.some((f) => f.id.includes("gate-"))).toBe(false)
   })
 
   it("discloses a husky repo rather than flagging it — git runs one hook path", async () => {
