@@ -1,5 +1,31 @@
 # etymd
 
+## 0.17.0
+
+### Minor Changes
+
+- The content screen's allow file accepts a `generated <path-regex>` record: a path declared
+  as regenerated data is still read and still screened, but vocabulary-class patterns drop
+  for it — secret-class patterns and the machine-path check stay — and the exempted paths
+  are named in the output, so a clean run never reads as fully screened. Provenance
+  (reason, date, author) is required.
+
+### Patch Changes
+
+- 2bceef1: The fleet's gate-drift check now derives the pre-push audit tier the same way `etymd gates`
+  does. In a repo where no risk-tier rule can fire (no package manifest, no state doc) the
+  generator lowers the audit line to `--fail-on gap`; the drift comparison planned with the raw
+  config tier (`risk`), so its expectation permanently differed from the hook the generator
+  itself writes — a `gate-stale` finding on every repo of that shape, unclearable by the action
+  it names. The derivation now lives in `planWorkflow` itself, where the hook is built, so every
+  caller (the drift check, `etymd init`, the programmatic surface) generates identical bytes; a
+  tier the repo pinned in config is still never lowered.
+- 7221fea: The content screen's machine-path rule now fires only at a path boundary (line start,
+  whitespace, a quote, `=`, `(`, `[` or `:`). A home path inside a longer token or a URL —
+  a test fixture's temp root (`$ROOT/home/‹x›/`), a docs URL with a home segment — is not a
+  machine path, and no longer prints the same advisory line on every push. A bare
+  `/Users/<name>/…` or `/home/<name>/…` still hits.
+
 ## 0.16.0
 
 ### Minor Changes
