@@ -237,6 +237,16 @@ export async function checkTextClaims(
   // check-ignore exits non-zero when nothing matches; git() maps that to null.
   const ignoredOut = missing.length ? await git(env.root, ["check-ignore", ...missing]) : null
   const gitignored = new Set((ignoredOut ?? "").split("\n").filter(Boolean))
+  // A dir-only ignore pattern (`assets/cards/`) matches the bare token only when the
+  // directory exists on disk — git decides "is a directory" by existence — so fresh
+  // checkouts miss the skip above. The slash-terminated probe matches regardless of disk
+  // state (git echoes it slash-terminated, trimmed back to the claim). Miss path only.
+  const unproven = missing.filter((claim) => !gitignored.has(claim))
+  if (unproven.length) {
+    const dirOut = await git(env.root, ["check-ignore", ...unproven.map((claim) => `${claim}/`)])
+    for (const line of (dirOut ?? "").split("\n").filter(Boolean))
+      gitignored.add(line.replace(/\/$/, ""))
+  }
   let pathFindings = 0
   for (const claim of missing) {
     // Outside this repo (task surface only): a path that starts at no directory the repo has
