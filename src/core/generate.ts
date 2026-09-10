@@ -4,6 +4,7 @@ import {
   fileOrigin,
   generateAgentsMd,
   generateArtifactCheckScript,
+  generateClaudePointerMd,
   generateCommitMsgHook,
   generatePreCommitHook,
   generatePrePushHook,
@@ -158,6 +159,11 @@ export async function planWorkflow(
 
   if (opts.agents) {
     await add("AGENTS.md", generateAgentsMd(facts), "Minimal operating contract (scaffold)")
+    // The scaffold must satisfy the pointer contract it is about to be held to: `fleet add`
+    // refuses a repo whose AGENTS.md Claude Code cannot see, so the same onboarding that
+    // writes the contract writes its CLAUDE.md pointer too. An existing CLAUDE.md is kept —
+    // apply never overwrites what it did not write.
+    await add("CLAUDE.md", generateClaudePointerMd(), "Claude Code pointer to AGENTS.md")
   }
   if (opts.gates) {
     // Preservation belongs HERE, not in the command that calls this. `etymd gates` used to read

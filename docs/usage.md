@@ -122,9 +122,10 @@ Flags: `--file <path>` (`-` = stdin) · `--json` (schema `premise/1`) · `--no-b
 ## `etymd init` — onboarding
 
 Reckon → confirm the workflow profile (solo/team, detected from recent commit authors) → scaffold
-a minimal AGENTS.md **only if none exists** → offer local gates **only if no hook system exists**
-→ write the **committed baseline** + gitignore the cache. Never overwrites anything. `-y` accepts
-defaults.
+a minimal AGENTS.md **only if none exists**, with its `CLAUDE.md` pointer (Claude Code
+auto-discovers `CLAUDE.md` and never loads `AGENTS.md`) → offer local gates **only if no hook
+system exists** → write the **committed baseline** + gitignore the cache. Never overwrites
+anything. `-y` accepts defaults.
 
 The scaffold contains only what the scan can assert truthfully (stack, Done=, commands, an
 advisory map with its re-verify command) plus clearly marked slots — `etymd brief` hands your
@@ -194,7 +195,10 @@ Walkthrough of the pieces:
 - **Wall findings** (lens id `fleet-manifest`, all risk-tier): guarded contract files inside a guarded
   worktree; unregistered guarded-remote checkouts under the fleet root; tracked `/Users/` paths in
   the manifest's own repo; private needles in `trust: "public-repo"` entries; guarded-host commit
-  emails on personal entries. These are not ledger-quietable in 0.2 — the only honest resolution
+  emails on personal entries; and repos whose `AGENTS.md` no `CLAUDE.md` pointer or symlink makes
+  visible to Claude Code (`claude-pointer-missing` — Claude Code auto-discovers `CLAUDE.md` and
+  never loads `AGENTS.md`; `etymd fleet add` refuses to register such a repo and prints the
+  pointer to create). These are not ledger-quietable in 0.2 — the only honest resolution
   is fixing them. Every check that cannot run says so.
 
 ## CI recipe

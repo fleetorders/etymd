@@ -4,6 +4,7 @@ import path from "node:path"
 import { promisify } from "node:util"
 
 import { DEFAULT_CONFIG, type StateBudgets } from "../core/config.js"
+import { checkClaudePointer } from "../core/detect.js"
 import { ETYMD_DIR } from "../core/facts.js"
 import type { FleetEntry, FleetManifest } from "../core/fleet.js"
 import { FLEET_TRUST_VALUES } from "../core/fleet.js"
@@ -734,6 +735,32 @@ async function checkGateDrift(
   }
 }
 
+/**
+ * Claude Code never loads `AGENTS.md` — the pointer contract (`checkClaudePointer`, the one
+ * definition) must hold in every resolved repo, or the repo believes every agent reads a
+ * contract one whole harness never receives. Runs on every profile: guarded worktrees are read
+ * here, never written. Not exempted by `contract.placement: "none"` — that declares instruction
+ * files legitimately ABSENT, not present-but-invisible to a reader.
+ */
+async function checkClaudePointers(manifest: FleetManifest, findings: Finding[]): Promise<void> {
+  for (const entry of manifest.entries) {
+    const root = entry.resolvedRoot
+    if (!root || !(await isDirectory(root))) continue
+    const check = await checkClaudePointer(root)
+    if (check.ok) continue
+    findings.push(
+      finding(
+        `${FLEET_LENS}/claude-pointer-missing:${entry.name}`,
+        "risk",
+        `\`${entry.name}\` keeps its agent instructions in AGENTS.md, which Claude Code never loads`,
+        [`${entry.name}: ${check.detail}`],
+        "Claude Code auto-discovers CLAUDE.md and follows its @ imports; it does not read AGENTS.md. Codex and the other harnesses honor the standard name, so the contract looks universal from inside the repo while one major agent never receives it.",
+        "Create a CLAUDE.md beside AGENTS.md whose only import line is `@AGENTS.md` (`etymd init` scaffolds it), or symlink either file to the other.",
+      ),
+    )
+  }
+}
+
 /** All fleet-scope wall checks. Each check that cannot run says so — undetermined, not clean. */
 export async function collectWallFindings(
   manifest: FleetManifest,
@@ -746,6 +773,7 @@ export async function collectWallFindings(
   await checkHygieneNeedles(manifest, findings, disclosures)
   await checkGuardedEmails(manifest, findings, disclosures)
   await checkGateDrift(manifest, findings, disclosures)
+  await checkClaudePointers(manifest, findings)
   return { findings, disclosures }
 }
 
