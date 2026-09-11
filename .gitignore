@@ -16,3 +16,6 @@ sources.local.json
 # environment specifics, which a public repo must never carry. The pattern is the guard: the
 # runbook has a home that is not a tracked file, so the detail stops reaching for one.
 *.local.md
+
+# Machine-local companion hooks and scratch; never tracked.
+local/
