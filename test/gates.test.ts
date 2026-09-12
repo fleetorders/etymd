@@ -186,6 +186,60 @@ describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's r
   })
 })
 
+describe.skipIf(!existsSync(CLI))("etymd gates — script discovery is injection-safe", () => {
+  it("PINNED: tracked names carrying quotes and $(…) reach the scan as data, never as code", async () => {
+    // The defect this pins: xargs -I{} interpolated each filename into a double-quoted shell
+    // string, so one commit of a file named with $(…) or " turned every push into code
+    // execution. The fix passes names as ARGUMENTS to one sh. What is asserted is the
+    // discovery itself, extracted from the generated hook's own bytes — the downstream
+    // `xargs shellcheck` still trips on a bare quote in default mode (fail-closed, and
+    // unchanged by this fix), so the whole-hook run cannot observe the list here.
+    await write("package.json", JSON.stringify({ name: "spicy", private: true }, null, 2) + "\n")
+    await write("AGENTS.md", "# AGENTS.md\n")
+    await write("tool/plain.sh", "#!/bin/sh\necho ok\n")
+    await write('tool/quote".sh', "#!/bin/sh\necho ok\n")
+    // If the old shape ran, the substitution in this NAME executes on push — with the hook's
+    // cwd at the repo root, so the marker lands beside these fixtures. The payload carries no
+    // slash: a path separator cannot occur inside a filename, only inside what it executes.
+    await write("tool/sub$(touch pwned).sh", "#!/bin/sh\necho ok\n")
+    await write("tool/not-a-script.txt", "no shebang here\n")
+    await write("tool/run.zsh", "#!/bin/zsh\necho z\n")
+    await pExecFile("git", ["add", "."], { cwd: dir })
+
+    await gates()
+    const hook = await prePush()
+    expect(hook).not.toContain("xargs -0 -I{}")
+    expect(hook).toContain("xargs -0 sh -c")
+    // Run exactly the discovery block the hook ships: from the sh-set assignment to its
+    // closing sort, then print what it found.
+    const lines = hook.split("\n")
+    const start = lines.findIndex((l) => l.includes("scripts=$(git ls-files"))
+    const end = lines.findIndex((l, i) => i > start && l.trimEnd().endsWith("| sort)"))
+    expect(start).toBeGreaterThanOrEqual(0)
+    expect(end).toBeGreaterThan(start)
+    const record = path.join(dir, "discovered")
+    await pExecFile(
+      "sh",
+      [
+        "-c",
+        `${lines.slice(start, end + 1).join("\n")}\nprintf "%s\\n" "$scripts" > ${JSON.stringify(record)}\n`,
+      ],
+      { cwd: dir },
+    )
+    // Nothing executed beyond head/grep: the payload never ran.
+    expect(existsSync(path.join(dir, "pwned"))).toBe(false)
+    // And the discovered list is still correct: every sh-family script — the quote and the
+    // substitution survive byte-for-byte instead of being mangled by re-quoting — and
+    // neither the .txt nor the zsh script is in the sh set.
+    const seen = await fs.readFile(record, "utf8")
+    expect(seen).toContain("tool/plain.sh")
+    expect(seen).toContain('tool/quote".sh')
+    expect(seen).toContain("tool/sub$(touch pwned).sh")
+    expect(seen).not.toContain("not-a-script")
+    expect(seen).not.toContain("run.zsh")
+  })
+})
+
 describe.skipIf(!existsSync(CLI))(
   "etymd gates — which binary the content screen resolves to",
   () => {
