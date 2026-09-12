@@ -33,11 +33,15 @@ run_gate npm run test || exit 1
 # a DIRECTIVE, and an unparseable directive is itself an error (SC1072/SC1073). A hook that
 # explains why it skips a shell dialect must not break the checker while doing it.
 if command -v shellcheck >/dev/null 2>&1; then
+  # Names reach the loop as ARGUMENTS, never interpolated into the script: a tracked filename
+  # carrying " or $(…) is data, not code — the -I{} shape made every push execute it.
+  # shellcheck disable=SC2016  # $f belongs to the inner shell's loop, not to this one
   scripts=$(git ls-files -z \
-    | xargs -0 -I{} sh -c 'head -1 "{}" 2>/dev/null | grep -qE "^#!.*[/ ](ba|da)?sh( |$)" && echo "{}"' \
+    | xargs -0 sh -c 'for f do head -1 "$f" 2>/dev/null | grep -qE "^#!.*[/ ](ba|da)?sh( |$)" && printf "%s\n" "$f"; done' sh \
     | sort)
+  # shellcheck disable=SC2016  # same shape, for the zsh set
   zsh_scripts=$(git ls-files -z \
-    | xargs -0 -I{} sh -c 'head -1 "{}" 2>/dev/null | grep -qE "^#!.*[/ ]zsh( |$)" && echo "{}"' \
+    | xargs -0 sh -c 'for f do head -1 "$f" 2>/dev/null | grep -qE "^#!.*[/ ]zsh( |$)" && printf "%s\n" "$f"; done' sh \
     | sort)
   if [ -n "$zsh_scripts" ]; then
     echo "› shellcheck: $(printf '%s\n' "$zsh_scripts" | wc -l | tr -d ' ') zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
@@ -80,4 +84,4 @@ if [ -x "$GATE" ]; then
 fi
 
 exit 0
-# etymd:generated pack-v12 06afa443ef89caff
+# etymd:generated pack-v14 35ec3de18f32588a
