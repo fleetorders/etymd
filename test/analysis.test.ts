@@ -657,7 +657,7 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
     // property — and did: it is what let 0.4.0 ship with the advisory pass missing entirely,
     // while the docs promised it.
     // The warning pass is the only one wired to a failure branch...
-    expect(hook).toMatch(/-S warning \|\| \{[^}]*exit 1/)
+    expect(hook).toMatch(/-S warning[^\n]* \|\| \{[^}]*exit 1/)
     // ...while the style pass is captured into a variable and explicitly tolerated with
     // `|| true`, so it has no path to the exit code at all.
     expect(hook).toMatch(/advice=\$\([\s\S]*?-S style[\s\S]*?\|\| true\)/)

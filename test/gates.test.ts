@@ -138,6 +138,113 @@ try {
   /* not on PATH — the hook's own absent-checker branch covers that case */
 }
 
+describe.skipIf(!existsSync(CLI))("etymd gates — shell discovery fails closed", () => {
+  async function stub(command: string, body: string) {
+    const rel = `.stub-bin/${command}`
+    await write(rel, body)
+    await fs.chmod(path.join(dir, rel), 0o755)
+  }
+
+  async function fixture() {
+    await write("package.json", JSON.stringify({ name: "demo", private: true }) + "\n")
+    await write("AGENTS.md", "# AGENTS.md\n")
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await pExecFile("git", ["add", "."], { cwd: dir })
+    await gates()
+    // Only unrelated audit/content checks are stubbed; discovery runs in the generated hook.
+    await stub("etymd", "#!/bin/sh\nexit 0\n")
+    return {
+      ...process.env,
+      PATH: `${path.join(dir, ".stub-bin")}${path.delimiter}${process.env.PATH}`,
+    }
+  }
+
+  async function recordShellcheck() {
+    await stub(
+      "shellcheck",
+      `#!/usr/bin/env node
+require("node:fs").appendFileSync("shellcheck.jsonl", JSON.stringify(process.argv.slice(2)) + "\\n")
+`,
+    )
+  }
+
+  it.skipIf(!hasShellcheck)(
+    "checks an extensionless script after a long tracked non-shell path",
+    async () => {
+      // BSD xargs -I caps each replaced argument at 255 bytes. Repeating this filename inside
+      // sh -c exceeds that cap; the old trailing sort hid the failure and the later warning.
+      await write(`docs/${"a".repeat(100)}.txt`, "ordinary text\n")
+      await write("z-later", "#!/bin/sh\nnever_used=1\necho ok\n")
+      const env = await fixture()
+
+      await expect(
+        pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env }),
+      ).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining("SC2034") })
+    },
+  )
+
+  it("passes whitespace, quotes and leading hyphens unchanged to both checker passes", async () => {
+    const names = [
+      "-leading",
+      "tools/a 'single' \"double\" $(false) `false`",
+      "tools/tab\tand\nline",
+    ]
+    for (const name of names) await write(name, "#!/bin/sh\necho ok\n")
+    const env = await fixture()
+    await recordShellcheck()
+
+    await pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env })
+    const calls = (await fs.readFile(path.join(dir, "shellcheck.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[])
+    expect(calls).toHaveLength(2)
+    for (const args of calls) {
+      // ./ also prevents a filename from being interpreted as an option by the checker.
+      expect(args.filter((arg) => arg.startsWith("./")).sort()).toEqual(
+        [...names, "scripts/run"].map((name) => `./${name}`).sort(),
+      )
+    }
+    expect(calls[0]).toContain("warning")
+    expect(calls[1]).toContain("style")
+  })
+
+  it.each(["git", "head", "grep", "xargs"])(
+    "blocks when %s fails during discovery, even after partial output",
+    async (command) => {
+      const env = await fixture()
+      await recordShellcheck()
+      await stub(
+        command,
+        `#!/bin/sh
+${command === "git" ? "printf 'scripts/run\\0'" : command === "head" ? "printf '#!/bin/sh\\n'" : ":"}
+echo "forced discovery failure" >&2
+exit 23
+`,
+      )
+
+      await expect(
+        pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env }),
+      ).rejects.toMatchObject({
+        code: 1,
+        stderr: expect.stringContaining("forced discovery failure"),
+      })
+      expect(existsSync(path.join(dir, "shellcheck.jsonl"))).toBe(false)
+    },
+  )
+
+  it("blocks when a tracked file cannot be read", async () => {
+    const env = await fixture()
+    await recordShellcheck()
+    await fs.unlink(path.join(dir, "scripts/run"))
+
+    await expect(pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env })).rejects.toMatchObject({
+      code: 1,
+    })
+    expect(existsSync(path.join(dir, "shellcheck.jsonl"))).toBe(false)
+  })
+})
+
 describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's reach", () => {
   it("the shebang scan hands only sh/bash/dash to shellcheck, and the hook says why", async () => {
     await write("package.json", JSON.stringify({ name: "zshy", private: true }, null, 2) + "\n")
