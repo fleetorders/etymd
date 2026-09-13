@@ -215,6 +215,13 @@ export function extractCommandClaims(text: string): CommandClaims {
 
 export const PATH_TOKEN_RE = /^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.$-]+)+\/?$/
 
+// A first segment shaped like a host (`example.com`, `api.example.com`) — a URL with its
+// scheme dropped, not a repo path. A dotted first segment whose suffix is a file extension
+// (`data.py/…`) stays a path. One definition, two callers (the extractor below and the task
+// surface's prose promotion) — a copy would let the two surfaces drift, which is the exact
+// failure this tool exists to catch.
+export const HOSTNAME_RE = /^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.([a-z]{2,})$/i
+
 // A file claim needs a RECOGNIZED extension, not just a dot suffix: Better-Auth hook notation
 // (`create/update.after`) reads as slash-joined prose with a dotted stage, and any bare
 // "ends in .xyz" rule accuses it. Unknown extensions fall back to prose — precision over recall.
@@ -234,6 +241,16 @@ export const KNOWN_EXTENSIONS = new Set([
 // Better-Auth dotted notation.
 const CREATION_CONTEXT_RE =
   /\b(?:creat(?:e|es|ed|ing)|generat(?:e|es|ed|ing)|scaffold(?:s|ed|ing)?|quarantin(?:e|es|ed|ing)|(?:writ(?:e|es|ten|ing)|output(?:s|ted)?|emit(?:s|ted|ting)?|sav(?:e|es|ed|ing)|mov(?:e|es|ed|ing)|copy|copi(?:es|ed))\s+(?:it\s+|them\s+)?(?:to|into)|new\s+(?:file|directory|folder)|will\s+(?:be\s+)?(?:created|generated|written)|add(?:s|ed|ing)?\s+(?:a|the)\s+new)\b/i
+
+// A path named beside the URL it is FETCHED from ("Fetch `docs/x.md` from `https://…`") points
+// into another tree: the reference may be real, but not in this repo — the same principle the
+// task surface applies to quoted foreign paths. A fetch verb alone is not enough; the URL must
+// sit on the same context line, or an innocent mention beside an unrelated link would be
+// skipped. Grow the verb list from corpus finds — an unlisted verb costs a false accusation,
+// never a false skip.
+const FETCH_CONTEXT_RE =
+  /\b(?:fetch(?:es|ed|ing)?|pull(?:s|ed|ing)?|clone(?:s|d)?|download(?:s|ed|ing)?)\b/i
+const EXTERNAL_URL_RE = /https?:\/\/|\bwww\./i
 
 // Naming stand-ins an instruction file uses to describe a shape, not to point at a real path.
 const PLACEHOLDER_SEGMENTS = new Set(["placeholder", "foo", "bar", "baz", "qux"])
@@ -293,8 +310,15 @@ function claimContext(text: string, index: number): string {
 export interface PathClaims {
   /** Claims to verify against the repo. */
   paths: string[]
+  /** Slash-terminated directory claims — candidate bases for resolving sibling references. */
+  dirs: string[]
   /** Claims whose every mention sits in create-this prose — skipped, counted, disclosed. */
   prospective: string[]
+  /**
+   * Claims whose every mention sits beside the URL they are fetched from — another tree's
+   * files, unverifiable here. Skipped, counted, disclosed.
+   */
+  fetched: string[]
   /** Claims whose every mention sits behind a namespace prefix (`pc:`) — another repo's tree. */
   namespaced: string[]
   /** Naming stand-ins (`my-custom-skill`) — never real claims. */
@@ -318,11 +342,13 @@ export interface PathClaimOptions {
  * namespace prefix names another repo's tree, not this one.
  */
 export function extractPathClaims(text: string, opts: PathClaimOptions = {}): PathClaims {
-  // Per claim: does EVERY mention sit in create-this prose / behind a namespace prefix? One
-  // plain reference makes it a claim.
+  // Per claim: does EVERY mention sit in create-this / fetched-from prose / behind a namespace
+  // prefix? One plain reference makes it a claim.
   const prospectiveOnly = new Map<string, boolean>()
+  const fetchedOnly = new Map<string, boolean>()
   const namespacedOnly = new Map<string, boolean>()
   const placeholder = new Set<string>()
+  const dirs = new Set<string>()
 
   for (const m of text.matchAll(/`([^`\n]+)`/g)) {
     const token = (m[1] as string).trim()
@@ -335,6 +361,13 @@ export function extractPathClaims(text: string, opts: PathClaimOptions = {}): Pa
     )
       continue
     if (token.includes("://") || token.startsWith("www.")) continue
+    // A schemeless host (`api.example.com/client/v4/`, `example.com/sitemap.xml`) is a URL, not
+    // a repo path — it can never be verified against the filesystem, so it is never a claim.
+    if (token.includes("/")) {
+      const firstSegment = token.split("/")[0] ?? token
+      const hostSuffix = HOSTNAME_RE.exec(firstSegment)?.[1]?.toLowerCase()
+      if (hostSuffix && !KNOWN_EXTENSIONS.has(hostSuffix)) continue
+    }
     if (/[*?{}<>|]/.test(token)) continue
     if (token.includes("@")) continue
     if (!PATH_TOKEN_RE.test(token)) continue
@@ -349,8 +382,14 @@ export function extractPathClaims(text: string, opts: PathClaimOptions = {}): Pa
       placeholder.add(claim)
       continue
     }
-    const prospective = CREATION_CONTEXT_RE.test(claimContext(text, m.index ?? 0))
+    if (isDirClaim) dirs.add(claim)
+    const context = claimContext(text, m.index ?? 0)
+    const prospective = CREATION_CONTEXT_RE.test(context)
     prospectiveOnly.set(claim, (prospectiveOnly.get(claim) ?? true) && prospective)
+    // External beats prospective when both match: "fetch from <url>" says where the file lives,
+    // which creation prose never can.
+    const fetched = FETCH_CONTEXT_RE.test(context) && EXTERNAL_URL_RE.test(context)
+    fetchedOnly.set(claim, (fetchedOnly.get(claim) ?? true) && fetched)
     if (opts.namespaces) {
       // A namespace prefix ends the text right before this mention (`pc: `, `lk:`) — the span
       // points into another repo's tree.
@@ -362,13 +401,15 @@ export function extractPathClaims(text: string, opts: PathClaimOptions = {}): Pa
 
   const paths: string[] = []
   const prospective: string[] = []
+  const fetched: string[] = []
   const namespaced: string[] = []
   for (const [claim, only] of prospectiveOnly) {
-    if (only) prospective.push(claim)
+    if (fetchedOnly.get(claim)) fetched.push(claim)
+    else if (only) prospective.push(claim)
     else if (namespacedOnly.get(claim)) namespaced.push(claim)
     else paths.push(claim)
   }
-  return { paths, prospective, namespaced, placeholder: [...placeholder] }
+  return { paths, dirs: [...dirs], prospective, fetched, namespaced, placeholder: [...placeholder] }
 }
 
 export interface DecisionRefs {
