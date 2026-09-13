@@ -2,14 +2,35 @@
 # Screen what this push publishes: branch and tag names, tag and commit messages, and the
 # tracked hooks, scripts and package manifest. The checker is resolved by name from PATH;
 # where it is not installed there is no check, never a failure. (published-surface stub)
+#
+# The ref list git hands a pre-push hook arrives on stdin; capture it once so EVERY consumer
+# sees it — whichever drains stdin first must not starve the one after it.
+REFS=$(cat)
+
 GUARD=$(command -v public-surface-guard || true)
 if [ -x "$GUARD" ]; then
-  "$GUARD" --pre-push "$@" || exit 1
+  printf '%s' "$REFS" | "$GUARD" --pre-push "$@" || exit 1
 fi
+
 # Machine-local companion checks, when this machine has any. The companion is never tracked and
-# never named here, so a contributor without one pushes exactly as before.
-if [ -x local/hooks/pre-push ]; then
-  local/hooks/pre-push || exit 1
+# its contents are never specified here, so a contributor without one pushes exactly as before.
+# Hooks run from the CURRENT worktree's root while the seam lives only in the main checkout, so
+# the path is resolved through the common git dir — a linked worktree would otherwise skip the
+# companion silently.
+COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null) || COMMON_DIR=""
+MAIN_ROOT=""
+if [ -n "$COMMON_DIR" ]; then
+  MAIN_ROOT=$(cd "$COMMON_DIR/.." 2>/dev/null && pwd) || MAIN_ROOT=""
+fi
+if [ -n "$MAIN_ROOT" ]; then
+  COMPANION="$MAIN_ROOT/local/hooks/pre-push"
+  if [ -e "$COMPANION" ]; then
+    if [ -f "$COMPANION" ] && [ -x "$COMPANION" ]; then
+      printf '%s' "$REFS" | "$COMPANION" "$@" || exit 1
+    else
+      echo "pre-push: $COMPANION exists but is not a runnable file — companion skipped." >&2
+    fi
+  fi
 fi
 
 exit 0

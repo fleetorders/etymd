@@ -17,5 +17,7 @@ sources.local.json
 # runbook has a home that is not a tracked file, so the detail stops reaching for one.
 *.local.md
 
-# Machine-local companion hooks and scratch; never tracked.
-local/
+# Machine-local companion hooks and scratch; never tracked. Root-anchored so a nested `local/`
+# stays trackable. Expendable by design: `git clean -fdx` and a fresh clone both drop it —
+# keep anything precious outside the tree.
+/local/

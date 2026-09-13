@@ -15,6 +15,7 @@ import {
   type TruthEnv,
 } from "../lenses/instruction-truth/checks.js"
 import {
+  HOSTNAME_RE,
   KNOWN_EXTENSIONS,
   NAMESPACE_IDENT,
   NAMESPACE_STOP,
@@ -108,9 +109,8 @@ const STOP_WORDS = new Set(
 )
 const WRAP_RE = /^([([{"']*)(.*?)([.,;:!?)\]}"']*)$/
 const TRAIL_RE = /[.,;:!?)\]}"']*$/
-// A first segment shaped like a host (`github.com`, `docs.example.co.uk`) — a URL with its scheme
-// dropped, not a repo path. A dotted first segment whose suffix is a file extension is a file.
-const HOSTNAME_RE = /^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.([a-z]{2,})$/i
+// A first segment shaped like a host is a scheme-dropped URL, not a repo path — HOSTNAME_RE in
+// claims.ts is the one definition; the extractor applies it to backticked tokens too.
 
 /**
  * People do not backtick paths in a prompt. Promote the bare mentions the claim extractors would
@@ -341,6 +341,11 @@ export async function runPremise(opts: PremiseOptions): Promise<PremiseResult> {
   if (counters.prospectiveSkipped) {
     disclosures.push(
       `${counters.prospectiveSkipped} path(s) sit in create-this prose (the task says to create them) — forward-looking, not missing; skipped.`,
+    )
+  }
+  if (counters.fetchedSkipped) {
+    disclosures.push(
+      `${counters.fetchedSkipped} path(s) are named beside the URL they are fetched from — another tree, not this repo; skipped, not flagged.`,
     )
   }
   if (counters.placeholderSkipped) {
