@@ -413,11 +413,17 @@ exit 0
 /**
  * The correctness gate for a repo whose executable surface is shell.
  *
- * Three properties, each a lesson from a gate that failed:
+ * Four properties, each a lesson from a gate that failed:
  *
  * Scripts are re-discovered HERE, at push time, by shebang over tracked files — never baked in as
  * a list. A generated list is correct on the day it is written and wrong the first time someone
  * adds a script, and the failure is silent: the new file is simply never checked.
+ *
+ * Discovery fails closed only where coverage could silently shrink: failed enumeration, and a
+ * regular file that exists but cannot be read, block the push. A tracked path with nothing
+ * readable behind it — a submodule entry, a dangling symlink, a file deleted from the worktree
+ * while still tracked — cannot lie about its contents, so it is counted and disclosed as skipped
+ * instead of blocking: an absent worktree file is a routine dirty state, not a checking hazard.
  *
  * A missing `shellcheck` is a LOUD skip naming the install command. A check that goes quiet when
  * its binary is absent is the worst kind — the repo looks guarded on every machine, and is
@@ -436,15 +442,24 @@ function shellcheckStep(): string {
 # the checker cannot parse it (SC1071 is a parser-level error no inline directive can silence),
 # so checking it would fail every push on the parser, not on the script. Excluded — and said so
 # at run time below, because a coverage hole that is silent is indistinguishable from coverage.
+# The same honesty splits the unreadable: a regular file that exists but cannot be read blocks
+# the push (coverage would otherwise silently shrink), while a tracked path with nothing readable
+# behind it — a submodule entry, a dangling symlink, a file deleted from the worktree while
+# still tracked — is counted and said so below as skipped, never a block.
 #
 # "the checker", not its name, on purpose: a comment whose first word is that name is read as
 # a DIRECTIVE, and an unparseable directive is itself an error (SC1072/SC1073). A hook that
 # explains why it skips a shell dialect must not break the checker while doing it.
 if command -v shellcheck >/dev/null 2>&1; then
   (
-    # Checked files between stages keep POSIX pipelines from hiding incomplete discovery.
+    # POSIX pipelines report only the LAST command's status, so discovery tallies progress in
+    # files — one dot per decision, counted with wc -c after the pipeline — rather than
+    # streaming through it: a pipeline that dies halfway cannot then pass as complete coverage,
+    # and the same tallies carry the counts to the reporting below.
     # NUL delimiters preserve filenames; positional arguments avoid xargs -I size limits and
-    # interpreting filenames as shell code. The subshell confines cleanup to this step.
+    # interpreting filenames as shell code. The subshell confines cleanup to this step. The
+    # scratch files are shared across files and stay correct only while xargs runs one batch at
+    # a time — never add -P here.
     shellcheck_tmp=$(mktemp -d) || exit 1
     trap 'rm -rf "$shellcheck_tmp"' 0
     trap 'exit 1' 1 2 3 15
@@ -452,12 +467,25 @@ if command -v shellcheck >/dev/null 2>&1; then
       echo "etymd: cannot enumerate tracked files for shellcheck" >&2
       exit 1
     }
-    : > "$shellcheck_tmp/scripts" && : > "$shellcheck_tmp/count" && : > "$shellcheck_tmp/zsh-count" || exit 1
+    : > "$shellcheck_tmp/scripts" && : > "$shellcheck_tmp/count" && : > "$shellcheck_tmp/zsh-count" && : > "$shellcheck_tmp/skip-count" || exit 1
     xargs -0 sh -c '
       work=$1
       shift
       for file do
-        head -n 1 "./$file" > "$work/first-line" || exit 1
+        # Nothing readable behind the path (see the note above): a disclosed skip, never a
+        # block. A regular file that exists but cannot be read is the other branch — a block.
+        if [ ! -f "./$file" ]; then
+          printf . >> "$work/skip-count" || exit 1
+          continue
+        fi
+        # 4096 bytes bound the read — a binary with no newline would otherwise be copied whole
+        # into the scratch on every push. The second head restores line-1-only semantics, so a
+        # shebang embedded on a LATER line of a document cannot match the patterns below.
+        head -c 4096 "./$file" > "$work/head-bytes" || {
+          echo "etymd: cannot read tracked file for shellcheck: $file" >&2
+          exit 1
+        }
+        head -n 1 "$work/head-bytes" > "$work/first-line" || exit 1
         if grep -qE "^#!.*[/ ](ba|da)?sh( |$)" "$work/first-line"; then
           printf "./%s\\0" "$file" >> "$work/scripts" || exit 1
           printf . >> "$work/count" || exit 1
@@ -476,6 +504,10 @@ if command -v shellcheck >/dev/null 2>&1; then
     }
     count=$(wc -c < "$shellcheck_tmp/count") || exit 1
     zsh_count=$(wc -c < "$shellcheck_tmp/zsh-count") || exit 1
+    skip_count=$(wc -c < "$shellcheck_tmp/skip-count") || exit 1
+    if [ "$skip_count" -gt 0 ]; then
+      echo "› shellcheck: $((skip_count)) tracked path(s) with nothing readable behind them (submodule, dangling symlink, or deleted from the worktree) — not checked, not failed"
+    fi
     if [ "$zsh_count" -gt 0 ]; then
       echo "› shellcheck: $((zsh_count)) zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
     fi
