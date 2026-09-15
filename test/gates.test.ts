@@ -183,6 +183,29 @@ require("node:fs").appendFileSync("shellcheck.jsonl", JSON.stringify(process.arg
     },
   )
 
+  it.skipIf(!hasShellcheck)(
+    "a shell script whose own path crosses the BSD xargs -I cap stays in the set and blocks",
+    async () => {
+      // 125 bytes across two components, each under the filesystem's name-length limit. The
+      // old -I{} discovery could not assemble a command line carrying a path this long, so the
+      // script silently left the checked set — no error, no coverage line.
+      const long = `docs/${"d".repeat(90)}/tool-${"t".repeat(24)}`
+      await write(long, "#!/bin/sh\nnever_used=1\necho ok\n")
+      const env = await fixture()
+
+      const failure = await pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env }).then(
+        () => {
+          throw new Error("expected the long-path script to block the push")
+        },
+        (error) => error,
+      )
+      expect(failure.code).toBe(1)
+      // The checker's report names the file it read — set membership and the block in one fact.
+      expect(failure.stdout).toContain("SC2034")
+      expect(failure.stdout).toContain(long)
+    },
+  )
+
   it("passes whitespace, quotes and leading hyphens unchanged to both checker passes", async () => {
     const names = [
       "-leading",
