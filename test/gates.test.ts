@@ -255,6 +255,26 @@ exit 23
     expect(existsSync(path.join(dir, "shellcheck.jsonl"))).toBe(false)
   })
 
+  it("discovers and checks its own classifier once the gates are tracked", async () => {
+    // The classifier is the gate's most intricate code; kept inside a single-quoted sh -c
+    // string, no linter ever saw it. As a shebanged tracked file it must land in the very
+    // set it computes — the gate checks itself.
+    const env = await fixture()
+    await recordShellcheck()
+    await pExecFile("git", ["add", ".githooks"], { cwd: dir })
+
+    await pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env })
+    const calls = (await fs.readFile(path.join(dir, "shellcheck.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[])
+    expect(calls.length).toBeGreaterThan(0)
+    for (const args of calls) {
+      expect(args).toContain("./.githooks/discover-shell-scripts.sh")
+      expect(args).toContain("./.githooks/pre-push")
+    }
+  })
+
   it("skips tracked paths with nothing readable behind them, and says so", async () => {
     // Deleted from the worktree while still tracked, plus a dangling symlink: neither is a
     // checking hazard that can lie, so neither blocks — but both are disclosed, never silent.
@@ -305,9 +325,15 @@ describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's r
 
     await gates()
     const hook = await prePush()
-    // The checked set: sh, bash, dash — zsh dropped from the character class.
-    expect(hook).toContain("(ba|da)?sh")
-    expect(hook).not.toContain("(ba|da|z)?sh")
+    const classifier = await fs.readFile(
+      path.join(dir, ".githooks", "discover-shell-scripts.sh"),
+      "utf8",
+    )
+    // The checked set: sh, bash, dash — zsh dropped from the character class. The pattern
+    // lives in the classifier file now, which is the point: the hook delegates, the helper
+    // classifies.
+    expect(classifier).toContain("(ba|da)?sh")
+    expect(classifier).not.toContain("(ba|da|z)?sh")
     // The exclusion is a disclosed skip, not silent absence of coverage.
     expect(hook).toContain("SC1071")
     expect(hook).toContain("zsh script(s) excluded")
@@ -534,9 +560,12 @@ describe.skipIf(!existsSync(CLI))(
       await write("scripts/thing.sh", "#!/usr/bin/env sh\necho hi\n")
       await gates()
 
-      const targets = [".githooks/pre-commit", ".githooks/pre-push", ".githooks/commit-msg"].filter(
-        (rel) => existsSync(path.join(dir, rel)),
-      )
+      const targets = [
+        ".githooks/pre-commit",
+        ".githooks/pre-push",
+        ".githooks/commit-msg",
+        ".githooks/discover-shell-scripts.sh",
+      ].filter((rel) => existsSync(path.join(dir, rel)))
       expect(targets.length).toBeGreaterThan(0)
 
       const result = await pExecFile("shellcheck", ["-S", "warning", ...targets], {

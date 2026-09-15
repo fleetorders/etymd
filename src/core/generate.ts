@@ -7,6 +7,7 @@ import {
   generateCommitMsgHook,
   generatePreCommitHook,
   generatePrePushHook,
+  generateShellDiscoveryScript,
   isSafeGateCommand,
   isSelfBuildRepo,
 } from "../pack/templates.js"
@@ -218,6 +219,18 @@ export async function planWorkflow(
       "Correctness gate (pre-push)",
       true,
     )
+    // The classifier the shellcheck step above runs, under the same condition that emits the
+    // step — a helper with no caller is dead text in a directory people read to learn what
+    // their gate does. Shebanged and executable, so once the gates are committed the discovery
+    // finds it and the checker covers the gate's own most intricate code.
+    if (facts.shell?.scripts) {
+      await add(
+        ".githooks/discover-shell-scripts.sh",
+        generateShellDiscoveryScript(),
+        "Shell discovery (pre-push shellcheck helper)",
+        true,
+      )
+    }
     // The publish door is only meaningful where something actually ships. A recorded answer
     // wins; otherwise fall back to the derivation. Note the derivation is a GUESS: npm treats a
     // missing `private` as publishable, which is right about npm's semantics and wrong about a
