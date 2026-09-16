@@ -23,6 +23,20 @@ async function write(rel: string, contents: string) {
   await fs.writeFile(abs, contents, "utf8")
 }
 
+async function gitIn(args: string[]) {
+  const { execFile } = await import("node:child_process")
+  const { promisify } = await import("node:util")
+  await promisify(execFile)("git", args, { cwd: dir })
+}
+
+async function initRepo() {
+  await gitIn(["init"])
+  await gitIn(["config", "user.email", "t@example.com"])
+  await gitIn(["config", "user.name", "t"])
+  await gitIn(["add", "-A"])
+  await gitIn(["commit", "-m", "seed", "--no-verify"])
+}
+
 describe("scanProject", () => {
   it("detects package manager, commands, frameworks and artifacts", async () => {
     await write(
@@ -88,6 +102,22 @@ describe("scanProject", () => {
     expect(names).toContain(".github")
     expect(names).toContain(".claude")
     expect(names).toContain("src")
+  })
+
+  it("records an absolute core.hooksPath to the tracked .githooks/ repo-relative", async () => {
+    // The fact is the directory git runs hooks from; its spelling is configuration. Recorded
+    // relative, so a committed baseline never carries a machine path and the gate reads as wired.
+    await write("package.json", JSON.stringify({ name: "demo", scripts: { test: "vitest run" } }))
+    await write(".githooks/pre-push", "#!/bin/sh\nexit 0\n")
+    await initRepo()
+    await gitIn(["config", "core.hooksPath", path.join(dir, ".githooks")])
+
+    const facts = await scanProject(dir)
+
+    expect(facts.git.hooksPath).toBe(".githooks")
+    expect(facts.hooks.source).toBe("githooks")
+    expect(facts.hooks.dir).toBe(".githooks")
+    expect(facts.hooks.prePush).toBe(true)
   })
 })
 
@@ -193,22 +223,55 @@ describe("detectHooks", () => {
     expect(hooks.source).toBe("githooks")
     expect(hooks.preCommit).toBe(true)
   })
+
+  it("reads an absolute core.hooksPath to the tracked .githooks/ as githooks, not custom", async () => {
+    // git accepts a repo-relative OR an absolute hooksPath; the two are identical in effect.
+    // Comparing the literal string called a wired, tracked gate a custom setup — and, joined onto
+    // the root, looked for its hooks at a path that does not exist.
+    await write(".githooks/pre-commit", "#!/bin/sh\nexit 0\n")
+    await write(".githooks/pre-push", "#!/bin/sh\nexit 0\n")
+    const hooks = await detectHooks(dir, path.join(dir, ".githooks"), null)
+    expect(hooks.source).toBe("githooks")
+    expect(hooks.dir).toBe(".githooks")
+    expect(hooks.preCommit).toBe(true)
+    expect(hooks.prePush).toBe(true)
+  })
+
+  it("normalises a trailing slash and a ./ prefix on core.hooksPath", async () => {
+    await write(".githooks/pre-push", "#!/bin/sh\nexit 0\n")
+    for (const spelling of [".githooks/", "./.githooks"]) {
+      const hooks = await detectHooks(dir, spelling, null)
+      expect(hooks.source).toBe("githooks")
+      expect(hooks.dir).toBe(".githooks")
+      expect(hooks.prePush).toBe(true)
+    }
+  })
+
+  it("classifies an absolute husky v9 shim path as husky too", async () => {
+    await write(".husky/_/pre-commit", '#!/bin/sh\n. "$(dirname "$0")/h"\n')
+    await write(".husky/pre-commit", "pnpm run format:fix\n")
+    const hooks = await detectHooks(dir, path.join(dir, ".husky", "_"), null)
+    expect(hooks.source).toBe("husky")
+    expect(hooks.dir).toBe(".husky")
+    expect(hooks.preCommit).toBe(true)
+  })
+
+  it("keeps a hooks directory outside the repo absolute, and reads the hooks from there", async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-hooks-"))
+    try {
+      await fs.writeFile(path.join(outside, "pre-push"), "#!/bin/sh\nexit 0\n", "utf8")
+      const hooks = await detectHooks(dir, outside, null)
+      expect(hooks.source).toBe("custom")
+      expect(hooks.dir).toBe(outside)
+      expect(hooks.prePush).toBe(true)
+      expect(hooks.preCommit).toBe(false)
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true })
+    }
+  })
 })
 
 describe("detectShellSurface — the executable surface package.json cannot see", () => {
-  async function initRepo() {
-    const run = async (args: string[]) => {
-      const { execFile } = await import("node:child_process")
-      const { promisify } = await import("node:util")
-      await promisify(execFile)("git", args, { cwd: dir })
-    }
-    await run(["init"])
-    await run(["config", "user.email", "t@example.com"])
-    await run(["config", "user.name", "t"])
-    await run(["add", "-A"])
-    await run(["commit", "-m", "seed", "--no-verify"])
-  }
-
   it("counts .sh files and extensionless shebang scripts, ignoring non-shell interpreters", async () => {
     await write("bootstrap/install.sh", "#!/usr/bin/env bash\necho hi\n")
     await write("bootstrap/legacy.sh", "#!/bin/sh\necho hi\n")
