@@ -196,6 +196,29 @@ ${
   )
 }
 
+/**
+ * The Claude Code pointer — the adapter that makes one contract readable by every harness.
+ *
+ * Claude Code auto-discovers `CLAUDE.md` and follows its `@` imports; it never loads `AGENTS.md`.
+ * A repo whose instructions live only in `AGENTS.md` is therefore read by the harnesses that
+ * honor the standard name and silently skipped by this one. The fix is one pointer file, and it
+ * is a pack artifact so `fleet add` can print the exact bytes it wants and `init` can scaffold
+ * the same thing.
+ */
+export function generateClaudePointerMd(): string {
+  return stampGenerated(
+    `# CLAUDE.md
+
+Single source of truth for agent instructions lives in \`AGENTS.md\`. This pointer keeps Claude
+Code aligned with every other agent — edit \`AGENTS.md\`, not this file.
+
+@AGENTS.md
+
+`,
+    "md",
+  )
+}
+
 /** The package name this pack ships as — the key that decides the dev-build arm below. */
 const SELF_PACKAGE_NAME = "etymd"
 

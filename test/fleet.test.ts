@@ -7,6 +7,7 @@ import { promisify } from "node:util"
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { checkClaudePointer } from "../src/core/detect.js"
 import { loadFleetManifest } from "../src/core/fleet.js"
 import { readConfig } from "../src/core/config.js"
 import { planWorkflow } from "../src/core/generate.js"
@@ -764,6 +765,172 @@ describe("fleet wall findings", () => {
   })
 })
 
+describe("the Claude Code pointer contract — one definition, two callers", () => {
+  /** A fixture repo directory under the shared tmp dir; no git needed, the check reads the tree. */
+  async function fixture(name: string): Promise<string> {
+    const root = path.join(dir, name)
+    await fs.mkdir(root, { recursive: true })
+    return root
+  }
+
+  const AGENTS = "# AGENTS.md\n\nthe contract\n"
+  const POINTER = "# CLAUDE.md\n\n@AGENTS.md\n"
+
+  // Every row of the contract. Pass rows name the `via` that must be reported; fail rows are
+  // the shapes `fleet add` refuses and the sweep reports as `claude-pointer-missing`.
+  const rows: { name: string; build: (root: string) => Promise<void>; via?: string }[] = [
+    {
+      name: "no AGENTS.md at all",
+      build: async () => {},
+      via: "no-agents",
+    },
+    {
+      name: "AGENTS.md symlinked to CLAUDE.md",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "CLAUDE.md"), AGENTS, "utf8")
+        await fs.symlink("CLAUDE.md", path.join(root, "AGENTS.md"))
+      },
+      via: "same-file",
+    },
+    {
+      name: "CLAUDE.md symlinked to AGENTS.md",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.symlink("AGENTS.md", path.join(root, "CLAUDE.md"))
+      },
+      via: "same-file",
+    },
+    {
+      name: "CLAUDE.md with a full-line @AGENTS.md import",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.writeFile(path.join(root, "CLAUDE.md"), POINTER, "utf8")
+      },
+      via: "root-import",
+    },
+    {
+      name: "CLAUDE.md with a @./AGENTS.md import",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.writeFile(path.join(root, "CLAUDE.md"), "# CLAUDE.md\n\n@./AGENTS.md\n", "utf8")
+      },
+      via: "root-import",
+    },
+    {
+      name: ".claude/CLAUDE.md with a @../AGENTS.md import",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.mkdir(path.join(root, ".claude"), { recursive: true })
+        await fs.writeFile(path.join(root, ".claude", "CLAUDE.md"), "@../AGENTS.md\n", "utf8")
+      },
+      via: "dotclaude-import",
+    },
+    {
+      name: "bare AGENTS.md, no CLAUDE.md",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+      },
+    },
+    {
+      name: "CLAUDE.md exists but never imports AGENTS.md",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.writeFile(path.join(root, "CLAUDE.md"), "# CLAUDE.md\n\nown content\n", "utf8")
+      },
+    },
+    {
+      name: "AGENTS.md symlinked elsewhere, no pointer",
+      build: async (root) => {
+        await fs.mkdir(path.join(root, "docs"), { recursive: true })
+        await fs.writeFile(path.join(root, "docs", "policy.md"), AGENTS, "utf8")
+        await fs.symlink("docs/policy.md", path.join(root, "AGENTS.md"))
+      },
+    },
+    {
+      name: "an inline mention is not an import",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.writeFile(
+          path.join(root, "CLAUDE.md"),
+          "# CLAUDE.md\n\nSee @AGENTS.md for the contract.\n",
+          "utf8",
+        )
+      },
+    },
+  ]
+
+  it("classifies every pass/fail row of the contract", async () => {
+    for (const [i, row] of rows.entries()) {
+      const root = await fixture(`row-${i}`)
+      await row.build(root)
+      const result = await checkClaudePointer(root)
+      if (row.via) expect(result, row.name).toEqual({ ok: true, via: row.via })
+      else expect(result, row.name).toMatchObject({ ok: false })
+    }
+  })
+
+  it("the sweep's wall reports claude-pointer-missing for a bare AGENTS.md repo", async () => {
+    await initRepo("bare-contract")
+    await write("bare-contract/AGENTS.md", AGENTS)
+    const manifestPath = await writeHub([personal("bare-contract")])
+    const { findings } = await collectWallFindings(await manifestAt(manifestPath))
+    const hit = findings.find((f) => f.id === "fleet-manifest/claude-pointer-missing:bare-contract")
+    expect(hit).toBeDefined()
+    expect(hit?.tier).toBe("risk")
+    expect(hit?.action).toContain("@AGENTS.md")
+  })
+
+  it("emits nothing for the passing shapes — pointer, symlink, and no-contract repos", async () => {
+    await initRepo("pointed")
+    await write("pointed/AGENTS.md", AGENTS)
+    await write("pointed/CLAUDE.md", POINTER)
+    await initRepo("naked") // no AGENTS.md — absence is legal
+    const manifestPath = await writeHub([personal("pointed"), personal("naked")])
+    const { findings } = await collectWallFindings(await manifestAt(manifestPath))
+    expect(findings.some((f) => f.id.includes("claude-pointer-missing"))).toBe(false)
+  })
+
+  it('contract.placement "none" does not exempt a repo that HAS an AGENTS.md', async () => {
+    // The declaration covers instruction files legitimately ABSENT — not one a whole harness
+    // cannot see. A pointer-exempt reading would let the declaration quiet a truth finding.
+    await initRepo("declared-none")
+    await write("declared-none/AGENTS.md", AGENTS)
+    const manifestPath = await writeHub([
+      personal("declared-none", { contract: { placement: "none" } }),
+    ])
+    const { findings } = await collectWallFindings(await manifestAt(manifestPath))
+    expect(
+      findings.some((f) => f.id === "fleet-manifest/claude-pointer-missing:declared-none"),
+    ).toBe(true)
+  })
+
+  it("`fleet add` refuses a bare-AGENTS.md repo naming the fix, and writes nothing", async () => {
+    await initRepo("wants-in")
+    await write("wants-in/AGENTS.md", AGENTS)
+    const manifestPath = await writeHub([])
+    await expect(
+      add({ cwd: path.dirname(manifestPath), target: path.join(dir, "wants-in"), yes: true }),
+    ).rejects.toThrow(/which Claude Code never loads/)
+    const after = JSON.parse(await fs.readFile(manifestPath, "utf8")) as { projects: unknown[] }
+    expect(after.projects).toEqual([])
+  })
+
+  it("`fleet add` registers a repo whose pointer satisfies the contract", async () => {
+    await initRepo("pointed-too")
+    await write("pointed-too/AGENTS.md", AGENTS)
+    await write("pointed-too/CLAUDE.md", POINTER)
+    const manifestPath = await writeHub([])
+    await add({
+      cwd: path.dirname(manifestPath),
+      target: path.join(dir, "pointed-too"),
+      trust: "private",
+      yes: true,
+    })
+    const after = JSON.parse(await fs.readFile(manifestPath, "utf8")) as { projects: unknown[] }
+    expect(after.projects).toHaveLength(1)
+  })
+})
+
 // The built CLI (skipped when dist/ is absent; `npm ci` builds it via `prepare`, so CI has it).
 const CLI = path.resolve(import.meta.dirname, "..", "dist", "cli.js")
 
@@ -872,6 +1039,49 @@ describe.skipIf(!existsSync(CLI))("fleet CLI wiring (built binary)", () => {
         { cwd: dir },
       ),
     ).rejects.toThrow(/already registered/)
+  })
+
+  it("PINNED: `fleet add` on a bare-AGENTS.md repo exits non-zero and prints the pointer to create", async () => {
+    await initRepo("blind")
+    await write("blind/AGENTS.md", "# AGENTS.md\n\nthe contract\n")
+    const manifestPath = await writeHub([])
+    // A non-zero exit rejects the exec; the thrown error carries the CLI's stderr, which must
+    // name the reason AND the fix — the exact file body, import line included.
+    await expect(
+      pExecFile(
+        "node",
+        [CLI, "fleet", "add", path.join(dir, "blind"), "--yes", "--manifest", manifestPath],
+        {
+          cwd: dir,
+        },
+      ),
+    ).rejects.toThrow(/which Claude Code never loads[\s\S]*@AGENTS\.md/)
+    const after = JSON.parse(await fs.readFile(manifestPath, "utf8")) as { projects: unknown[] }
+    expect(after.projects).toEqual([])
+  })
+
+  it("`fleet --json` reports claude-pointer-missing for the failing shape and nothing for passing ones", async () => {
+    await initRepo("blind-sweep")
+    await write("blind-sweep/AGENTS.md", "# AGENTS.md\n\nthe contract\n")
+    await initRepo("pointed-sweep")
+    await write("pointed-sweep/AGENTS.md", "# AGENTS.md\n\nthe contract\n")
+    await write("pointed-sweep/CLAUDE.md", "# CLAUDE.md\n\n@AGENTS.md\n")
+    await initRepo("naked-sweep")
+    const manifestPath = await writeHub([
+      personal("blind-sweep"),
+      personal("pointed-sweep"),
+      personal("naked-sweep"),
+    ])
+    const { stdout } = await pExecFile(
+      "node",
+      [CLI, "fleet", "--json", "--manifest", manifestPath],
+      { cwd: dir },
+    )
+    const parsed = JSON.parse(stdout) as { wall: { id: string }[] }
+    const pointerIds = parsed.wall
+      .map((w) => w.id)
+      .filter((id) => id.includes("claude-pointer-missing"))
+    expect(pointerIds).toEqual(["fleet-manifest/claude-pointer-missing:blind-sweep"])
   })
 })
 

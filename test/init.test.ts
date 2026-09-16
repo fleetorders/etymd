@@ -44,6 +44,7 @@ describe.skipIf(!existsSync(CLI))("etymd init — the AGENTS.md scaffold is opt-
     // The defect: a mechanical baseline-only rollout used to land unfilled contract prose
     // nobody reviewed — and the baseline then defended it.
     expect(existsSync(path.join(dir, "AGENTS.md"))).toBe(false)
+    expect(existsSync(path.join(dir, "CLAUDE.md"))).toBe(false)
   })
 
   it("-y --with-agents scaffolds the minimal contract where none exists", async () => {
@@ -53,5 +54,28 @@ describe.skipIf(!existsSync(CLI))("etymd init — the AGENTS.md scaffold is opt-
     await init("-y", "--with-agents")
     expect(existsSync(path.join(dir, ".etymd", "baseline.json"))).toBe(true)
     expect(existsSync(path.join(dir, "AGENTS.md"))).toBe(true)
+  })
+
+  it("the agents scaffold carries its CLAUDE.md pointer — one import line, nothing else to obey", async () => {
+    // Claude Code auto-discovers CLAUDE.md and never loads AGENTS.md; the scaffold that writes
+    // the contract must make it visible there, or `fleet add` refuses what init produced.
+    await write("package.json", JSON.stringify({ name: "demo", private: true }, null, 2) + "\n")
+    await write(".githooks/pre-commit", "#!/bin/sh\nexit 0\n")
+
+    await init("-y", "--with-agents")
+    const pointer = await fs.readFile(path.join(dir, "CLAUDE.md"), "utf8")
+    expect(/^\s*@AGENTS\.md\s*$/m.test(pointer)).toBe(true)
+    expect(pointer).toContain("edit `AGENTS.md`, not this file")
+  })
+
+  it("keeps an existing CLAUDE.md when scaffolding AGENTS.md — never overwrites", async () => {
+    await write("package.json", JSON.stringify({ name: "demo", private: true }, null, 2) + "\n")
+    await write(".githooks/pre-commit", "#!/bin/sh\nexit 0\n")
+    await write("CLAUDE.md", "# bespoke Claude instructions, kept\n")
+
+    await init("-y", "--with-agents")
+    expect(await fs.readFile(path.join(dir, "CLAUDE.md"), "utf8")).toBe(
+      "# bespoke Claude instructions, kept\n",
+    )
   })
 })

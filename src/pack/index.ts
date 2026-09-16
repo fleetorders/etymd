@@ -6,6 +6,7 @@ export {
   isSafeGateCommand,
   mapVerifyCommand,
   generateAgentsMd,
+  generateClaudePointerMd,
   generatePreCommitHook,
   generatePrePushHook,
   isSelfBuildRepo,

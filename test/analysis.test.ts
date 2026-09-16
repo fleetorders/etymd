@@ -121,11 +121,12 @@ describe("generatePrePushHook", () => {
 })
 
 describe("planWorkflow", () => {
-  it("plans only what onboarding scaffolds: contract + gates", async () => {
+  it("plans only what onboarding scaffolds: contract, its Claude pointer, + gates", async () => {
     const plan = await planWorkflow("/nonexistent-root", facts(), { agents: true, gates: true })
     const paths = plan.map((p) => p.path)
     expect(paths).toEqual([
       "AGENTS.md",
+      "CLAUDE.md",
       ".githooks/pre-commit",
       ".githooks/commit-msg",
       ".githooks/pre-push",

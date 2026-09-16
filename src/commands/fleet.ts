@@ -10,7 +10,9 @@ import {
   loadFleetManifest,
   type FleetManifest,
 } from "../core/fleet.js"
+import { checkClaudePointer } from "../core/detect.js"
 import { scanProject } from "../core/scan.js"
+import { generateClaudePointerMd } from "../pack/templates.js"
 import { git, pathExists, readText } from "../core/util.js"
 import { meetsFailOn, parseFailOnTier, type Finding, type FindingTier } from "../engine/finding.js"
 import {
@@ -408,6 +410,20 @@ export async function add(opts: FleetAddCmdOptions): Promise<void> {
   const name = opts.name ?? path.basename(absTarget)
   if (manifest.entries.some((e) => e.name === name)) {
     throw new Error(`\`${name}\` is already registered — resolution is keyed by name`)
+  }
+
+  // The pointer contract, refused at the door: Claude Code auto-discovers CLAUDE.md and follows
+  // its @ imports but never loads AGENTS.md, so a repo whose contract lives only there is read by
+  // every other harness and silently skipped by this one. The fleet would then sweep a repo
+  // whose instructions one whole agent never receives — registered coverage that isn't.
+  const pointer = await checkClaudePointer(absTarget)
+  if (!pointer.ok) {
+    throw new Error(
+      `\`${name}\` keeps its agent instructions in AGENTS.md, which Claude Code never loads ` +
+        `(${pointer.detail}). Create a CLAUDE.md beside it with exactly:\n\n` +
+        `${generateClaudePointerMd().trimEnd().split("\n").join("\n")}\n\n` +
+        `— or symlink either file to the other — then re-run \`etymd fleet add\`.`,
+    )
   }
 
   const facts = await scanProject(absTarget)

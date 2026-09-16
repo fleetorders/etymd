@@ -563,6 +563,82 @@ export async function detectArtifacts(root: string): Promise<DetectedArtifact[]>
   return artifacts
 }
 
+// -------------------------------------------------------------------------------------------
+// the Claude Code pointer contract — ONE definition, used by `fleet add` and the fleet sweep
+// -------------------------------------------------------------------------------------------
+
+/** Root `CLAUDE.md`: a full-line `@AGENTS.md` (or `@./AGENTS.md`) import — Claude Code follows it. */
+const ROOT_POINTER_IMPORT_RE = /^\s*@(\.\/)?AGENTS\.md\s*$/m
+/** `.claude/CLAUDE.md`: the same import, one directory up — the other location Claude Code reads. */
+const DOT_CLAUDE_IMPORT_RE = /^\s*@\.\.\/AGENTS\.md\s*$/m
+
+export type ClaudePointerResult =
+  | { ok: true; via: "no-agents" | "same-file" | "root-import" | "dotclaude-import" }
+  | {
+      ok: false
+      /** What the repo actually looks like, for the finding's evidence line. */
+      detail: string
+    }
+
+/**
+ * Can Claude Code see this repo's agent instructions?
+ *
+ * Claude Code auto-discovers `CLAUDE.md` and follows its `@` imports; it never loads `AGENTS.md`.
+ * So instructions kept only in `AGENTS.md` are read by the harnesses that honor the standard
+ * name and silently skipped by this one. The check is the pointer contract both `fleet add`
+ * (refuse) and the fleet sweep (`claude-pointer-missing`) speak — defined once here so the two
+ * surfaces cannot drift apart, which is the failure this tool exists to catch.
+ *
+ * Passes when `AGENTS.md` is absent; either name is a symlink to the other (stat follows
+ * links, so same dev:ino covers chains in both directions); the root `CLAUDE.md` carries a
+ * full-line `@AGENTS.md` import; or `.claude/CLAUDE.md` carries `@../AGENTS.md`. A declared
+ * `contract.placement: "none"` does not exempt a repo that HAS an `AGENTS.md` — the declaration
+ * covers absent instruction files, not one a whole harness cannot see.
+ */
+export async function checkClaudePointer(root: string): Promise<ClaudePointerResult> {
+  const agentsAbs = path.join(root, "AGENTS.md")
+  const claudeAbs = path.join(root, "CLAUDE.md")
+  if (!(await pathExists(agentsAbs))) return { ok: true, via: "no-agents" }
+
+  const statOrNone = async (p: string) => {
+    try {
+      return await fs.stat(p)
+    } catch {
+      return null
+    }
+  }
+  const [agentsSt, claudeSt] = await Promise.all([statOrNone(agentsAbs), statOrNone(claudeAbs)])
+  // `stat` follows symlinks, so identical dev:ino means the two names are one file whichever
+  // direction the link points — Claude Code reads the same bytes Codex does. ino 0 is "this
+  // filesystem has no inode answer" and must not read as a match.
+  if (
+    agentsSt &&
+    claudeSt &&
+    agentsSt.ino !== 0 &&
+    agentsSt.ino === claudeSt.ino &&
+    agentsSt.dev === claudeSt.dev
+  ) {
+    return { ok: true, via: "same-file" }
+  }
+
+  const rootClaude = await readText(claudeAbs)
+  if (rootClaude !== null && ROOT_POINTER_IMPORT_RE.test(rootClaude)) {
+    return { ok: true, via: "root-import" }
+  }
+  const dotClaude = await readText(path.join(root, ".claude", "CLAUDE.md"))
+  if (dotClaude !== null && DOT_CLAUDE_IMPORT_RE.test(dotClaude)) {
+    return { ok: true, via: "dotclaude-import" }
+  }
+
+  return {
+    ok: false,
+    detail:
+      rootClaude === null
+        ? "AGENTS.md present, no CLAUDE.md"
+        : `AGENTS.md and CLAUDE.md both present, but CLAUDE.md does not import it`,
+  }
+}
+
 /** Top-level directory index with bounded file counts (skips ignored/heavy dirs; caps work). */
 export async function walkTree(
   root: string,
