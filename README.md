@@ -73,19 +73,19 @@ _From Greek **étymon** — a word's true, original sense (→ etymology) — cl
 
 ## The words Etymd uses
 
-| The docs say          | It means                                                                                                                                                                                                             |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **finding**           | One verified problem, ranked **RISK** (an agent acting on this does the wrong thing) → **GAP** (a dead reference or missing safeguard) → **POLISH** (worth tidying). Within a tier, cheapest fix first.              |
-| **claim**             | Anything an instruction file asserts about the project that can be checked: a command it tells agents to run, a path it points at, a rule about tooling.                                                             |
-| **lens**              | One self-contained checker for one kind of truth (are the commands real? is the state doc current?). An audit is all lenses run together.                                                                            |
-| **baseline**          | A snapshot of the repo's checkable facts that you approved and committed. Drift is measured against this — not against whatever yesterday's cache happened to hold.                                                  |
-| **drift**             | The distance between the baseline and the repo today: what existed at approval and is now gone, renamed, or moved.                                                                                                   |
-| **ledger**            | The committed memory of findings — each one's status and history. A finding that was fixed and comes back is a **regression**, and the report names it as one rather than re-introducing it as new.                  |
-| **dismiss vs accept** | Two deliberate ways to close a finding. _Dismiss_ = "not a real problem, here's why" — it never resurfaces unless it regresses. _Accept_ = "true, and we're living with it" — kept in the ledger, out of the report. |
-| **gate**              | A check that can actually fail a change: a git hook, a CI job. A job marked `allow_failure` is advisory, not a gate — a check that cannot fail anything is an opinion.                                               |
-| **disclosure**        | The report's account of what it could not see or refused to guess about. Every report carries one; a clean result with no disclosures would be the exact dishonesty this tool exists to catch.                       |
-| **fleet**             | Your fleet of **repositories** — every repo you registered in one manifest, swept by one command. Not a fleet of AI agents.                                                                                          |
-| **context economy**   | The words your instruction files load into every single session, measured against a budget. Context is a cost you pay per conversation; leaner files are cheaper and better obeyed.                                  |
+| The docs say          | It means                                                                                                                                                                                                                             |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **finding**           | One verified problem, ranked **RISK** (an agent acting on this does the wrong thing) → **GAP** (a dead reference or missing safeguard) → **POLISH** (worth tidying). Within a tier, cheapest fix first.                              |
+| **claim**             | Anything an instruction asserts about the project that can be checked: a command it tells agents to run, a path it points at, a rule about tooling — in an instruction file, a state document, the task prompt, or a source comment. |
+| **lens**              | One self-contained checker for one kind of truth (are the commands real? is the state doc current?). An audit is all lenses run together.                                                                                            |
+| **baseline**          | A snapshot of the repo's checkable facts that you approved and committed. Drift is measured against this — not against whatever yesterday's cache happened to hold.                                                                  |
+| **drift**             | The distance between the baseline and the repo today: what existed at approval and is now gone, renamed, or moved.                                                                                                                   |
+| **ledger**            | The committed memory of findings — each one's status and history. A finding that was fixed and comes back is a **regression**, and the report names it as one rather than re-introducing it as new.                                  |
+| **dismiss vs accept** | Two deliberate ways to close a finding. _Dismiss_ = "not a real problem, here's why" — it never resurfaces unless it regresses. _Accept_ = "true, and we're living with it" — kept in the ledger, out of the report.                 |
+| **gate**              | A check that can actually fail a change: a git hook, a CI job. A job marked `allow_failure` is advisory, not a gate — a check that cannot fail anything is an opinion.                                                               |
+| **disclosure**        | The report's account of what it could not see or refused to guess about. Every report carries one; a clean result with no disclosures would be the exact dishonesty this tool exists to catch.                                       |
+| **fleet**             | Your fleet of **repositories** — every repo you registered in one manifest, swept by one command. Not a fleet of AI agents.                                                                                                          |
+| **context economy**   | The words your instruction files load into every single session, measured against a budget. Context is a cost you pay per conversation; leaner files are cheaper and better obeyed.                                                  |
 
 ### Things that surprise first-run users
 
@@ -141,6 +141,23 @@ the task would solve the wrong problem precisely. What cannot be read from files
 things are the ones meant, that the mechanism the task assumes actually runs, that the state it
 assumes holds — is handed to the agent in a brief, never guessed at. Nothing is remembered between
 runs.
+
+**`comment-truth`** — a comment is a written rule that happens to live in a `.ts` file, and it
+rots the same way an `AGENTS.md` line does. The same four claim checks (command, path,
+doc-reference, decision id) run over comments in tracked source files, per language and
+string-aware, with the file and line named in every finding — a deleted decision entry cited in
+code, a script renamed out from under the comment explaining it. Comments are prose, so bare
+mentions are promoted with the premise surface's stricter rules (a path needs a directory and a
+recognized extension; a script needs the `run` form). Test, fixture, and vendor files are skipped —
+their comments deliberately name paths that do not exist — counted, disclosed, and held out of
+scope so the ledger never reads them as fixed.
+
+**`pin-integrity`** — a dependency pin is a claim the manifest makes about the tree:
+`overrides` / `resolutions` / `patchedDependencies` entries that no longer rewrite anything (the
+package nothing requests any more, the patch whose target version the lock no longer carries) are
+dead pins, reported from lockfile arithmetic alone. Strictly offline — the committed lockfile is
+the whole universe; no registry, no network, no tool run. A pin offline arithmetic cannot judge
+(a nested-path override, a range selector, no lockfile at all) is disclosed, never flagged.
 
 **`gate-integrity`** — a CI config is a claim too: checks enforced only in CI (failures surface a
 slow pipeline after the agent finished — `etymd gates` generates the local mirror), checks only in

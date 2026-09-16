@@ -545,8 +545,8 @@ export async function detectArtifacts(root: string): Promise<DetectedArtifact[]>
     })),
   )
   // Existing ADR conventions are recognized, never required: NNNN-*.md files directly under
-  // docs/ are a native decision record (the classic ADR naming), same slot as docs/adr/ and
-  // docs/decisions/ — detection, not scaffolding, so no pack change rides on this.
+  // docs/ are a native decision record (the classic ADR naming), same slot as the adr-dir and
+  // decisions-dir specs above — detection, not scaffolding, so no pack change rides on this.
   let adrFiles = false
   try {
     adrFiles = (await fs.readdir(path.join(root, "docs"))).some((f) => /^\d{4}-.+\.md$/.test(f))
