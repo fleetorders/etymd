@@ -466,3 +466,77 @@ describe("context-economy lens", () => {
     expect(report.findings).toEqual([])
   })
 })
+
+describe("instruction-truth path resolution (the false-positive shapes)", () => {
+  async function baseFixture(name: string) {
+    await write("package.json", JSON.stringify({ name, scripts: {} }))
+    await write("pnpm-lock.yaml", "")
+    await write("node_modules/.bin/.keep", "")
+  }
+
+  it("does not accuse a domain-qualified URL in prose (a schemeless host is not a path)", async () => {
+    await baseFixture("urlish")
+    await write(
+      "AGENTS.md",
+      "# AGENTS.md\n\nThe sitemap `example.com/sitemap.xml` is served at the edge. The API root is `api.example.com/client/v4/`.\n",
+    )
+    const report = await runTruth()
+    expect(report.findings.filter((f) => f.id.includes("stale-path"))).toEqual([])
+  })
+
+  it("skips a path named beside the URL it is fetched from (another tree), and says so", async () => {
+    await baseFixture("fetched")
+    await write(
+      "AGENTS.md",
+      "# AGENTS.md\n\nFetch `docs/email.md` from `https://github.com/example/agents/tree/main/docs` before extending the skill.\n",
+    )
+    const report = await runTruth()
+    expect(report.findings.filter((f) => f.id.includes("stale-path"))).toEqual([])
+    expect(report.disclosures.some((d) => d.includes("fetched from"))).toBe(true)
+  })
+
+  it("resolves a nested instruction file's reference against its own directory — and still flags a genuinely missing sibling", async () => {
+    await baseFixture("nested")
+    await write(
+      ".claude/skills/demo/SKILL.md",
+      "Details in `references/kv/`. Old drafts sit in `references/gone/`.\n",
+    )
+    await write(".claude/skills/demo/references/kv/README.md", "kv\n")
+    const report = await runTruth()
+    const ids = report.findings.map((f) => f.id)
+    expect(ids.some((i) => i.endsWith(":references/kv"))).toBe(false)
+    expect(ids).toContain(
+      "instruction-truth/stale-path:.claude/skills/demo/SKILL.md:references/gone",
+    )
+  })
+
+  it("resolves a reference written relative to a directory the same file names", async () => {
+    await baseFixture("prosebase")
+    await write(
+      "PROJECT_CONTEXT.md",
+      [
+        "# Project context",
+        "Private run state is `corpus/raw/review/v3/`.",
+        "",
+        "`v3/CHECKPOINT-2000.json` records the verified milestone.",
+      ].join("\n"),
+    )
+    await write("corpus/raw/review/v3/CHECKPOINT-2000.json", "{}\n")
+    const report = await runTruth()
+    expect(report.findings.filter((f) => f.id.includes("stale-path"))).toEqual([])
+  })
+
+  it("judges existence on the working tree: gitignored-and-present is true, gitignored-and-absent is skipped", async () => {
+    await baseFixture("wttruth")
+    await write(".gitignore", "state/\n")
+    await write("state/notes.md", "local notes\n")
+    await write(
+      "AGENTS.md",
+      "# AGENTS.md\n\nLocal notes live in `state/notes.md`. Drafts land in `state/drafts.md`.\n",
+    )
+    await git(dir, ["init"])
+    const report = await runTruth()
+    expect(report.findings.filter((f) => f.id.includes("stale-path"))).toEqual([])
+    expect(report.disclosures.some((d) => d.includes("gitignored"))).toBe(true)
+  })
+})

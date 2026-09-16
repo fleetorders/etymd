@@ -27,8 +27,12 @@ export interface TruthEnv {
   manifestExists: boolean
   /** The root plus every workspace package dir — where claims are resolved. */
   bases: string[]
-  /** A repo-relative claim resolves in the root, any workspace package, or their src/ scripts/. */
-  pathResolves(claim: string): Promise<boolean>
+  /**
+   * A repo-relative claim resolves in the root, any workspace package, their src/ scripts/, or
+   * the directory of the file making the claim (`fromDir`) — a nested instruction file writes
+   * references the way an agent reading it resolves them: against its siblings.
+   */
+  pathResolves(claim: string, fromDir?: string): Promise<boolean>
   /** `yarn X` / `pnpm X` may legitimately run an installed node_modules/.bin binary. */
   binResolves(name: string): Promise<boolean>
 }
@@ -45,13 +49,22 @@ export async function buildTruthEnv(root: string, facts: ProjectFacts): Promise<
     for (const key of Object.keys(pkgJson?.scripts ?? {})) knownScripts.add(key)
   }
   const bases = [root, ...facts.packages.map((p) => path.join(root, p.dir))]
-  const pathResolves = async (claim: string): Promise<boolean> => {
+  // STATED RULE, not an accident: existence is judged on the WORKING TREE, never the index. A
+  // claim that exists on disk is true even when gitignored — the author wrote against a real
+  // checkout, and a machine-local file is unverifiable, not fictional. A gitignored claim that
+  // is absent is the check-ignore step in checkTextClaims: skipped and counted, never accused.
+  const pathResolves = async (claim: string, fromDir?: string): Promise<boolean> => {
     for (const base of bases) {
       if (await pathExists(path.join(base, claim))) return true
       // Conventional sub-roots instruction prose is written relative to.
       if (await pathExists(path.join(base, "src", claim))) return true
       if (await pathExists(path.join(base, "scripts", claim))) return true
     }
+    // Relative to the claiming file's own directory: an instruction file below the root
+    // (`.claude/skills/x/SKILL.md` naming `references/kv/`) means its sibling. Only a real
+    // repo-relative file carries a directory — labels like `task` reduce to "." and are skipped.
+    if (fromDir && fromDir !== "." && (await pathExists(path.join(root, fromDir, claim))))
+      return true
     return false
   }
   // Without an installed node_modules we cannot tell a stale script from a valid binary, so
@@ -87,6 +100,8 @@ export interface ClaimCounters {
   unverifiableCommands: number
   gitignoredSkipped: number
   prospectiveSkipped: number
+  /** Path claims whose every mention sits beside the URL it is fetched from — another tree. */
+  fetchedSkipped: number
   placeholderSkipped: number
   /** Decision references naming another record (a fleet-level ledger) — not this repo's. */
   qualifiedRefsSkipped: number
@@ -106,6 +121,7 @@ export function emptyCounters(): ClaimCounters {
     unverifiableCommands: 0,
     gitignoredSkipped: 0,
     prospectiveSkipped: 0,
+    fetchedSkipped: 0,
     placeholderSkipped: 0,
     qualifiedRefsSkipped: 0,
     unresolvableRefs: 0,
@@ -221,15 +237,47 @@ export async function checkTextClaims(
   }
 
   // Path claims: a path the text points agents at must exist.
-  const { paths, prospective, placeholder, namespaced } = extractPathClaims(file.text, {
-    namespaces: opts.treatNamespacedPrefixes,
-  })
+  const { paths, dirs, prospective, fetched, placeholder, namespaced } = extractPathClaims(
+    file.text,
+    { namespaces: opts.treatNamespacedPrefixes },
+  )
   counters.prospectiveSkipped += prospective.length
+  counters.fetchedSkipped += fetched.length
   counters.placeholderSkipped += placeholder.length
   counters.namespacedSkipped += namespaced.length
-  const missing: string[] = []
+  // A label like `task` has no directory; a real file's dir is a resolution base (see
+  // buildTruthEnv).
+  const fromDir = path.dirname(file.path)
+  const unresolved: string[] = []
   for (const claim of paths) {
-    if (await env.pathResolves(claim)) examined.push({ kind: "path", value: claim, exists: true })
+    if (await env.pathResolves(claim, fromDir))
+      examined.push({ kind: "path", value: claim, exists: true })
+    else unresolved.push(claim)
+  }
+  // A document that names a directory and then writes paths relative to it is ordinary prose,
+  // not a stale reference — and the reference usually repeats the named directory's own last
+  // segment (`run state is `x/v3/` … `v3/CHECKPOINT.json``), making it relative to the named
+  // directory's PARENT. Directory claims in the SAME text that themselves resolve are candidate
+  // bases, tried there and under the claiming file's dir; a claim that exists under one is
+  // verified, never accused. A false resolution hides a finding; a false accusation destroys
+  // trust — this tool is built to prefer the first error.
+  const proseBases = new Set<string>()
+  for (const dirClaim of dirs) {
+    if (await env.pathResolves(dirClaim, fromDir)) {
+      proseBases.add(dirClaim)
+      proseBases.add(path.dirname(dirClaim))
+    }
+  }
+  const missing: string[] = []
+  for (const claim of unresolved) {
+    let anchored = false
+    for (const base of proseBases) {
+      if (await pathExists(path.join(env.root, base, claim))) anchored = true
+      else if (fromDir !== "." && (await pathExists(path.join(env.root, fromDir, base, claim))))
+        anchored = true
+      if (anchored) break
+    }
+    if (anchored) examined.push({ kind: "path", value: claim, exists: true })
     else missing.push(claim)
   }
   // A gitignored claim (`.env`, local caches) is machine-local by design: absence in THIS
