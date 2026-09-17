@@ -1,4 +1,5 @@
-import { promises as fs } from "node:fs"
+import { promises as fs, realpathSync } from "node:fs"
+import os from "node:os"
 import path from "node:path"
 
 import type {
@@ -345,49 +346,103 @@ async function hasLintStagedConfig(root: string, pkg: PackageJson | null): Promi
   return false
 }
 
+function outsideOf(base: string, target: string): boolean {
+  const rel = path.relative(base, target)
+  return path.isAbsolute(rel) || rel === ".." || rel.startsWith(`..${path.sep}`)
+}
+
 /**
- * `core.hooksPath` the way git reads it: relative to the worktree root, or absolute — two
- * spellings of one directory, identical in effect. The DIRECTORY is the fact and the spelling is
- * not: an absolute path to the tracked `.githooks/` is the tracked-githooks setup, and comparing
- * the literal string reported it as a custom one — a gap that does not exist. Returns the
- * repo-relative form for a directory inside the worktree (which is also what a committed baseline
- * may carry — a machine-absolute path never belongs in a tracked file), and the resolved absolute
- * path for one outside it.
+ * The ONE weld of a hooks directory onto the scan root: `resolve`, never `join` — a directory
+ * recorded absolute (it sits outside the repo) must stay where git runs it, while `join` would
+ * weld it onto the scan root and read a path that does not exist. Every reader of `hooks.dir`
+ * goes through here; a hand-rolled join at a call site is how the outside-repo case regressed.
  */
-export function normalizeHooksPath(root: string, raw: string): string {
-  const abs = path.resolve(root, raw)
-  const rel = path.relative(root, abs)
-  const outside = path.isAbsolute(rel) || rel === ".." || rel.startsWith(`..${path.sep}`)
-  return outside ? abs : normalizeRelPath(rel) || "."
+export function hooksDirAbs(root: string, dir: string): string {
+  return path.resolve(root, dir)
+}
+
+/**
+ * `core.hooksPath` the way git reads it: a worktree-top-relative path, an absolute path and a `~`
+ * path can all name one directory, and the directory is the fact. The TOP is git's reference
+ * frame (a relative path resolves against it wherever git is invoked from, so a scan of a
+ * subdirectory still reads the directory git actually runs); the RESULT is stated in the scan
+ * root's frame, because that is the frame every reader of `hooks.dir` resolves against — `../…`
+ * segments when the directory sits above the scan root, repo-structural and still not a machine
+ * path. Absolute only for a directory outside the repo.
+ */
+export function normalizeHooksPath(root: string, raw: string, hooksTop: string = root): string {
+  return hooksFrames(root, raw, hooksTop).recorded
+}
+
+/**
+ * The recorded spelling plus git's own frame of the same directory, from one resolution. One
+ * frame for every spelling: `rev-parse --show-toplevel` and a `--type=path` value come back
+ * through the REAL path (symlinks resolved — macOS `/var` vs `/private/var`), while the scan
+ * root may be spelled through the symlink, and `path.relative` across the two frames produces
+ * garbage. Realpaths where they exist; a target that does not exist classifies on spellings
+ * (built from the top, so it already shares the top's).
+ */
+function hooksFrames(
+  root: string,
+  raw: string,
+  hooksTop: string,
+): { relTop: string; recorded: string } {
+  // `git config --type=path` expands `~` itself; the plain-read fallback for older gits cannot,
+  // so the expansion lives here and both reads resolve identically.
+  const spelled = raw === "~" || raw.startsWith("~/") ? path.join(os.homedir(), raw.slice(1)) : raw
+  const abs = path.resolve(hooksTop, spelled)
+  // The real frame whenever the target exists (its spelling may be unchanged yet the top's
+  // may not be); a target that does not exist keeps the spellings as passed — a relative raw
+  // was built from the top and shares its spelling, so the pair stays consistent.
+  let topFrame = hooksTop
+  let rootFrame = root
+  let target = abs
+  try {
+    target = realpathSync(abs)
+    topFrame = realpathSync(hooksTop)
+    rootFrame = realpathSync(root)
+  } catch {
+    /* classify on the spellings as passed */
+  }
+  const relTop = normalizeRelPath(path.relative(topFrame, target))
+  const insideTop = !outsideOf(topFrame, target)
+  return {
+    relTop,
+    recorded: insideTop ? normalizeRelPath(path.relative(rootFrame, target)) || "." : abs,
+  }
 }
 
 export async function detectHooks(
   root: string,
   hooksPath: string | undefined,
   pkg: PackageJson | null,
+  /** The worktree top git resolves a relative `core.hooksPath` against — the scan root only
+   *  when it IS the top. The frames coincide except in a subdirectory scan. */
+  hooksTop: string = root,
 ): Promise<HookFacts> {
   const lintStaged = await hasLintStagedConfig(root, pkg)
 
   // A custom core.hooksPath wins: git actually runs those hooks, wherever they live.
   if (hooksPath) {
-    const dir = normalizeHooksPath(root, hooksPath)
+    const { relTop, recorded: dir } = hooksFrames(root, hooksPath, hooksTop)
     // husky v9's `prepare` wires core.hooksPath to `.husky/_` (its shim dir); the user's real
-    // hooks live one level up in `.husky/` — that is husky, not a custom hook setup.
-    if (dir === ".husky/_") {
-      const base = path.join(root, ".husky")
+    // hooks live one level up in `.husky/` — that is husky, not a custom hook setup. The shim is
+    // recognised in git's frame (the top), whatever frame `dir` is recorded in.
+    if (relTop === ".husky/_") {
+      const huskyDir = normalizeHooksPath(root, ".husky", hooksTop)
+      const base = hooksDirAbs(root, huskyDir)
       return {
         source: "husky",
-        dir: ".husky",
+        dir: huskyDir,
         preCommit: await pathExists(path.join(base, "pre-commit")),
         prePush: await pathExists(path.join(base, "pre-push")),
         commitMsg: await pathExists(path.join(base, "commit-msg")),
         lintStaged,
       }
     }
-    // `resolve`, not `join`: a directory outside the repo stays where git runs it.
-    const base = path.resolve(root, dir)
+    const base = hooksDirAbs(root, dir)
     return {
-      source: dir === ".githooks" ? "githooks" : "custom",
+      source: relTop === ".githooks" ? "githooks" : "custom",
       dir,
       preCommit: await pathExists(path.join(base, "pre-commit")),
       prePush: await pathExists(path.join(base, "pre-push")),
