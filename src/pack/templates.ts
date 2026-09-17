@@ -308,10 +308,10 @@ export function generatePreCommitHook(selfBuild = false): string {
 
 ${localHookCall("pre-commit")}
 
-# Content screen — staged file bytes. Refuses to commit environment, guarded-side or identity
-# detail into a repo whose history is (or could become) public. The checker and its patterns
-# are machine-local by design, so this is a NO-OP wherever no checker is installed: safe to
-# commit anywhere, active only where you opted in.
+# Content screen — staged file bytes. Refuses to commit detail about your environment, work
+# or identity into a repo whose history is (or could become) public. The checker and its
+# patterns are machine-local by design, so this is a NO-OP wherever no checker is installed:
+# safe to commit anywhere, active only where you opted in.
 #
 # Bypass, with a reason: git commit --no-verify
 ${contentGateResolution(selfBuild)}
