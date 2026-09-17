@@ -345,6 +345,22 @@ async function hasLintStagedConfig(root: string, pkg: PackageJson | null): Promi
   return false
 }
 
+/**
+ * `core.hooksPath` the way git reads it: relative to the worktree root, or absolute — two
+ * spellings of one directory, identical in effect. The DIRECTORY is the fact and the spelling is
+ * not: an absolute path to the tracked `.githooks/` is the tracked-githooks setup, and comparing
+ * the literal string reported it as a custom one — a gap that does not exist. Returns the
+ * repo-relative form for a directory inside the worktree (which is also what a committed baseline
+ * may carry — a machine-absolute path never belongs in a tracked file), and the resolved absolute
+ * path for one outside it.
+ */
+export function normalizeHooksPath(root: string, raw: string): string {
+  const abs = path.resolve(root, raw)
+  const rel = path.relative(root, abs)
+  const outside = path.isAbsolute(rel) || rel === ".." || rel.startsWith(`..${path.sep}`)
+  return outside ? abs : normalizeRelPath(rel) || "."
+}
+
 export async function detectHooks(
   root: string,
   hooksPath: string | undefined,
@@ -354,9 +370,10 @@ export async function detectHooks(
 
   // A custom core.hooksPath wins: git actually runs those hooks, wherever they live.
   if (hooksPath) {
+    const dir = normalizeHooksPath(root, hooksPath)
     // husky v9's `prepare` wires core.hooksPath to `.husky/_` (its shim dir); the user's real
     // hooks live one level up in `.husky/` — that is husky, not a custom hook setup.
-    if (hooksPath.replace(/\/+$/, "") === ".husky/_") {
+    if (dir === ".husky/_") {
       const base = path.join(root, ".husky")
       return {
         source: "husky",
@@ -367,10 +384,11 @@ export async function detectHooks(
         lintStaged,
       }
     }
-    const base = path.join(root, hooksPath)
+    // `resolve`, not `join`: a directory outside the repo stays where git runs it.
+    const base = path.resolve(root, dir)
     return {
-      source: hooksPath === ".githooks" ? "githooks" : "custom",
-      dir: hooksPath,
+      source: dir === ".githooks" ? "githooks" : "custom",
+      dir,
       preCommit: await pathExists(path.join(base, "pre-commit")),
       prePush: await pathExists(path.join(base, "pre-push")),
       commitMsg: await pathExists(path.join(base, "commit-msg")),

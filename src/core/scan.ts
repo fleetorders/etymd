@@ -11,6 +11,7 @@ import {
   detectPackageManager,
   detectShellSurface,
   detectWorkspace,
+  normalizeHooksPath,
   listWorkspacePackages,
   walkTree,
   type PackageJson,
@@ -135,13 +136,15 @@ export async function scanProject(root: string, opts: ScanOptions = {}): Promise
     ? await Promise.all([
         git(abs, ["rev-parse", "--abbrev-ref", "HEAD"]),
         git(abs, ["rev-parse", "--short", "HEAD"]),
-        git(abs, ["config", "--get", "core.hooksPath"]),
+        // `--type=path` expands a leading `~` the way git itself does when it runs the hooks.
+        git(abs, ["config", "--type=path", "--get", "core.hooksPath"]),
         git(abs, ["log", "-200", "--format=%ae"]),
         git(abs, ["log", "-50", "--format=%s"]),
       ])
     : [null, null, null, null, null]
 
-  const hooksPath = hooksPathRaw ?? undefined
+  // Recorded normalised (see `normalizeHooksPath`): the directory is the fact, its spelling is not.
+  const hooksPath = hooksPathRaw ? normalizeHooksPath(abs, hooksPathRaw) : undefined
   const hooks = await detectHooks(abs, hooksPath, rootPkg)
   // Needs `isRepo`, so it cannot join the first batch — the surface is defined as TRACKED files,
   // which keeps build output and vendored scripts out of a repo's own correctness gate.
