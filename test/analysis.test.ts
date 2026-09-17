@@ -619,10 +619,13 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
   it("writes a shellcheck step for a repo with a shell surface", () => {
     const hook = generatePrePushHook(facts({ shell: { scripts: 12 } }))
     expect(hook).toContain("shellcheck -S warning")
-    // Discovery happens IN the hook, at push time. A baked-in file list is correct the day it
-    // is generated and silently wrong the first time someone adds a script.
-    expect(hook).toContain("git ls-files")
+    // Discovery happens IN the hook, at push time, over the commits being pushed. A baked-in
+    // file list is correct the day it is generated and silently wrong the first time someone
+    // adds a script; a working-tree read certifies bytes that never ship.
+    expect(hook).toContain("git rev-list")
+    expect(hook).toContain("git ls-tree")
     expect(hook).not.toContain("bootstrap/")
+    expect(hook).not.toContain("git ls-files")
   })
 
   it("omits the step entirely where there is no shell surface", () => {
