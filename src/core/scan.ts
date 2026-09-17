@@ -132,7 +132,7 @@ export async function scanProject(root: string, opts: ScanOptions = {}): Promise
     git(abs, ["rev-parse", "--is-inside-work-tree"]).then((r) => r === "true"),
   ])
 
-  const [branch, head, hooksPathRaw, authorsRaw, subjectsRaw] = isRepo
+  const [branch, head, hooksPathTyped, authorsRaw, subjectsRaw, topRaw] = isRepo
     ? await Promise.all([
         git(abs, ["rev-parse", "--abbrev-ref", "HEAD"]),
         git(abs, ["rev-parse", "--short", "HEAD"]),
@@ -140,12 +140,24 @@ export async function scanProject(root: string, opts: ScanOptions = {}): Promise
         git(abs, ["config", "--type=path", "--get", "core.hooksPath"]),
         git(abs, ["log", "-200", "--format=%ae"]),
         git(abs, ["log", "-50", "--format=%s"]),
+        // Git's reference frame for a relative core.hooksPath: the worktree TOP, not the
+        // directory etymd was pointed at.
+        git(abs, ["rev-parse", "--show-toplevel"]),
       ])
-    : [null, null, null, null, null]
+    : [null, null, null, null, null, null]
 
-  // Recorded normalised (see `normalizeHooksPath`): the directory is the fact, its spelling is not.
-  const hooksPath = hooksPathRaw ? normalizeHooksPath(abs, hooksPathRaw) : undefined
-  const hooks = await detectHooks(abs, hooksPath, rootPkg)
+  // `--type=path` post-dates git 2.22 and older gits reject the flag; the null-returning helper
+  // cannot tell that rejection from "unset", so the plain read runs in exactly the null case — an
+  // old git then reads its wired hooks instead of none, and a genuinely unset hooksPath costs one
+  // extra config read. The plain read does not expand `~`; `normalizeHooksPath` does.
+  const hooksPathRaw =
+    hooksPathTyped ?? (isRepo ? await git(abs, ["config", "--get", "core.hooksPath"]) : null)
+  // Recorded and classified in one frame (`normalizeHooksPath`, against the top) so the recorded
+  // fact and the classification derive from one raw spelling and cannot diverge. The RAW spelling
+  // is what detectHooks receives — normalisation is applied exactly once, inside it.
+  const top = topRaw ?? abs
+  const hooksPath = hooksPathRaw ? normalizeHooksPath(abs, hooksPathRaw, top) : undefined
+  const hooks = await detectHooks(abs, hooksPathRaw ?? undefined, rootPkg, top)
   // Needs `isRepo`, so it cannot join the first batch — the surface is defined as TRACKED files,
   // which keeps build output and vendored scripts out of a repo's own correctness gate.
   const shell = await detectShellSurface(abs, isRepo)

@@ -4,7 +4,12 @@ import path from "node:path"
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
-import { classifyCommands, detectHooks, detectShellSurface } from "../src/core/detect.js"
+import {
+  classifyCommands,
+  detectHooks,
+  detectShellSurface,
+  normalizeHooksPath,
+} from "../src/core/detect.js"
 import { scanProject } from "../src/core/scan.js"
 
 let dir: string
@@ -33,6 +38,8 @@ async function initRepo() {
   await gitIn(["init"])
   await gitIn(["config", "user.email", "t@example.com"])
   await gitIn(["config", "user.name", "t"])
+  // A machine with global commit.gpgsign=true has no signing key in the temp repo.
+  await gitIn(["config", "commit.gpgsign", "false"])
   await gitIn(["add", "-A"])
   await gitIn(["commit", "-m", "seed", "--no-verify"])
 }
@@ -102,6 +109,23 @@ describe("scanProject", () => {
     expect(names).toContain(".github")
     expect(names).toContain(".claude")
     expect(names).toContain("src")
+  })
+
+  it("resolves a relative core.hooksPath against the worktree top, not the scan root", async () => {
+    // git resolves a relative hooksPath against the worktree top wherever it is invoked from;
+    // a scan pointed at a subdirectory must read the directory git actually runs.
+    await write("package.json", JSON.stringify({ name: "demo", scripts: { test: "vitest run" } }))
+    await write(".githooks/pre-push", "#!/bin/sh\nexit 0\n")
+    await write("sub/keep.txt", "x")
+    await initRepo()
+    await gitIn(["config", "core.hooksPath", ".githooks"])
+
+    const facts = await scanProject(path.join(dir, "sub"))
+
+    expect(facts.git.hooksPath).toBe("../.githooks")
+    expect(facts.hooks.source).toBe("githooks")
+    expect(facts.hooks.dir).toBe("../.githooks")
+    expect(facts.hooks.prePush).toBe(true)
   })
 
   it("records an absolute core.hooksPath to the tracked .githooks/ repo-relative", async () => {
@@ -254,6 +278,15 @@ describe("detectHooks", () => {
     expect(hooks.source).toBe("husky")
     expect(hooks.dir).toBe(".husky")
     expect(hooks.preCommit).toBe(true)
+  })
+
+  it("expands ~ in normalizeHooksPath and keeps an unresolvable outside directory absolute", () => {
+    // `--type=path` expands `~` in the typed read; the plain-read fallback for older gits does
+    // not, so the expansion lives in the function both reads feed.
+    expect(normalizeHooksPath(dir, "~/.etymd-tilde-check-no-such")).toBe(
+      path.resolve(os.homedir(), ".etymd-tilde-check-no-such"),
+    )
+    expect(normalizeHooksPath(dir, path.join(dir, ".githooks"))).toBe(".githooks")
   })
 
   it("keeps a hooks directory outside the repo absolute, and reads the hooks from there", async () => {

@@ -2,6 +2,7 @@ import { execFile } from "node:child_process"
 import path from "node:path"
 import { promisify } from "node:util"
 
+import { hooksDirAbs } from "../../core/detect.js"
 import type { ProjectFacts } from "../../core/types.js"
 import { pathExists, readText } from "../../core/util.js"
 
@@ -66,11 +67,13 @@ export async function probeScreener(root: string, facts: ProjectFacts): Promise<
 
   const dir = facts.hooks.dir
   if (!dir) return absent
+  // The one weld (`hooksDirAbs`): a hooks directory outside the repo is absolute and must stay so.
+  const base = hooksDirAbs(root, dir)
 
   const doors: string[] = []
   let devBuildArm = false
   for (const name of HOOK_FILES) {
-    const text = await readText(path.resolve(root, dir, name))
+    const text = await readText(path.join(base, name))
     if (!text || !SCREEN_CALL_RE.test(text)) continue
     doors.push(`${dir}/${name}`)
     if (text.includes(DEV_BUILD_ARM)) devBuildArm = true
