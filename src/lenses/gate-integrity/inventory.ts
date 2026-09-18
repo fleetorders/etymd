@@ -57,6 +57,13 @@ export interface GateInventory {
      * them has it. NOT counted: the call skips them on every run.
      */
     inertCompanions: string[]
+    /**
+     * Calls to a wrapper function (a shell function that forwards its positional parameters to
+     * the package manager) whose argument is not a static script name — scripts the hooks DO
+     * run but this inventory cannot name. Counted, never guessed: the lens lowers its
+     * confidence instead of asserting a gap it cannot see through.
+     */
+    unresolvedWrapperCalls: number
   }
   ci: {
     system: ProjectFacts["ci"]["system"]
@@ -180,9 +187,13 @@ export function expandScriptRefs(
     if (body) expanded += `\n${expandScriptRefs(body, scripts, depth - 1)}`
   }
 
-  // One match per invocation; `[^&|;]*` stops at a command separator so `npm ci && pnpm test`
-  // is two invocations rather than one blurred token soup.
-  for (const m of command.matchAll(/\b(yarn|pnpm|npm|bun|npx)\b([^&|;]*)/g)) {
+  // One match per invocation; `[^&|;\n]*` stops at a command separator — `&&`, `;`, or the
+  // end of the line, all of which separate commands in shell — so `npm ci && pnpm test` is
+  // two invocations rather than one blurred token soup, and a `pnpm "$1"` whose arguments
+  // follow on later lines cannot swallow tokens from text it never runs. (A newline-leaking
+  // class did exactly that: script names from a `for … in` loop three lines below were
+  // attributed to the wrapper's manager call, hiding a real ci-only gap nondeterministically.)
+  for (const m of command.matchAll(/\b(yarn|pnpm|npm|bun|npx)\b([^&|;\n]*)/g)) {
     const manager = m[1] as string
     const tokens = (m[2] ?? "")
       .split(/\s+/)
@@ -202,7 +213,68 @@ export function expandScriptRefs(
   if (/npm-run-all|run-s|run-p/.test(command)) {
     for (const token of command.split(/\s+/)) add(token.replace(/["']/g, ""))
   }
+
+  // Call sites of recognized wrapper functions expand like direct invocations. See
+  // wrapperFunctions for why the definition, not the name, anchors recognition.
+  for (const call of wrapperCallArgs(command).static) add(call)
   return expanded
+}
+
+/**
+ * Shell functions that wrap the package-manager call — the ordinary way a hand-written hook
+ * avoids repeating itself:
+ *   run() { (cd "$root" && pnpm "$1") || exit 1; }
+ *   run lint
+ * The call line carries no manager word, so the manager-anchored scan above never expands it:
+ * the script name reaches the manager only as a positional parameter. A wrapper is recognized
+ * by its DEFINITION — a body that invokes a package manager and forwards one of its own
+ * positionals to it — which keeps recognition honest in both directions: a wrapper's call
+ * sites expand exactly like direct invocations, while a bare word in a hook with no such
+ * function still expands nothing, so prose naming a script cannot manufacture a gate.
+ */
+const WRAPPER_DEF = /^([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(\)[ \t]*\{[ \t]*$/
+
+function wrapperFunctions(command: string): Set<string> {
+  const lines = command.split("\n")
+  const found = new Set<string>()
+  for (let i = 0; i < lines.length; i++) {
+    const def = lines[i]?.match(WRAPPER_DEF)
+    if (!def?.[1]) continue
+    const body: string[] = []
+    // To the first line that closes the function. Bounded, not exact: a nested block closing
+    // at column 0 first would truncate the body, and the wrapper test below would simply not
+    // fire — the failure mode is staying silent, never over-claiming.
+    for (let j = i + 1; j < lines.length; j++) {
+      const line = lines[j]
+      if (line === undefined || /^\}/.test(line)) break
+      body.push(line)
+    }
+    const text = body.join("\n")
+    if (/\b(yarn|pnpm|npm|bun)\b/.test(text) && /\$\{?[@1]\}?/.test(text)) found.add(def[1])
+  }
+  return found
+}
+
+/** The static first argument of every wrapper call site, and every site whose argument is not
+ * static (a variable or substitution) — the calls this inventory cannot resolve. */
+function wrapperCallArgs(command: string): { static: string[]; unresolved: number } {
+  const wrappers = wrapperFunctions(command)
+  if (!wrappers.size) return { static: [], unresolved: 0 }
+  const staticTokens: string[] = []
+  let unresolved = 0
+  for (const line of command.split("\n")) {
+    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)(?:[ \t]+(.*))?$/)
+    if (!m || !wrappers.has(m[1]!)) continue
+    // A command separator can carry several wrapper calls on one line: `run lint && run test`.
+    for (const segment of (m[2] ?? "").split(/&&|\|\||[;|]/)) {
+      const first = (segment.trim().split(/\s+/)[0] ?? "").replace(/^["']|["']$/g, "")
+      if (!first) continue
+      // A variable or command substitution can name any script — count it rather than guess.
+      if (/[$`]/.test(first)) unresolved++
+      else staticTokens.push(first)
+    }
+  }
+  return { static: staticTokens, unresolved }
 }
 
 export function matchTools(command: string, scripts: Record<string, string>): GateTool[] {
@@ -212,6 +284,15 @@ export function matchTools(command: string, scripts: Record<string, string>): Ga
     if (re.test(expanded)) tools.add(tool)
   }
   return [...tools]
+}
+
+/** matchTools plus the coverage fact the lens needs: how many wrapper invocations run scripts
+ * this inventory cannot name. */
+export function matchToolsDetailed(
+  command: string,
+  scripts: Record<string, string>,
+): { tools: GateTool[]; unresolvedWrapperCalls: number } {
+  return { tools: matchTools(command, scripts), unresolvedWrapperCalls: wrapperCallArgs(command).unresolved }
 }
 
 /** GitLab CI custom tags (!reference) must parse without exploding the whole document. */
@@ -425,7 +506,12 @@ async function companionOf(
   hook: string,
   hookText: string,
   scripts: Record<string, string>,
-): Promise<{ rel: string; tools: GateTool[]; state: "counted" | "unverified" | "inert" } | null> {
+): Promise<{
+  rel: string
+  tools: GateTool[]
+  unresolvedWrapperCalls: number
+  state: "counted" | "unverified" | "inert"
+} | null> {
   const rel = path.posix.join(hooksDir.split(path.sep).join("/"), `${hook}.local`)
   if (!hookText.includes(`${hook}.local`)) return null
   // `base` arrives already welded through `hooksDirAbs`: a hooks directory outside the repo is
@@ -437,10 +523,13 @@ async function companionOf(
     isExecutable(abs),
     isExecutable(path.join(base, hook)),
   ])
-  if (executable === false && hookExecutable === true) return { rel, tools: [], state: "inert" }
+  if (executable === false && hookExecutable === true)
+    return { rel, tools: [], unresolvedWrapperCalls: 0, state: "inert" }
+  const detailed = matchToolsDetailed(text, scripts)
   return {
     rel,
-    tools: matchTools(text, scripts),
+    tools: detailed.tools,
+    unresolvedWrapperCalls: detailed.unresolvedWrapperCalls,
     state: executable === true ? "counted" : "unverified",
   }
 }
@@ -456,17 +545,21 @@ async function localHookTools(
   const unverifiedCompanions: string[] = []
   const inertCompanions: string[] = []
   const hooksBase = hooks.dir ? hooksDirAbs(root, hooks.dir) : null
+  let unresolvedWrapperCalls = 0
   const readHook = async (name: string): Promise<GateTool[]> => {
     if (!hooksBase || !hooks.dir) return empty
     const text = await readText(path.join(hooksBase, name))
     if (!text) return empty
-    const tools = new Set<GateTool>(matchTools(text, scripts))
+    const detailed = matchToolsDetailed(text, scripts)
+    unresolvedWrapperCalls += detailed.unresolvedWrapperCalls
+    const tools = new Set<GateTool>(detailed.tools)
     const companion = await companionOf(hooksBase, hooks.dir, name, text, scripts)
     if (companion) {
       if (companion.state === "inert") inertCompanions.push(companion.rel)
       else {
         ;(companion.state === "counted" ? companions : unverifiedCompanions).push(companion.rel)
         for (const t of companion.tools) tools.add(t)
+        unresolvedWrapperCalls += companion.unresolvedWrapperCalls
       }
     }
     return [...tools]
@@ -538,6 +631,7 @@ async function localHookTools(
     companions,
     unverifiedCompanions,
     inertCompanions,
+    unresolvedWrapperCalls,
   }
 }
 
