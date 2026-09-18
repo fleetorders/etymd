@@ -386,6 +386,169 @@ describe.skipIf(!existsSync(CLI))(
         expect(stdout).toContain("nothing to check")
       },
     )
+
+    it("PINNED: commits that share one tree are materialised and checked once", async () => {
+      // The blow-up being fixed: merge/squash histories push many commits over few trees, and
+      // a per-commit read made each of them pay a full-tree extraction and checker run. The
+      // bytes under judgment are the tree's — identical trees are certified identically, once.
+      await baseRepo()
+      await write("scripts/run", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: script")
+      // An empty commit on top carries the SAME tree: two commits in the range, one tree.
+      await pExecFile("git", ["commit", "-q", "--allow-empty", "-m", "chore: empty on top"], {
+        cwd: dir,
+        env: GIT_ENV,
+      })
+      await gates()
+      await recordShellcheck()
+      const log = path.join(dir, "shellcheck.jsonl")
+      const env = await stubEnv({ ETYMD_RECORD: log })
+      const base = await revParse("HEAD~2")
+      const head = await revParse("HEAD")
+
+      const { stdout } = await runPrePush(env, update("main", head, base))
+      expect(stdout).toContain("2 commit(s) in the push, 1 distinct tree(s) to check")
+      const calls = (await fs.readFile(log, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[])
+      // Two passes (blocking + advice) for the ONE shared tree — not doubled per commit.
+      expect(calls).toHaveLength(2)
+      for (const args of calls) expect(args).toContain("./scripts/run")
+    })
+
+    it("commits with distinct trees are each checked — the dedupe never skips a different tree", async () => {
+      await baseRepo()
+      await write("scripts/a", "#!/bin/sh\necho a\n")
+      await commitAll("chore: a")
+      await write("scripts/b", "#!/bin/sh\necho b\n")
+      await commitAll("chore: b")
+      await gates()
+      await recordShellcheck()
+      const log = path.join(dir, "shellcheck.jsonl")
+      const env = await stubEnv({ ETYMD_RECORD: log })
+      const base = await revParse("HEAD~2")
+      const head = await revParse("HEAD")
+
+      const { stdout } = await runPrePush(env, update("main", head, base))
+      expect(stdout).toContain("2 commit(s) in the push, 2 distinct tree(s) to check")
+      const calls = (await fs.readFile(log, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[])
+      // Two passes per tree, two distinct trees.
+      expect(calls).toHaveLength(4)
+    })
+  },
+)
+
+/** A second repository's HEAD, to plant as a submodule gitlink — a path ls-tree lists and the
+ * archive never carries. */
+async function gitlinkSha(): Promise<string> {
+  const sub = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-gates-sub-"))
+  try {
+    await pExecFile("git", ["init", "-q"], { cwd: sub })
+    await fs.writeFile(path.join(sub, "f.txt"), "x\n", "utf8")
+    await pExecFile("git", ["add", "."], { cwd: sub })
+    await pExecFile("git", ["commit", "-q", "-m", "sub"], { cwd: sub, env: GIT_ENV })
+    const { stdout } = await pExecFile("git", ["rev-parse", "HEAD"], { cwd: sub })
+    return stdout.trim()
+  } finally {
+    await fs.rm(sub, { recursive: true, force: true })
+  }
+}
+
+describe.skipIf(!existsSync(CLI))(
+  "etymd gates — archive gaps are disclosed skips, never refused pushes",
+  () => {
+    it("PINNED: export-ignore, a submodule gitlink and a dangling symlink are counted, not bricks", async () => {
+      // The brick being fixed: every one of these paths is listed by ls-tree and absent from
+      // the extract, and the discovery read hard-failed on the first one — refusing EVERY
+      // push of any repo with one such path. They are bytes this read cannot see, so they are
+      // counted and disclosed; the readable scripts around them are still checked.
+      await baseRepo()
+      await write(".gitattributes", "docs/internal.md export-ignore\n")
+      await write("docs/internal.md", "internal notes\n")
+      await write("scripts/run", "#!/bin/sh\necho ok\n")
+      await fs.symlink("no-such-target", path.join(dir, "dangling.sh"))
+      await commitAll("chore: gaps and a good script")
+      // The gitlink goes into the index directly: `git add .` would drop a path that has no
+      // working-tree counterpart, so it is planted after the last add and committed as-is.
+      await pExecFile(
+        "git",
+        ["update-index", "--add", "--cacheinfo", `160000,${await gitlinkSha()},vendor/sub`],
+        { cwd: dir },
+      )
+      await pExecFile("git", ["commit", "-q", "-m", "chore: gitlink"], { cwd: dir, env: GIT_ENV })
+      await gates()
+      await recordShellcheck()
+      const log = path.join(dir, "shellcheck.jsonl")
+      const env = await stubEnv({ ETYMD_RECORD: log })
+      const base = await revParse("HEAD~2")
+      const head = await revParse("HEAD")
+
+      const { stdout } = await runPrePush(env, update("main", head, base))
+      expect(stdout).toContain(
+        "2 tracked path(s) not regular files in the extract — export-ignore, submodule gitlink, or dangling link; not read, not checked",
+      )
+      const calls = (await fs.readFile(log, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[])
+      expect(calls.length).toBeGreaterThan(0)
+      for (const args of calls) expect(args).toContain("./scripts/run")
+    })
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: an export-ignored file in the same tree does not soften a refused script",
+      async () => {
+        await baseRepo()
+        await write(".gitattributes", "docs/internal.md export-ignore\n")
+        await write("docs/internal.md", "internal notes\n")
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: ignored doc + bad script")
+        await gates()
+        const env = await stubEnv()
+        const base = await revParse("HEAD~1")
+        const head = await revParse("HEAD")
+
+        await expect(runPrePush(env, update("main", head, base))).rejects.toMatchObject({
+          code: 1,
+          stdout: expect.stringContaining("SC2034"),
+        })
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "enumeration and discovery failures speak with the same ✗ shellcheck: prefix",
+      async () => {
+        // Someone debugging a refused push at night reads the prefix as the failing tool: a
+        // bare `etymd:` sends them debugging the pack generator instead of the checker.
+        await baseRepo()
+        await write("scripts/run", "#!/bin/sh\necho ok\n")
+        await commitAll("chore: scripts")
+        await gates()
+        const env = await stubEnv()
+        const head = await revParse("HEAD")
+        await stub("git", "#!/bin/sh\nexit 23\n")
+
+        await expect(runPrePush(env, update("main", head, head))).rejects.toMatchObject({
+          code: 1,
+          stderr: expect.stringContaining(
+            "✗ shellcheck: could not enumerate the commits being pushed",
+          ),
+        })
+        // The other two refusals in the block are pinned on the generated text — reaching
+        // them behaviorally means breaking git itself, which the stubbed run above already
+        // does for the first.
+        const hook = await prePush()
+        expect(hook).toContain('echo "✗ shellcheck: cannot enumerate the tree')
+        expect(hook).toContain('echo "✗ shellcheck: script discovery failed')
+        expect(hook).not.toContain("etymd: shell script discovery")
+        expect(hook).not.toContain("etymd: cannot enumerate")
+        expect(hook).not.toContain("etymd: could not enumerate")
+      },
+    )
   },
 )
 

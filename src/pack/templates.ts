@@ -426,7 +426,7 @@ exit 0
 /**
  * The correctness gate for a repo whose executable surface is shell.
  *
- * Three properties, each a lesson from a gate that failed:
+ * Five properties, each a lesson from a gate that failed:
  *
  * The check reads the commits BEING PUSHED, each materialised from git's object store — never
  * the working tree (a fixed tree let an unfixed commit ship while the gate read the
@@ -434,6 +434,18 @@ exit 0
  * tip alone (a bad commit under its own fix shipped while the gate read only the tip). A
  * commit that cannot be materialised refuses the push: certifying bytes the gate did not read
  * is the one thing this gate must never do.
+ *
+ * Commits that share a tree are certified once. The bytes under judgment are the tree's, not
+ * the message's, and merge/squash histories push many commits over few distinct trees — a
+ * per-commit read made a 40-commit push pay 40 full-tree extractions and checker runs on the
+ * push path, for trees that were bytewise identical.
+ *
+ * A tracked path that extracts to no readable regular file — an export-ignored path (extracts
+ * to nothing), a submodule gitlink (extracts to an empty directory), a dangling symlink (to a
+ * link with no target) — is a counted, disclosed skip, never a refused push. The gate cannot
+ * read those bytes through the archive; a gate that bricked every push of every repo using
+ * export-ignore would be uninstalled, and then nothing is checked. A regular file that IS in
+ * the extract but cannot be read still refuses.
  *
  * A missing `shellcheck` is a LOUD skip naming the install command. A check that goes quiet when
  * its binary is absent is the worst kind — the repo looks guarded on every machine, and is
@@ -447,11 +459,12 @@ exit 0
  */
 function shellcheckStep(): string {
   return `
-# Shell correctness. The commits BEING PUSHED are the bytes that ship, so each one is
-# materialised from git's object store and checked there — never the working tree (wrong in
-# both directions: a fixed tree let an unfixed commit ship, and a dirty tree shared by several
-# sessions blocked an unrelated push) and never the tip alone (a bad commit under a clean tip
-# shipped while the gate read only the tip's fix). zsh is NOT in the checked set: the checker
+# Shell correctness. The commits BEING PUSHED are the bytes that ship, so their trees are
+# materialised from git's object store and checked there — each distinct tree once — never the
+# working tree (wrong in both directions: a fixed tree let an unfixed commit ship, and a dirty
+# tree shared by several sessions blocked an unrelated push) and never the tip alone (a bad
+# commit under a clean tip shipped while the gate read only the tip's fix). zsh is NOT in the
+# checked set: the checker
 # cannot parse it (SC1071 is a parser-level error no inline directive can silence), so checking
 # it would fail every push on the parser, not on the script. Excluded — and said so at run time
 # below, because a coverage hole that is silent is indistinguishable from coverage.
@@ -487,31 +500,48 @@ if command -v shellcheck >/dev/null 2>&1; then
         (*) git rev-list "$lsha" --not --remotes ;;
       esac >> "$shellcheck_tmp/shas" || exit 1
     done || {
-      echo "etymd: could not enumerate the commits being pushed for shellcheck" >&2
+      echo "✗ shellcheck: could not enumerate the commits being pushed" >&2
       exit 1
     }
     shas=$(sort -u "$shellcheck_tmp/shas") || exit 1
     [ -n "$shas" ] || echo "› shellcheck: no commit in the pushed refs (deletes only, or nothing on stdin) — nothing to check"
+    # Commits that share a tree are certified once: the bytes under judgment are the tree's,
+    # not the message's, and merge/squash histories push many commits over few distinct trees.
+    # Every commit's tree is still in the set exactly once — a bad commit under a clean tip
+    # ships its own tree — so the per-commit correctness gain survives without the per-commit
+    # cost. A sha whose tree cannot be resolved refuses the push, like any other unread range.
+    : > "$shellcheck_tmp/trees" || exit 1
     for sha in $shas; do
-      # A fresh directory per commit: nothing is deleted inside the loop — the subshell trap
+      git rev-parse -q --verify "$sha^{tree}" >> "$shellcheck_tmp/trees" 2>/dev/null || {
+        echo "✗ shellcheck: could not resolve the tree of $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha") — refusing the push rather than certifying bytes this gate did not read" >&2
+        exit 1
+      }
+    done
+    trees=$(sort -u "$shellcheck_tmp/trees") || exit 1
+    if [ -n "$shas" ]; then
+      # grep -c exits 1 on zero matches, so the count runs only where a match is guaranteed;
+      # its || exit 1 then means grep itself failed, and the step fails closed as everywhere.
+      commit_count=$(printf '%s\\n' "$shas" | grep -c .) || exit 1
+      tree_count=$(printf '%s\\n' "$trees" | grep -c .) || exit 1
+      echo "› shellcheck: $((commit_count)) commit(s) in the push, $((tree_count)) distinct tree(s) to check"
+    fi
+    for tree_id in $trees; do
+      # A fresh directory per tree: nothing is deleted inside the loop — the subshell trap
       # above cleans the one root on every path out.
       tree=$(mktemp -d "$shellcheck_tmp/commit.XXXXXX") || exit 1
       # archive to a FILE, then extract: in a git-archive-piped-to-tar pipeline the status is
-      # tar's, and tar on empty input exits 0 — a sha git could not read would pass as an
-      # empty, clean tree.
-      if ! git cat-file -e "\${sha}^{commit}" 2>/dev/null \\
-         || ! git archive "$sha" > "$shellcheck_tmp/tarball" 2>/dev/null \\
+      # tar's, and tar on empty input exits 0 — a tree git could not read would pass as an
+      # empty, clean tree. The id itself was verified into existence one step above, so an
+      # empty extract means the archive legitimately carried nothing (every path export-
+      # ignored), which the gap count below discloses rather than refuses.
+      if ! git archive "$tree_id" > "$shellcheck_tmp/tarball" 2>/dev/null \\
          || ! tar -x -C "$tree" -f "$shellcheck_tmp/tarball" 2>/dev/null; then
-        echo "✗ shellcheck: could not materialise $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha") — refusing the push rather than certifying bytes this gate did not read" >&2
+        echo "✗ shellcheck: could not materialise tree $(git rev-parse --short "$tree_id" 2>/dev/null || echo "$tree_id") — refusing the push rather than certifying bytes this gate did not read" >&2
         exit 1
       fi
-      if [ -n "$(git ls-tree -r --name-only "$sha")" ] && [ -z "$(ls -A "$tree")" ]; then
-        echo "✗ shellcheck: $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha") extracted to an empty tree — refusing the push" >&2
-        exit 1
-      fi
-      : > "$shellcheck_tmp/scripts" && : > "$shellcheck_tmp/count" && : > "$shellcheck_tmp/zsh-count" || exit 1
-      git ls-tree -r -z --name-only "$sha" > "$shellcheck_tmp/tracked" || {
-        echo "etymd: cannot enumerate the tree of $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha") for shellcheck" >&2
+      : > "$shellcheck_tmp/scripts" && : > "$shellcheck_tmp/count" && : > "$shellcheck_tmp/zsh-count" && : > "$shellcheck_tmp/gap-count" || exit 1
+      git ls-tree -r -z --name-only "$tree_id" > "$shellcheck_tmp/tracked" || {
+        echo "✗ shellcheck: cannot enumerate the tree $(git rev-parse --short "$tree_id" 2>/dev/null || echo "$tree_id")" >&2
         exit 1
       }
       xargs -0 sh -c '
@@ -519,6 +549,16 @@ if command -v shellcheck >/dev/null 2>&1; then
         tree=$2
         shift 2
         for file do
+          # Listed by the tree but not a regular file in the extract: an export-ignored path
+          # extracts to nothing, a submodule gitlink to an empty directory, a dangling symlink
+          # to a link with no target. None of them can ever be read here. Counted and
+          # disclosed as unread below, never a refusal — the read that stopped here bricked
+          # every push of every repo with one such path. A regular file that cannot be read
+          # is different: that head still refuses.
+          if [ ! -f "$tree/$file" ]; then
+            printf . >> "$work/gap-count" || exit 1
+            continue
+          fi
           head -n 1 "$tree/$file" > "$work/first-line" || exit 1
           if grep -qE "^#!.*[/ ](ba|da)?sh( |$)" "$work/first-line"; then
             printf "./%s\\0" "$file" >> "$work/scripts" || exit 1
@@ -533,16 +573,20 @@ if command -v shellcheck >/dev/null 2>&1; then
           fi
         done
       ' sh "$shellcheck_tmp" "$tree" < "$shellcheck_tmp/tracked" || {
-        echo "etymd: shell script discovery failed; shellcheck coverage is incomplete" >&2
+        echo "✗ shellcheck: script discovery failed; coverage is incomplete" >&2
         exit 1
       }
       count=$(wc -c < "$shellcheck_tmp/count") || exit 1
       zsh_count=$(wc -c < "$shellcheck_tmp/zsh-count") || exit 1
+      gap_count=$(wc -c < "$shellcheck_tmp/gap-count") || exit 1
+      if [ "$gap_count" -gt 0 ]; then
+        echo "› shellcheck: $((gap_count)) tracked path(s) not regular files in the extract — export-ignore, submodule gitlink, or dangling link; not read, not checked"
+      fi
       if [ "$zsh_count" -gt 0 ]; then
         echo "› shellcheck: $((zsh_count)) zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
       fi
       if [ "$count" -gt 0 ]; then
-        echo "› shellcheck ($((count)) scripts in $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha"), blocking at severity=warning)"
+        echo "› shellcheck ($((count)) scripts in tree $(git rev-parse --short "$tree_id" 2>/dev/null || echo "$tree_id"), blocking at severity=warning)"
         ( cd "$tree" && xargs -0 shellcheck -S warning -- < "$shellcheck_tmp/scripts" ) || {
           echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
           exit 1
