@@ -292,7 +292,10 @@ export function matchToolsDetailed(
   command: string,
   scripts: Record<string, string>,
 ): { tools: GateTool[]; unresolvedWrapperCalls: number } {
-  return { tools: matchTools(command, scripts), unresolvedWrapperCalls: wrapperCallArgs(command).unresolved }
+  return {
+    tools: matchTools(command, scripts),
+    unresolvedWrapperCalls: wrapperCallArgs(command).unresolved,
+  }
 }
 
 /** GitLab CI custom tags (!reference) must parse without exploding the whole document. */

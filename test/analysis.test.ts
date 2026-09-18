@@ -623,7 +623,7 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
     // file list is correct the day it is generated and silently wrong the first time someone
     // adds a script; a working-tree read certifies bytes that never ship.
     expect(hook).toContain("git rev-list")
-    expect(hook).toContain("git ls-tree")
+    expect(hook).toContain("git diff-tree")
     expect(hook).not.toContain("bootstrap/")
     expect(hook).not.toContain("git ls-files")
   })
@@ -661,9 +661,11 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
     // while the docs promised it.
     // The warning pass is the only one wired to a failure branch...
     expect(hook).toMatch(/-S warning[^\n]* \|\| \{[^}]*exit 1/)
-    // ...while the style pass is captured into a variable and explicitly tolerated with
-    // `|| true`, so it has no path to the exit code at all.
-    expect(hook).toMatch(/advice=\$\([\s\S]*?-S style[\s\S]*?\|\| true\)/)
+    // ...while the style pass accumulates into a file with every invocation explicitly
+    // tolerated by `|| true`, and the printed block is extracted with `|| true` too — it
+    // has no path to the exit code at all.
+    expect(hook).toMatch(/shellcheck -S style[^\n]*\|\| true/)
+    expect(hook).toMatch(/advice=\$\(grep -v[^\n]*\|\| true\)/)
   })
 
   it("stops claiming 'no correctness commands detected' when shell IS the surface", () => {

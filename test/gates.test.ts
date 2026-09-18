@@ -407,7 +407,9 @@ describe.skipIf(!existsSync(CLI))(
       const head = await revParse("HEAD")
 
       const { stdout } = await runPrePush(env, update("main", head, base))
-      expect(stdout).toContain("2 commit(s) in the push, 1 distinct tree(s) to check")
+      expect(stdout).toContain(
+        "2 commit(s) in the push, 1 changed script file(s) to check, blocking at severity=warning",
+      )
       const calls = (await fs.readFile(log, "utf8"))
         .trim()
         .split("\n")
@@ -431,13 +433,19 @@ describe.skipIf(!existsSync(CLI))(
       const head = await revParse("HEAD")
 
       const { stdout } = await runPrePush(env, update("main", head, base))
-      expect(stdout).toContain("2 commit(s) in the push, 2 distinct tree(s) to check")
+      expect(stdout).toContain(
+        "2 commit(s) in the push, 2 changed script file(s) to check, blocking at severity=warning",
+      )
       const calls = (await fs.readFile(log, "utf8"))
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line) as string[])
-      // Two passes per tree, two distinct trees.
+      // One blocking pass per distinct tree, and one advice GROUP per tree that changed a
+      // script — the per-COMMIT repetition (a pass over everything, once per commit) is what
+      // this fix removed; each script is read once per blocking tree it lives in.
       expect(calls).toHaveLength(4)
+      expect(calls.filter((args) => args.join(" ").includes("-S style"))).toHaveLength(2)
+      expect(calls.filter((args) => args.join(" ").includes("-S warning"))).toHaveLength(2)
     })
   },
 )
@@ -489,7 +497,7 @@ describe.skipIf(!existsSync(CLI))(
 
       const { stdout } = await runPrePush(env, update("main", head, base))
       expect(stdout).toContain(
-        "2 tracked path(s) not regular files in the extract — export-ignore, submodule gitlink, or dangling link; not read, not checked",
+        "2 changed path(s) are not readable regular files — submodule gitlink or symlink; not read, not checked",
       )
       const calls = (await fs.readFile(log, "utf8"))
         .trim()
@@ -542,7 +550,7 @@ describe.skipIf(!existsSync(CLI))(
         // them behaviorally means breaking git itself, which the stubbed run above already
         // does for the first.
         const hook = await prePush()
-        expect(hook).toContain('echo "✗ shellcheck: cannot enumerate the tree')
+        expect(hook).toContain('echo "✗ shellcheck: could not enumerate the changes of')
         expect(hook).toContain('echo "✗ shellcheck: script discovery failed')
         expect(hook).not.toContain("etymd: shell script discovery")
         expect(hook).not.toContain("etymd: cannot enumerate")
@@ -807,3 +815,239 @@ describe.skipIf(!existsSync(CLI))(
     })
   },
 )
+
+describe.skipIf(!existsSync(CLI))(
+  "etymd gates — the checker reads what the push changed, not the whole tree per commit",
+  () => {
+    it("PINNED: N commits that each change one script are N reads — untouched scripts never re-read", async () => {
+      // The cost being fixed: a per-commit whole-tree read made a push of small commits pay
+      // (scripts × commits) checker invocations, and print its style advice once per commit.
+      await baseRepo()
+      await write("scripts/base1", "#!/bin/sh\necho base1\n")
+      await write("scripts/base2", "#!/bin/sh\necho base2\n")
+      await commitAll("chore: base scripts")
+      for (const n of [1, 2, 3]) {
+        await write(`scripts/change${n}`, "#!/bin/sh\necho change\n")
+        await commitAll(`chore: change ${n}`)
+      }
+      await gates()
+      await recordShellcheck()
+      const log = path.join(dir, "shellcheck.jsonl")
+      const env = await stubEnv({ ETYMD_RECORD: log })
+      const base = await revParse("HEAD~3")
+      const head = await revParse("HEAD")
+
+      const { stdout } = await runPrePush(env, update("main", head, base))
+      expect(stdout).toContain(
+        "3 commit(s) in the push, 3 changed script file(s) to check, blocking at severity=warning",
+      )
+      const calls = (await fs.readFile(log, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[])
+      const blocking = calls.filter((args) => args.join(" ").includes("-S warning"))
+      // One read per change — three single-file passes, never three whole-tree passes.
+      expect(blocking).toHaveLength(3)
+      for (const args of blocking) {
+        expect(args.filter((a) => a.startsWith("./"))).toHaveLength(1)
+        expect(args.join(" ")).toContain("./scripts/change")
+      }
+      // The untouched base scripts are gated where they landed; this push never re-reads them.
+      for (const args of calls) {
+        for (const arg of args) {
+          expect(arg.startsWith("./scripts/base")).toBe(false)
+        }
+      }
+    })
+
+    it("a commit that changes no shell script prints its one line and reads nothing", async () => {
+      await baseRepo()
+      await write("scripts/run", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: script")
+      await write("docs/notes.md", "no scripts here\n")
+      await commitAll("chore: docs only")
+      await gates()
+      await recordShellcheck()
+      const log = path.join(dir, "shellcheck.jsonl")
+      const env = await stubEnv({ ETYMD_RECORD: log })
+      const base = await revParse("HEAD~2")
+      const head = await revParse("HEAD")
+
+      const { stdout } = await runPrePush(env, update("main", head, base))
+      expect(stdout).toContain("changed no shell script — nothing read for it")
+      const calls = (await fs.readFile(log, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[])
+      // Only the script commit's file is read, in its two passes.
+      expect(calls).toHaveLength(2)
+      for (const args of calls) expect(args).toContain("./scripts/run")
+    })
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: the style-advice block prints once for the whole push, not once per commit",
+      async () => {
+        // A backtick command substitution is a style-severity finding (SC2006): below the
+        // blocking bar, visible in the advice pass. Three commits each add one such script —
+        // before the fix the block (and its notes) printed once per commit.
+        await baseRepo()
+        for (const n of [1, 2, 3]) {
+          await write(`scripts/style${n}`, '#!/bin/sh\nv=`echo hi`\necho "$v"\n')
+          await commitAll(`chore: style ${n}`)
+        }
+        await gates()
+        const env = await stubEnv()
+        const base = await revParse("HEAD~3")
+        const head = await revParse("HEAD")
+
+        const { stdout } = await runPrePush(env, update("main", head, base))
+        const headers = stdout.match(/style\/info \(not blocking\):/g) ?? []
+        expect(headers).toHaveLength(1)
+        // Each script's note appears exactly once — not once per commit in the push.
+        expect(stdout.match(/SC2006/g) ?? []).toHaveLength(3)
+      },
+    )
+
+    it("a merge is read through its combined diff — the resolution, not the merged branches", async () => {
+      await baseRepo()
+      await write("scripts/a", "#!/bin/sh\necho a\n")
+      await commitAll("chore: a")
+      await pExecFile("git", ["branch", "side"], { cwd: dir })
+      await write("scripts/b", "#!/bin/sh\necho b\n")
+      await commitAll("chore: b on main")
+      await pExecFile("git", ["checkout", "-q", "side"], { cwd: dir })
+      await write("scripts/c", "#!/bin/sh\necho c\n")
+      await commitAll("chore: c on side")
+      await pExecFile("git", ["checkout", "-q", "main"], { cwd: dir })
+      await pExecFile("git", ["merge", "-q", "--no-ff", "side", "-m", "chore: merge side"], {
+        cwd: dir,
+        env: GIT_ENV,
+      })
+      await gates()
+      await recordShellcheck()
+      const log = path.join(dir, "shellcheck.jsonl")
+      const env = await stubEnv({ ETYMD_RECORD: log })
+      const base = await revParse("HEAD~2")
+      const head = await revParse("HEAD")
+
+      const { stdout } = await runPrePush(env, update("main", head, base))
+      // The clean merge introduced nothing novel: its own line says so.
+      expect(stdout).toContain("changed no shell script — nothing read for it")
+      const calls = (await fs.readFile(log, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[])
+      const blocking = calls.filter((args) => args.join(" ").includes("-S warning"))
+      // a (before the range), b and c at their own commits — the merge re-reads neither.
+      expect(blocking).toHaveLength(2)
+      const files = blocking.flatMap((args) => args.filter((a) => a.startsWith("./"))).sort()
+      expect(files).toEqual(["./scripts/b", "./scripts/c"])
+    })
+
+    it.skipIf(!hasShellcheck)(
+      "a merge whose resolution carries a defect refuses the push",
+      async () => {
+        await baseRepo()
+        await write("scripts/conflict", "#!/bin/sh\necho base\n")
+        await commitAll("chore: base script")
+        await pExecFile("git", ["branch", "side"], { cwd: dir })
+        await write("scripts/conflict", "#!/bin/sh\necho main\n")
+        await commitAll("chore: main side")
+        await pExecFile("git", ["checkout", "-q", "side"], { cwd: dir })
+        await write("scripts/conflict", "#!/bin/sh\necho side\n")
+        await commitAll("chore: side change")
+        await pExecFile("git", ["checkout", "-q", "main"], { cwd: dir })
+        await pExecFile("git", ["merge", "-q", "--no-commit", "side"], { cwd: dir }).catch(() => {})
+        // The resolution is NOVEL bytes — in neither parent — and it is broken.
+        await write("scripts/conflict", "#!/bin/sh\nnever_used=1\necho resolved\n")
+        await pExecFile("git", ["add", "."], { cwd: dir })
+        await pExecFile("git", ["commit", "-q", "-m", "chore: resolve"], { cwd: dir, env: GIT_ENV })
+        await gates()
+        const env = await stubEnv()
+        const base = await revParse("HEAD~2")
+        const head = await revParse("HEAD")
+
+        await expect(runPrePush(env, update("main", head, base))).rejects.toMatchObject({
+          code: 1,
+          stdout: expect.stringContaining("SC2034"),
+        })
+      },
+    )
+  },
+)
+
+describe.skipIf(!existsSync(CLI))("etymd gates — the push-time audit reads the pushed tips", () => {
+  /** An audit stand-in that reports where it ran, and fails only inside a tree carrying
+   * BLOCK=1 — so the fixture can plant the gap on the branch, the checkout, or neither. */
+  async function auditStub() {
+    await write(
+      ".stub-bin/etymd",
+      '#!/bin/sh\nprintf \'%s %s\\n\' "$1" "$(pwd)" >> "$ETYMD_RECORD"\nif [ "$1" = "audit" ] && [ "$(cat "$PWD/BLOCK" 2>/dev/null)" = "1" ]; then\n  echo "gap-level finding at $(pwd)"\n  exit 1\nfi\nexit 0\n',
+    )
+    await fs.chmod(path.join(dir, ".stub-bin/etymd"), 0o755)
+  }
+
+  async function pushEnv(): Promise<NodeJS.ProcessEnv> {
+    await auditStub()
+    const log = path.join(dir, "audit-paths.log")
+    return {
+      ...process.env,
+      PATH: `${path.join(dir, ".stub-bin")}${path.delimiter}${process.env.PATH}`,
+      ETYMD_RECORD: log,
+    }
+  }
+
+  it("PINNED: a gap in the pushing CHECKOUT cannot block a clean branch — the audit runs at the pushed tip", async () => {
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await commitAll("chore: script")
+    await gates()
+    const env = await pushEnv()
+    const base = await revParse("HEAD~1")
+    const head = await revParse("HEAD")
+    // The working tree carries the gap; the pushed commits do not.
+    await write("BLOCK", "1\n")
+
+    const { stdout } = await runPrePush(env, update("main", head, base))
+    expect(stdout).toContain("the pushed tip")
+    const lines = (await fs.readFile(path.join(dir, "audit-paths.log"), "utf8")).trim().split("\n")
+    const audits = lines.filter((l) => l.startsWith("audit "))
+    expect(audits).toHaveLength(1)
+    // The audit stood in a materialised worktree of the tip, not in the pushing checkout —
+    // where the gap lives and would have refused this clean branch.
+    expect(audits[0]?.endsWith(dir)).toBe(false)
+    expect(stdout).not.toContain("gap-level finding")
+  })
+
+  it("PINNED: a gap ON THE PUSHED BRANCH refuses the push even from a clean checkout", async () => {
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await write("BLOCK", "1\n")
+    await commitAll("chore: script and gap")
+    await gates()
+    const env = await pushEnv()
+    const base = await revParse("HEAD~1")
+    const head = await revParse("HEAD")
+    // The checkout is clean OF the gap (uncommitted edit only) — the old audit read exactly
+    // this tree and passed; the pushed tip still carries it.
+    await write("BLOCK", "0\n")
+
+    await expect(runPrePush(env, update("main", head, base))).rejects.toMatchObject({
+      code: 1,
+      stdout: expect.stringContaining("gap-level finding"),
+    })
+  })
+
+  it("a push that carries no commits audits nothing and says so", async () => {
+    await baseRepo()
+    await gates()
+    const env = await pushEnv()
+    const head = await revParse("HEAD")
+
+    const { stdout } = await runPrePush(env, update("main", head, head))
+    expect(stdout).toContain("nothing to audit")
+    // And the audit never ran (the content screen's call is the only etymd invocation).
+    const lines = (await fs.readFile(path.join(dir, "audit-paths.log"), "utf8")).trim().split("\n")
+    expect(lines.filter((l) => l.startsWith("audit "))).toEqual([])
+  })
+})

@@ -428,55 +428,57 @@ exit 0
  *
  * Five properties, each a lesson from a gate that failed:
  *
- * The check reads the commits BEING PUSHED, each materialised from git's object store — never
- * the working tree (a fixed tree let an unfixed commit ship while the gate read the
- * tree, and a dirty tree shared by several sessions blocked an unrelated push), and never the
- * tip alone (a bad commit under its own fix shipped while the gate read only the tip). A
- * commit that cannot be materialised refuses the push: certifying bytes the gate did not read
- * is the one thing this gate must never do.
+ * The check reads the scripts CHANGED BY THE COMMITS BEING PUSHED, each at the commit that
+ * changed it — never the working tree (a fixed tree let an unfixed commit ship while the
+ * gate read the tree, and a dirty tree shared by several sessions blocked an unrelated
+ * push), and never the tip alone (a bad commit under its own fix shipped while the gate
+ * read only the tip). A range or a change that cannot be enumerated refuses the push:
+ * certifying bytes the gate did not read is the one thing this gate must never do. A script
+ * no pushed commit touched was gated when it landed — the same argument the range
+ * enumeration already makes for commits a remote received — so a push of N commits that
+ * each change one script reads N scripts, not N whole trees per commit.
  *
- * Commits that share a tree are certified once. The bytes under judgment are the tree's, not
- * the message's, and merge/squash histories push many commits over few distinct trees — a
- * per-commit read made a 40-commit push pay 40 full-tree extractions and checker runs on the
- * push path, for trees that were bytewise identical.
+ * A commit with no readable first parent (a root, or a graft the object store cannot show)
+ * falls back to every script in its own tree: with no parent, the whole tree is the change.
+ * A merge is read through its combined diff — only paths whose merged bytes differ from
+ * EVERY parent; a path that matches one parent arrived with that parent's own commit, where
+ * this same push reads it (or the remote that already has it did, when it landed).
  *
- * A tracked path that extracts to no readable regular file — an export-ignored path (extracts
- * to nothing), a submodule gitlink (extracts to an empty directory), a dangling symlink (to a
- * link with no target) — is a counted, disclosed skip, never a refused push. The gate cannot
- * read those bytes through the archive; a gate that bricked every push of every repo using
- * export-ignore would be uninstalled, and then nothing is checked. A regular file that IS in
- * the extract but cannot be read still refuses.
+ * A changed path that is not a readable regular file — a submodule gitlink, a symlink — is
+ * a counted, disclosed skip, never a refused push. The gate cannot read those bytes as a
+ * script; a gate that bricked every push of every repo with one such path would be
+ * uninstalled, and then nothing is checked.
  *
- * A missing `shellcheck` is a LOUD skip naming the install command. A check that goes quiet when
- * its binary is absent is the worst kind — the repo looks guarded on every machine, and is
- * guarded on one.
+ * A missing `shellcheck` is a LOUD skip naming the install command. A check that goes quiet
+ * when its binary is absent is the worst kind — the repo looks guarded on every machine,
+ * and is guarded on one.
  *
- * The blocking bar is `warning`; style and info print as advice AFTER the blocking pass. A gate
- * with a high false-positive rate does not make a repo careful, it teaches everyone the bypass
- * flag — and the flag is shared with the gates that must never be bypassed. Discarding the
- * sub-warning findings instead of showing them would be the opposite mistake: the cheap ones are
- * how a script gets better between defects, and they cost one extra pass over files already read.
+ * The blocking bar is `warning`; style and info print as advice AFTER the blocking pass,
+ * once for the whole push over each script at its last-changing commit — not once per
+ * commit over every script, which multiplied a push's checker time and output noise by its
+ * commit count. Discarding the sub-warning findings instead of showing them would be the
+ * opposite mistake: the cheap ones are how a script gets better between defects.
  */
 function shellcheckStep(): string {
   return `
-# Shell correctness. The commits BEING PUSHED are the bytes that ship, so their trees are
-# materialised from git's object store and checked there — each distinct tree once — never the
-# working tree (wrong in both directions: a fixed tree let an unfixed commit ship, and a dirty
-# tree shared by several sessions blocked an unrelated push) and never the tip alone (a bad
-# commit under a clean tip shipped while the gate read only the tip's fix). zsh is NOT in the
-# checked set: the checker
+# Shell correctness. The scripts CHANGED BY THE PUSHED COMMITS are the bytes that may ship,
+# so each one is read at the commit that changed it — never the working tree (wrong in both
+# directions: a fixed tree let an unfixed commit ship, and a dirty tree shared by several
+# sessions blocked an unrelated push) and never the tip alone (a bad commit under a clean tip
+# shipped while the gate read the tip's fix). A script no pushed commit touched was gated
+# when it landed — the argument the range enumeration below already makes for whole commits —
+# so a push of many small commits reads many small file sets, not the whole tree per commit.
+# zsh is NOT in the checked set: the checker
 # cannot parse it (SC1071 is a parser-level error no inline directive can silence), so checking
-# it would fail every push on the parser, not on the script. Excluded — and said so at run time
-# below, because a coverage hole that is silent is indistinguishable from coverage.
+# it would fail every push on the parser, not on the script. Excluded — and said so at run
+# time below, because a coverage hole that is silent is indistinguishable from coverage.
 #
 # "the checker", not its name, on purpose: a comment whose first word is that name is read as
 # a DIRECTIVE, and an unparseable directive is itself an error (SC1072/SC1073). A hook that
 # explains why it skips a shell dialect must not break the checker while doing it.
 if command -v shellcheck >/dev/null 2>&1; then
   (
-    # Checked files between stages keep POSIX pipelines from hiding incomplete discovery.
-    # NUL delimiters preserve filenames; positional arguments avoid xargs -I size limits and
-    # interpreting filenames as shell code. The subshell confines cleanup to this step.
+    # The subshell confines cleanup to this step; nothing is deleted inside the loops.
     shellcheck_tmp=$(mktemp -d) || exit 1
     trap 'rm -rf "$shellcheck_tmp"' 0
     trap 'exit 1' 1 2 3 15
@@ -503,66 +505,86 @@ if command -v shellcheck >/dev/null 2>&1; then
       echo "✗ shellcheck: could not enumerate the commits being pushed" >&2
       exit 1
     }
-    shas=$(sort -u "$shellcheck_tmp/shas") || exit 1
+    # Deduped IN ORDER: rev-list is newest-first, and the advice pass must know each script's
+    # last-changing commit — only an order-preserving walk can.
+    shas=$(awk '!seen[$0]++' "$shellcheck_tmp/shas") || exit 1
     [ -n "$shas" ] || echo "› shellcheck: no commit in the pushed refs (deletes only, or nothing on stdin) — nothing to check"
-    # Commits that share a tree are certified once: the bytes under judgment are the tree's,
-    # not the message's, and merge/squash histories push many commits over few distinct trees.
-    # Every commit's tree is still in the set exactly once — a bad commit under a clean tip
-    # ships its own tree — so the per-commit correctness gain survives without the per-commit
-    # cost. A sha whose tree cannot be resolved refuses the push, like any other unread range.
-    : > "$shellcheck_tmp/trees" || exit 1
+    mkdir -p "$shellcheck_tmp/lists.d" "$shellcheck_tmp/adv.d" || exit 1
+    : > "$shellcheck_tmp/gap-count" && : > "$shellcheck_tmp/zsh-count" && : > "$shellcheck_tmp/pairindex" && : > "$shellcheck_tmp/seen" || exit 1
     for sha in $shas; do
-      git rev-parse -q --verify "$sha^{tree}" >> "$shellcheck_tmp/trees" 2>/dev/null || {
-        echo "✗ shellcheck: could not resolve the tree of $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha") — refusing the push rather than certifying bytes this gate did not read" >&2
+      short=$(git rev-parse --short "$sha" 2>/dev/null || echo "$sha")
+      tree=$(git rev-parse -q --verify "$sha^{tree}") || {
+        echo "✗ shellcheck: could not resolve the tree of $short — refusing the push rather than certifying bytes this gate did not read" >&2
         exit 1
       }
-    done
-    trees=$(sort -u "$shellcheck_tmp/trees") || exit 1
-    if [ -n "$shas" ]; then
-      # grep -c exits 1 on zero matches, so the count runs only where a match is guaranteed;
-      # its || exit 1 then means grep itself failed, and the step fails closed as everywhere.
-      commit_count=$(printf '%s\\n' "$shas" | grep -c .) || exit 1
-      tree_count=$(printf '%s\\n' "$trees" | grep -c .) || exit 1
-      echo "› shellcheck: $((commit_count)) commit(s) in the push, $((tree_count)) distinct tree(s) to check"
-    fi
-    for tree_id in $trees; do
-      # A fresh directory per tree: nothing is deleted inside the loop — the subshell trap
-      # above cleans the one root on every path out.
-      tree=$(mktemp -d "$shellcheck_tmp/commit.XXXXXX") || exit 1
-      # archive to a FILE, then extract: in a git-archive-piped-to-tar pipeline the status is
-      # tar's, and tar on empty input exits 0 — a tree git could not read would pass as an
-      # empty, clean tree. The id itself was verified into existence one step above, so an
-      # empty extract means the archive legitimately carried nothing (every path export-
-      # ignored), which the gap count below discloses rather than refuses.
-      if ! git archive "$tree_id" > "$shellcheck_tmp/tarball" 2>/dev/null \\
-         || ! tar -x -C "$tree" -f "$shellcheck_tmp/tarball" 2>/dev/null; then
-        echo "✗ shellcheck: could not materialise tree $(git rev-parse --short "$tree_id" 2>/dev/null || echo "$tree_id") — refusing the push rather than certifying bytes this gate did not read" >&2
-        exit 1
+      # The scripts this commit changed, each with its destination mode: diff-tree's raw
+      # records alternate META and PATH as separate NUL fields, so a path keeps its whitespace,
+      # quotes, leading hyphens, even newlines unchanged. --diff-filter drops deletions
+      # (nothing to read) and keeps adds, copies, modifications, renames (an undetected rename
+      # is a delete plus an add, and the add side is kept) and type changes; a mode-only
+      # change is a modification. A MERGE is read through its combined diff instead — paths
+      # whose merged bytes differ from EVERY parent — because a path matching one parent
+      # arrived with that parent's own commit, where this same push reads it (or the remote
+      # that already has it did, when it landed there). A commit with no readable first
+      # parent — a root, or a graft the object store cannot show — is read whole: with no
+      # parent, the entire tree is this commit's change.
+      if git rev-parse -q --verify "$sha^2" >/dev/null 2>&1; then
+        git diff-tree --no-commit-id --raw -z -r --cc "$sha" > "$shellcheck_tmp/names" 2>/dev/null || {
+          echo "✗ shellcheck: could not enumerate the changes of $short — refusing the push rather than certifying bytes this gate did not read" >&2
+          exit 1
+        }
+      elif git rev-parse -q --verify "$sha^" >/dev/null 2>&1; then
+        git diff-tree --no-commit-id --raw -z -r --diff-filter=ACMRT "$sha" > "$shellcheck_tmp/names" 2>/dev/null || {
+          echo "✗ shellcheck: could not enumerate the changes of $short — refusing the push rather than certifying bytes this gate did not read" >&2
+          exit 1
+        }
+      else
+        echo "› shellcheck: commit $short has no readable first parent — reading every script in its tree"
+        git diff-tree --no-commit-id --raw -z -r --root --diff-filter=ACMRT "$sha" > "$shellcheck_tmp/names" 2>/dev/null || {
+          echo "✗ shellcheck: could not enumerate the changes of $short — refusing the push rather than certifying bytes this gate did not read" >&2
+          exit 1
+        }
       fi
-      : > "$shellcheck_tmp/scripts" && : > "$shellcheck_tmp/count" && : > "$shellcheck_tmp/zsh-count" && : > "$shellcheck_tmp/gap-count" || exit 1
-      git ls-tree -r -z --name-only "$tree_id" > "$shellcheck_tmp/tracked" || {
-        echo "✗ shellcheck: cannot enumerate the tree $(git rev-parse --short "$tree_id" 2>/dev/null || echo "$tree_id")" >&2
-        exit 1
-      }
+      : > "$shellcheck_tmp/scripts-this" || exit 1
       xargs -0 sh -c '
         work=$1
-        tree=$2
-        shift 2
-        for file do
-          # Listed by the tree but not a regular file in the extract: an export-ignored path
-          # extracts to nothing, a submodule gitlink to an empty directory, a dangling symlink
-          # to a link with no target. None of them can ever be read here. Counted and
-          # disclosed as unread below, never a refusal — the read that stopped here bricked
-          # every push of every repo with one such path. A regular file that cannot be read
-          # is different: that head still refuses.
-          if [ ! -f "$tree/$file" ]; then
-            printf . >> "$work/gap-count" || exit 1
-            continue
+        sha=$2
+        tree=$3
+        short=$4
+        shift 4
+        while [ $# -ge 2 ]; do
+          meta=$1
+          path=$2
+          shift 2
+          # The destination mode is the second field of the raw record: ":<src mode> <dst mode> …"
+          rest=\${meta#* }
+          mode=\${rest%% *}
+          case "$mode" in
+            160000|120000)
+              printf . >> "$work/gap-count" || exit 1
+              continue
+              ;;
+          esac
+          mkdir -p "$work/t/$tree" || exit 1
+          case "$path" in
+            */*) mkdir -p "$work/t/$tree/\${path%/*}" || exit 1 ;;
+          esac
+          if ! git show "$sha:$path" > "$work/t/$tree/$path" 2>/dev/null; then
+            exit 1
           fi
-          head -n 1 "$tree/$file" > "$work/first-line" || exit 1
+          head -n 1 "$work/t/$tree/$path" > "$work/first-line" || exit 1
           if grep -qE "^#!.*[/ ](ba|da)?sh( |$)" "$work/first-line"; then
-            printf "./%s\\0" "$file" >> "$work/scripts" || exit 1
-            printf . >> "$work/count" || exit 1
+            printf "./%s\\0" "$path" >> "$work/lists.d/$tree" || exit 1
+            printf "%s %s\\n" "$tree" "$path" >> "$work/pairindex" || exit 1
+            printf . >> "$work/scripts-this" || exit 1
+            # Newest commit first, so the FIRST push of a script into the advice set carries
+            # its final state in this push — advice runs once, over each script as it last
+            # ships. (Line-exact matching: a path containing a newline never matches and may
+            # be advised once per changing commit — advice duplication only, never a skip.)
+            if ! grep -Fqx -- "$path" "$work/seen"; then
+              printf "%s\\n" "$path" >> "$work/seen" || exit 1
+              printf "./%s\\0" "$path" >> "$work/adv.d/$tree" || exit 1
+            fi
           else
             [ "$?" -eq 1 ] || exit 1
             if grep -qE "^#!.*[/ ]zsh( |$)" "$work/first-line"; then
@@ -572,35 +594,58 @@ if command -v shellcheck >/dev/null 2>&1; then
             fi
           fi
         done
-      ' sh "$shellcheck_tmp" "$tree" < "$shellcheck_tmp/tracked" || {
+      ' sh "$shellcheck_tmp" "$sha" "$tree" "$short" < "$shellcheck_tmp/names" || {
         echo "✗ shellcheck: script discovery failed; coverage is incomplete" >&2
         exit 1
       }
-      count=$(wc -c < "$shellcheck_tmp/count") || exit 1
-      zsh_count=$(wc -c < "$shellcheck_tmp/zsh-count") || exit 1
-      gap_count=$(wc -c < "$shellcheck_tmp/gap-count") || exit 1
-      if [ "$gap_count" -gt 0 ]; then
-        echo "› shellcheck: $((gap_count)) tracked path(s) not regular files in the extract — export-ignore, submodule gitlink, or dangling link; not read, not checked"
-      fi
-      if [ "$zsh_count" -gt 0 ]; then
-        echo "› shellcheck: $((zsh_count)) zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
-      fi
-      if [ "$count" -gt 0 ]; then
-        echo "› shellcheck ($((count)) scripts in tree $(git rev-parse --short "$tree_id" 2>/dev/null || echo "$tree_id"), blocking at severity=warning)"
-        ( cd "$tree" && xargs -0 shellcheck -S warning -- < "$shellcheck_tmp/scripts" ) || {
-          echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
-          exit 1
-        }
-        # Everything below the blocking bar, shown once the push is already cleared. Never affects
-        # the exit code — advice that can fail a push is not advice.
-        advice=$( ( cd "$tree" && xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/scripts" 2>/dev/null ) \\
-          | grep -v ': warning:\\|: error:' || true)
-        if [ -n "$advice" ]; then
-          echo "  · style/info (not blocking):"
-          printf '%s\\n' "$advice" | sed 's/^/    /'
-        fi
+      scripts_this=$(wc -c < "$shellcheck_tmp/scripts-this") || exit 1
+      if [ "$scripts_this" -gt 0 ]; then
+        echo "› shellcheck: commit $short changed $scripts_this shell script(s)"
+      else
+        echo "› shellcheck: commit $short changed no shell script — nothing read for it"
       fi
     done
+    if [ -n "$shas" ]; then
+      commit_count=$(printf '%s\\n' "$shas" | grep -c .) || exit 1
+      # grep -c prints 0 even as it exits 1 on zero matches, so || true keeps a scriptless
+      # push at zero instead of failing closed on an empty pairindex.
+      pair_count=$(sort -u "$shellcheck_tmp/pairindex" | grep -c . || true)
+      echo "› shellcheck: $((commit_count)) commit(s) in the push, $((pair_count)) changed script file(s) to check, blocking at severity=warning"
+    fi
+    gap_count=$(wc -c < "$shellcheck_tmp/gap-count") || exit 1
+    zsh_count=$(wc -c < "$shellcheck_tmp/zsh-count") || exit 1
+    if [ "$gap_count" -gt 0 ]; then
+      echo "› shellcheck: $((gap_count)) changed path(s) are not readable regular files — submodule gitlink or symlink; not read, not checked"
+    fi
+    if [ "$zsh_count" -gt 0 ]; then
+      echo "› shellcheck: $((zsh_count)) zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
+    fi
+    for lst in "$shellcheck_tmp"/lists.d/*; do
+      [ -f "$lst" ] || continue
+      tree_id=\${lst##*/}
+      sort -zu "$lst" > "$shellcheck_tmp/blocking" || exit 1
+      n=$(tr '\\0' '\\n' < "$shellcheck_tmp/blocking" | grep -c .) || exit 1
+      echo "› shellcheck: $((n)) script(s) as of tree $(git rev-parse --short "$tree_id" 2>/dev/null || echo "$tree_id")"
+      ( cd "$shellcheck_tmp/t/$tree_id" && xargs -0 shellcheck -S warning -- < "$shellcheck_tmp/blocking" ) || {
+        echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
+        exit 1
+      }
+    done
+    # Everything below the blocking bar, shown once the push is already cleared — once for
+    # the whole push, never once per commit. Never affects the exit code: advice that can
+    # fail a push is not advice.
+    : > "$shellcheck_tmp/advice-all" || exit 1
+    for adv in "$shellcheck_tmp"/adv.d/*; do
+      [ -f "$adv" ] || continue
+      tree_id=\${adv##*/}
+      sort -zu "$adv" > "$shellcheck_tmp/advising" || exit 1
+      ( cd "$shellcheck_tmp/t/$tree_id" && xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/advising" 2>/dev/null ) >> "$shellcheck_tmp/advice-all" || true
+    done
+    advice=$(grep -v ': warning:\\|: error:' "$shellcheck_tmp/advice-all" || true)
+    if [ -n "$advice" ]; then
+      echo "  · style/info (not blocking):"
+      printf '%s\\n' "$advice" | sed 's/^/    /'
+    fi
   ) || exit 1
 else
   echo "› shellcheck skipped (not on PATH) — install it to gate this repo's shell scripts"
@@ -620,9 +665,10 @@ fi`
  * The scrub strips EVERY exported GIT_* name, not a fixed list — git adds variables over time,
  * and a name the list missed is the whole defect back. A step that genuinely means this
  * repository finds it again from its working directory, which for a hook is the repo root.
- * The audit and shellcheck steps are deliberately NOT routed through it: audit operates on the
- * repo it is invoked in and never descends into fixtures, and shellcheck's `git ls-files` must
- * see the real repo.
+ * The shellcheck step is deliberately NOT routed through it: its git enumerations must see
+ * the real repo the push runs from. The audit step IS routed through it: it runs inside a
+ * materialised worktree of the pushed tip, where a child git inheriting git's exported
+ * names would ignore the worktree it stands in and read the pushing checkout instead.
  */
 const SCRUBBED_RUNNER = `
 # Gate steps run scrubbed of git's exported GIT_* names: a child git that inherits them ignores
@@ -653,9 +699,9 @@ export function generatePrePushHook(
     )
     .map((key) => `${run} ${key}`)
   const shellStep = facts.shell?.scripts ? shellcheckStep() : ""
-  // Emitted only when a step exists to call it — a helper with no caller is dead text in a file
-  // people read to learn what their gate does.
-  const runner = steps.length ? SCRUBBED_RUNNER : ""
+  // Emitted unconditionally: the package steps call it, and so does the audit step below,
+  // which must run scrubbed inside its materialised worktree even in a repo with no scripts.
+  const runner = SCRUBBED_RUNNER
   const body = steps.length
     ? steps.map((s) => `echo "› ${s}"\nrun_gate ${s} || exit 1`).join("\n")
     : shellStep
@@ -664,14 +710,52 @@ export function generatePrePushHook(
         // tool contradicting itself.
         'echo "› no package scripts — shell is this repo\'s checkable surface"'
       : 'echo "etymd: no correctness commands detected — add format:check / typecheck / lint"'
-  // The truth gate on the repo's own instructions, at the tier this repo chose. Skipped with a
-  // note rather than failing where etymd is not installed — a gate that cannot run must say so
+  // The truth gate on the repo's own instructions, at the tier this repo chose — read at the
+  // TIP OF EACH PUSHED REF, materialised as a detached worktree of that commit, never at the
+  // checkout the push happens to run from (wrong in both directions: a clean branch was
+  // refused for a gap living only in the pushing checkout's working tree, and a branch
+  // carrying a gap shipped because that checkout happened to be clean). Skipped with a note
+  // rather than failing where etymd is not installed — a gate that cannot run must say so
   // instead of silently passing.
   const failOn = gates?.failOn ?? "risk"
   const auditStep = `
+# The truth gate reads the bytes BEING PUSHED: each pushed tip is materialised as a detached
+# worktree of its own commit and audited there, the same subject rule the shell gate above
+# applies. hooksPath is neutralised for the materialisation itself so no hook of the pushed
+# tree runs as a side effect of this read; the audit inside sees the repo's own config. It
+# runs scrubbed (run_gate): a child git inheriting git's exported names would ignore the
+# worktree it stands in. A push that carries no commits (deletes only) audits nothing, and
+# says so.
 if command -v etymd >/dev/null 2>&1; then
-  echo "› etymd audit --fail-on ${failOn}"
-  etymd audit --no-ledger --fail-on ${failOn} || exit 1
+  (
+    audit_tmp=$(mktemp -d) || exit 1
+    trap 'rm -rf "$audit_tmp"' 0
+    trap 'exit 1' 1 2 3 15
+    : > "$audit_tmp/tips" || exit 1
+    printf '%s\\n' "$refs" | while read -r _lref lsha _rref rsha; do
+      case "$lsha" in
+        (*[!0]*) ;;
+        (*) continue ;;
+      esac
+      if [ "$lsha" != "$rsha" ]; then
+        printf '%s\\n' "$lsha" >> "$audit_tmp/tips"
+      fi
+    done || exit 1
+    tips=$(sort -u "$audit_tmp/tips") || exit 1
+    [ -n "$tips" ] || echo "› etymd audit: no commit in the pushed refs (deletes only, or nothing new) — nothing to audit"
+    for tip in $tips; do
+      wt=$(mktemp -d "$audit_tmp/tip.XXXXXX") || exit 1
+      if ! git -c core.hooksPath=/dev/null worktree add --detach -q "$wt" "$tip" 2>/dev/null; then
+        echo "✗ etymd audit: could not materialise $(git rev-parse --short "$tip" 2>/dev/null || echo "$tip") for the audit — refusing the push rather than certifying bytes this gate did not read" >&2
+        exit 1
+      fi
+      echo "› etymd audit --no-ledger --fail-on ${failOn} (at $(git rev-parse --short "$tip" 2>/dev/null || echo "$tip"), the pushed tip)"
+      if ! (cd "$wt" && run_gate etymd audit --no-ledger --fail-on ${failOn}); then
+        exit 1
+      fi
+      git -c core.hooksPath=/dev/null worktree remove --force "$wt" >/dev/null 2>&1 || exit 1
+    done
+  ) || exit 1
 else
   echo "› etymd audit skipped (not on PATH)"
 fi`
