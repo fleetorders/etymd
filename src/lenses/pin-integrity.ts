@@ -172,6 +172,8 @@ export const pinIntegrityLens: Lens = {
 
     const pkg = await readJson<
       PackageJson & {
+        optionalDependencies?: Record<string, string>
+        peerDependencies?: Record<string, string>
         overrides?: Record<string, unknown>
         resolutions?: Record<string, unknown>
         pnpm?: {
@@ -228,6 +230,9 @@ export const pinIntegrityLens: Lens = {
     }
 
     if (!overrideSections.length && !patchTargets.length) {
+      // Disclosures collected on the way here (unparseable patch entries, an unparseable
+      // pnpm-workspace.yaml) survive this return — replacing the array dropped them, and a
+      // repo whose only pins are unparseable was told "none declared" while pins were declared.
       return {
         lens: LENS_ID,
         version: "1",
@@ -235,7 +240,10 @@ export const pinIntegrityLens: Lens = {
         kind: "truth",
         status: "ran",
         disclosures: [
-          "No dependency pins declared (no overrides, resolutions, or patchedDependencies) — nothing to check.",
+          ...disclosures,
+          disclosures.length
+            ? "No parsable dependency pins remain — every declared override, resolution, or patch entry was skipped above; nothing to check."
+            : "No dependency pins declared (no overrides, resolutions, or patchedDependencies) — nothing to check.",
         ],
         findings,
       }
@@ -243,16 +251,30 @@ export const pinIntegrityLens: Lens = {
 
     const lock = await indexLockfile(root)
     // The manifest's own dependency sections count as requests too: an override on a direct
-    // dependency is legitimate, and workspace package manifests may be the requester.
+    // dependency is legitimate, and workspace package manifests may be the requester. Optional
+    // and peer dependencies are requests like any other — a pin rewrites what they resolve to as
+    // surely as a regular dependency's, so a name listed only there is not a dead pin.
     const requested = new Set<string>(lock?.names ?? [])
-    for (const entries of [pkg?.dependencies, pkg?.devDependencies]) {
+    for (const entries of [
+      pkg?.dependencies,
+      pkg?.devDependencies,
+      pkg?.optionalDependencies,
+      pkg?.peerDependencies,
+    ]) {
       for (const name of Object.keys(entries ?? {})) requested.add(name)
     }
     for (const workspacePkg of facts.packages) {
-      const wp = await readJson<PackageJson>(path.join(root, workspacePkg.dir, "package.json"))
+      const wp = await readJson<
+        PackageJson & {
+          optionalDependencies?: Record<string, string>
+          peerDependencies?: Record<string, string>
+        }
+      >(path.join(root, workspacePkg.dir, "package.json"))
       for (const name of [
         ...Object.keys(wp?.dependencies ?? {}),
         ...Object.keys(wp?.devDependencies ?? {}),
+        ...Object.keys(wp?.optionalDependencies ?? {}),
+        ...Object.keys(wp?.peerDependencies ?? {}),
       ]) {
         requested.add(name)
       }
@@ -266,6 +288,7 @@ export const pinIntegrityLens: Lens = {
         kind: "truth",
         status: "ran",
         disclosures: [
+          ...disclosures,
           "Dependency pins are declared but no lockfile (pnpm-lock.yaml, package-lock.json, yarn.lock) exists — liveness cannot be judged offline; skipped, not flagged.",
         ],
         findings,

@@ -212,3 +212,60 @@ describe("pin-integrity lens (nothing declared)", () => {
     expect(report.disclosures.some((d) => /No dependency pins declared/.test(d))).toBe(true)
   })
 })
+
+describe("pin-integrity lens (disclosure retention)", () => {
+  it("does not call unparseable patch entries 'no pins declared', and keeps their disclosures", async () => {
+    await write(
+      "package.json",
+      JSON.stringify({
+        name: "shape-demo",
+        pnpm: { patchedDependencies: { "not-a-target": "also-not-a-target" } },
+      }),
+    )
+
+    const report = await runPins()
+    expect(report.findings).toEqual([])
+    expect(
+      report.disclosures.some((d) => /names no `pkg@version` in either position/.test(d)),
+    ).toBe(true)
+    expect(report.disclosures.some((d) => /No dependency pins declared/.test(d))).toBe(false)
+  })
+
+  it("keeps the unparseable-workspace disclosure through the no-lockfile return", async () => {
+    await write(
+      "package.json",
+      JSON.stringify({ name: "shape-demo", overrides: { chalk: "5.0.0" } }),
+    )
+    // An unclosed flow sequence: YAML.parse throws, and the catch-branch disclosure is the
+    // one the no-lockfile early return used to replace wholesale.
+    await write("pnpm-workspace.yaml", "packages: [unclosed\n")
+
+    const report = await runPins()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.some((d) => /pnpm-workspace\.yaml is not parseable/.test(d))).toBe(
+      true,
+    )
+    expect(report.disclosures.some((d) => /no lockfile/.test(d))).toBe(true)
+  })
+})
+
+describe("pin-integrity lens (requester sections)", () => {
+  it("counts optional and peer dependencies as requests — an override on them is not dead", async () => {
+    await write(
+      "package.json",
+      JSON.stringify({
+        name: "shape-demo",
+        optionalDependencies: { chalk: "^5.0.0" },
+        peerDependencies: { tiny: "^1.0.0" },
+        overrides: { chalk: "5.0.0", tiny: "1.0.0" },
+      }),
+    )
+    await write(
+      "package-lock.json",
+      JSON.stringify({ name: "shape-demo", lockfileVersion: 3, packages: { "": {} } }),
+    )
+
+    const report = await runPins()
+    expect(report.findings).toEqual([])
+  })
+})
