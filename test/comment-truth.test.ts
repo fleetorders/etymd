@@ -192,6 +192,40 @@ describe("comment-truth lens", () => {
     expect(report.outOfScope).toEqual(["src/app.test.ts", "test/helper.spec.ts", "vendor/lib.ts"])
   })
 
+  it("resolves a comment's relative path against the file's own directory — per file, not per claim string", async () => {
+    await write("package.json", JSON.stringify({ name: "shape-demo" }))
+    // `tables/sizes.json` resolves only through the claiming file's directory (the TruthEnv
+    // fromDir contract instruction files already enjoy) — it exists beside docs/guide.ts and
+    // nowhere any other base reaches.
+    await write("docs/guide.ts", "// The table lives in tables/sizes.json.\n")
+    await write("docs/tables/sizes.json", "{}\n")
+    // The SAME claim string from a directory that does not carry it: a real finding, whose
+    // probe must not inherit the answer the docs/ probe cached for the identical string.
+    await write("other/none.ts", "// The table lives in tables/sizes.json.\n")
+    await gitStage()
+
+    const report = await runComments()
+    expect(report.findings.length).toBe(1)
+    expect(report.findings[0]?.claim).toContain("other/none.ts:1 references `tables/sizes.json`")
+    expect(report.findings[0]?.claim).not.toContain("docs/guide.ts")
+  })
+
+  it("discloses and holds out of scope a tracked file that cannot be read", async () => {
+    await write("package.json", JSON.stringify({ name: "shape-demo" }))
+    await write("src/app.ts", "// Clean comment.\n")
+    await write("src/broken.ts", "// See src/legacy/config.ts\n")
+    await gitStage()
+    // A tracked file whose disk shape defeats readFile (here: a directory replaced it) is a
+    // coverage loss the report must own — counted, disclosed, out of scope — never a silent skip.
+    await fs.rm(path.join(dir, "src/broken.ts"))
+    await fs.mkdir(path.join(dir, "src/broken.ts"))
+
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.outOfScope).toContain("src/broken.ts")
+    expect(report.disclosures.some((d) => /could not be read/.test(d))).toBe(true)
+  })
+
   it("skips comments entirely when the repo is not git-tracked", async () => {
     await write("package.json", JSON.stringify({ name: "shape-demo" }))
     await write("src/app.ts", "// See src/gone/config.ts\n")

@@ -68,6 +68,29 @@ function cached<K extends string>(fn: (k: K) => Promise<boolean>): (k: K) => Pro
   }
 }
 
+/**
+ * The path probe caches on (claim, fromDir), never on the claim alone: TruthEnv's `fromDir` is an
+ * additional resolution base (the claiming file's siblings), so the same string asked from two
+ * directories is two different questions. A one-argument wrapper silently dropped the directory —
+ * relative claims lost their sibling semantics, and the first directory to probe a repeated string
+ * decided the answer every other directory inherited.
+ */
+function cachedPathResolve(
+  fn: (claim: string, fromDir?: string) => Promise<boolean>,
+): (claim: string, fromDir?: string) => Promise<boolean> {
+  const memo = new Map<string, Promise<boolean>>()
+  return (claim, fromDir) => {
+    // The underlying probe skips `fromDir === "."` itself, so it shares the no-directory key.
+    const key = fromDir && fromDir !== "." ? `${fromDir}\0${claim}` : `\0${claim}`
+    let hit = memo.get(key)
+    if (!hit) {
+      hit = fn(claim, fromDir)
+      memo.set(key, hit)
+    }
+    return hit
+  }
+}
+
 export const commentTruthLens: Lens = {
   id: LENS_ID,
   version: "1",
@@ -111,7 +134,7 @@ export const commentTruthLens: Lens = {
     }
 
     const env = await buildTruthEnv(root, facts)
-    const pathResolves = cached(env.pathResolves)
+    const pathResolves = cachedPathResolve(env.pathResolves)
     const binResolves = cached(env.binResolves)
     const scopedEnv: TruthEnv = { ...env, pathResolves, binResolves }
     const ledger = await loadDecisionLedger(root, facts)
@@ -119,9 +142,17 @@ export const commentTruthLens: Lens = {
 
     let filesWithComments = 0
     let commentCount = 0
+    let unreadable = 0
     for (const rel of scanTargets) {
       const text = await readText(path.join(root, rel))
-      if (text === null) continue
+      if (text === null) {
+        // A tracked file that cannot be read is coverage loss, not absence: held out of scope so
+        // the ledger keeps any tracked finding inside it open (unexamined is not fixed), and
+        // disclosed — never silently dropped.
+        unreadable += 1
+        outOfScope.push(rel)
+        continue
+      }
       if (Buffer.byteLength(text, "utf8") > MAX_FILE_BYTES) {
         outOfScope.push(rel)
         continue
@@ -208,6 +239,11 @@ export const commentTruthLens: Lens = {
     if (truncated) {
       disclosures.push(
         `Source scan truncated at ${MAX_FILES} file(s) — ${targets.length - MAX_FILES} more not examined.`,
+      )
+    }
+    if (unreadable) {
+      disclosures.push(
+        `${unreadable} tracked source file(s) could not be read — held out of scope, their comments not examined.`,
       )
     }
     if (mixedLanguage) {
