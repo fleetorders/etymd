@@ -11,7 +11,9 @@ if [ -x "$LOCAL" ]; then
   "$LOCAL" "$@" || exit 1
 fi
 # Gate steps run scrubbed of git's exported GIT_* names: a child git that inherits them ignores
-# its cwd, so a hook-run suite building fixture repositories would operate on the real repo.
+# its cwd, so any step building fixture repositories would operate on the real repo. The derived
+# steps (format:check / typecheck / lint) are static checks that build none — the scrub is
+# standing protection for a step that ever does, a suite pinned into the gate commands above all.
 run_gate() (
   # shellcheck disable=SC2046  # word-splitting is the point: one -u per exported GIT_* name
   env $(env | grep -o '^GIT_[A-Za-z0-9_]*' | sed 's/^/-u /') "$@"
@@ -33,30 +35,60 @@ run_gate npm run test || exit 1
 # a DIRECTIVE, and an unparseable directive is itself an error (SC1072/SC1073). A hook that
 # explains why it skips a shell dialect must not break the checker while doing it.
 if command -v shellcheck >/dev/null 2>&1; then
-  scripts=$(git ls-files -z \
-    | xargs -0 -I{} sh -c 'head -1 "{}" 2>/dev/null | grep -qE "^#!.*[/ ](ba|da)?sh( |$)" && echo "{}"' \
-    | sort)
-  zsh_scripts=$(git ls-files -z \
-    | xargs -0 -I{} sh -c 'head -1 "{}" 2>/dev/null | grep -qE "^#!.*[/ ]zsh( |$)" && echo "{}"' \
-    | sort)
-  if [ -n "$zsh_scripts" ]; then
-    echo "› shellcheck: $(printf '%s\n' "$zsh_scripts" | wc -l | tr -d ' ') zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
-  fi
-  if [ -n "$scripts" ]; then
-    echo "› shellcheck ($(printf '%s\n' "$scripts" | wc -l | tr -d ' ') scripts, blocking at severity=warning)"
-    printf '%s\n' "$scripts" | xargs shellcheck -S warning || {
-      echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
+  (
+    # Checked files between stages keep POSIX pipelines from hiding incomplete discovery.
+    # NUL delimiters preserve filenames; positional arguments avoid xargs -I size limits and
+    # interpreting filenames as shell code. The subshell confines cleanup to this step.
+    shellcheck_tmp=$(mktemp -d) || exit 1
+    trap 'rm -rf "$shellcheck_tmp"' 0
+    trap 'exit 1' 1 2 3 15
+    git ls-files -z > "$shellcheck_tmp/tracked" || {
+      echo "etymd: cannot enumerate tracked files for shellcheck" >&2
       exit 1
     }
-    # Everything below the blocking bar, shown once the push is already cleared. Never affects
-    # the exit code — advice that can fail a push is not advice.
-    advice=$(printf '%s\n' "$scripts" | xargs shellcheck -S style -f gcc 2>/dev/null \
-      | grep -v ': warning:\|: error:' || true)
-    if [ -n "$advice" ]; then
-      echo "  · style/info (not blocking):"
-      printf '%s\n' "$advice" | sed 's/^/    /'
+    : > "$shellcheck_tmp/scripts" && : > "$shellcheck_tmp/count" && : > "$shellcheck_tmp/zsh-count" || exit 1
+    xargs -0 sh -c '
+      work=$1
+      shift
+      for file do
+        head -n 1 "./$file" > "$work/first-line" || exit 1
+        if grep -qE "^#!.*[/ ](ba|da)?sh( |$)" "$work/first-line"; then
+          printf "./%s\0" "$file" >> "$work/scripts" || exit 1
+          printf . >> "$work/count" || exit 1
+        else
+          [ "$?" -eq 1 ] || exit 1
+          if grep -qE "^#!.*[/ ]zsh( |$)" "$work/first-line"; then
+            printf . >> "$work/zsh-count" || exit 1
+          else
+            [ "$?" -eq 1 ] || exit 1
+          fi
+        fi
+      done
+    ' sh "$shellcheck_tmp" < "$shellcheck_tmp/tracked" || {
+      echo "etymd: shell script discovery failed; shellcheck coverage is incomplete" >&2
+      exit 1
+    }
+    count=$(wc -c < "$shellcheck_tmp/count") || exit 1
+    zsh_count=$(wc -c < "$shellcheck_tmp/zsh-count") || exit 1
+    if [ "$zsh_count" -gt 0 ]; then
+      echo "› shellcheck: $((zsh_count)) zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
     fi
-  fi
+    if [ "$count" -gt 0 ]; then
+      echo "› shellcheck ($((count)) scripts, blocking at severity=warning)"
+      xargs -0 shellcheck -S warning -- < "$shellcheck_tmp/scripts" || {
+        echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
+        exit 1
+      }
+      # Everything below the blocking bar, shown once the push is already cleared. Never affects
+      # the exit code — advice that can fail a push is not advice.
+      advice=$(xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/scripts" 2>/dev/null \
+        | grep -v ': warning:\|: error:' || true)
+      if [ -n "$advice" ]; then
+        echo "  · style/info (not blocking):"
+        printf '%s\n' "$advice" | sed 's/^/    /'
+      fi
+    fi
+  ) || exit 1
 else
   echo "› shellcheck skipped (not on PATH) — install it to gate this repo's shell scripts"
 fi
@@ -80,4 +112,4 @@ if [ -x "$GATE" ]; then
 fi
 
 exit 0
-# etymd:generated pack-v12 06afa443ef89caff
+# etymd:generated pack-v13 c7f508134bcd6aec

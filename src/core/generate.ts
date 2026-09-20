@@ -27,6 +27,9 @@ export function derivedCommands(facts: ProjectFacts, existingHook?: string): str
   const base = [c.formatCheck, c.typecheck, c.lint].filter(
     (k): k is string => Boolean(k) && isSafeGateCommand(c.raw[k as string]),
   )
+  // The scan sees the WHOLE hook file, comments included, so generated hook text must never
+  // contain a script key as a bare word — a comment saying "a pinned test command" would wire
+  // `test` into every regeneration ("tests" is safe: no boundary after the key).
   if (c.test && existingHook && new RegExp(`\\b${c.test}\\b`).test(existingHook)) {
     base.push(c.test)
   }
