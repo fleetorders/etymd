@@ -15,7 +15,7 @@ standard — this file is audited by the tool itself, so every claim below must 
 **The truth guard for agent instructions**, distributed as the npm package `etymd` (from
 Greek _étymon_, a word's true sense, + the `.md` family it guards). One objective: **keep your
 agent instructions true** — an instruction being anything told to an agent, in a file or in the
-prompt (decision 010). It verifies the agent context layer (AGENTS.md, CLAUDE.md, rules,
+prompt (decision 010). It verifies the agent context layer (AGENTS.md, Claude Code instruction files, rules,
 skills) and, on request, the task an agent is handed, against the actual repo — command claims, path claims, consistency, CI↔local gate parity,
 context economy — with drift measured against a committed baseline and a regression ledger.
 Distilled from a frontrunner project workflow, validated against a sibling-repo corpus
