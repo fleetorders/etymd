@@ -1,5 +1,42 @@
 # etymd
 
+## 0.19.0
+
+### Minor Changes
+
+- 29c7b31: The Claude Code pointer check follows Claude Code 2.1.277, which reads `AGENTS.md` when a
+  directory has no `CLAUDE.md`. A repo with `AGENTS.md` alone now passes and `fleet add` registers
+  it; it is reported (`claude-pointer-missing`, tier gap) only when the installed Claude Code is
+  older than 2.1.277, and `fleet add` prints a note instead of refusing. A `CLAUDE.md` that exists
+  without importing `@AGENTS.md` stays a risk and a refusal, because Claude Code reads that file
+  instead on every version. The version is read from `claude --version`; `ETYMD_CLAUDE_VERSION`
+  pins it, and `none` means no Claude Code on the machine.
+
+### Patch Changes
+
+- 3dd2683: Dependency advisories cleared inside the declared ranges. `vitest` 4.1.10 → 4.1.11 closes
+  GHSA-82fw-gwwq-j7x9 (moderate: path traversal / arbitrary file read through the `@vitest/mocker`
+  redirect mock), and `js-yaml` 4.3.1 → 4.3.2 with its transitive 3.15.1 → 3.15.2 closes
+  GHSA-2883-xcg3-v3hh (high: `maxTotalMergeKeys` does not limit CPU use for empty merge sources).
+  Both are dev-only — the test runner and the changeset tooling — so the published build is
+  byte-identical; the lockfile also picks up the range-satisfying refresh those two pull in.
+
+  One advisory stays open, and deliberately: GHSA-g7r4-m6w7-qqqr (low: `esbuild` allows an arbitrary
+  file read when its development server runs on Windows) is fixed in esbuild 0.28.1, while `tsup`
+  8.5.1 — the newest release — declares `esbuild: ^0.27.0`, so no in-range version of esbuild carries
+  the fix. The only automatic fix on offer is a downgrade to esbuild 0.27.2, which gives up five
+  patch releases to dodge a dev-server path this repo never takes: the build runs tsup, never an
+  esbuild server. It clears once tsup widens its range.
+
+- 7d4e81f: `core.hooksPath` is read the way git reads it: a repo-relative path, an absolute path and a `~`
+  path can all name one directory, and the directory is the fact. An absolute path to the tracked
+  `.githooks/` now scans as `githooks` (wired) instead of `custom`, and the hooks are read from the
+  directory git actually runs — the literal-string comparison had also joined the absolute path
+  onto the repo root and looked for hooks at a path that does not exist, so a working pre-push gate
+  could read as absent. The fact is recorded repo-relative whenever the directory sits inside the
+  worktree, so a committed baseline never carries a machine path; a hooks directory outside the
+  repo stays absolute and is disclosed as `custom`.
+
 ## 0.18.0
 
 ### Minor Changes
