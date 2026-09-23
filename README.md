@@ -521,9 +521,10 @@ Two fields the scan can never derive, so the manifest must declare them:
 `etymd fleet add <dir>` is the gate that keeps both true: it scans the project, prompts for what
 no scan can derive, and **refuses to write an incomplete entry**. Non-interactive runs (`--yes`,
 CI) must pass every mandatory value as a flag — there is deliberately no default. It also refuses
-a repo whose instructions live only in `AGENTS.md`: Claude Code auto-discovers `CLAUDE.md` and
-never loads `AGENTS.md`, so registration wants a pointer (`CLAUDE.md` importing `@AGENTS.md`, or
-either file symlinked to the other) — the refusal prints the exact file to create.
+a repo whose `CLAUDE.md` hides its `AGENTS.md`: Claude Code reads `CLAUDE.md` when one exists and
+falls back to `AGENTS.md` (from 2.1.277) only when none does, so a `CLAUDE.md` must import
+`@AGENTS.md` or be a symlink to it — the refusal prints the fix. A repo with `AGENTS.md` alone
+registers; on a Claude Code older than 2.1.277 it gets a note, since that version cannot see it.
 
 How the sweep behaves:
 
