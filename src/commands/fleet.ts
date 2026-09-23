@@ -412,17 +412,23 @@ export async function add(opts: FleetAddCmdOptions): Promise<void> {
     throw new Error(`\`${name}\` is already registered — resolution is keyed by name`)
   }
 
-  // The pointer contract, refused at the door: Claude Code auto-discovers CLAUDE.md and follows
-  // its @ imports but never loads AGENTS.md, so a repo whose contract lives only there is read by
-  // every other harness and silently skipped by this one. The fleet would then sweep a repo
-  // whose instructions one whole agent never receives — registered coverage that isn't.
+  // The pointer contract, refused at the door: Claude Code reads CLAUDE.md when one exists and
+  // falls back to AGENTS.md only when none does, so a CLAUDE.md that never imports AGENTS.md
+  // hides the contract from it on every version. The fleet would then sweep a repo whose
+  // instructions one whole agent never receives — registered coverage that isn't. A bare
+  // AGENTS.md is only a problem for a Claude Code older than the fallback: noted, not refused.
   const pointer = await checkClaudePointer(absTarget)
-  if (!pointer.ok) {
+  if (!pointer.ok && pointer.kind === "no-import") {
     throw new Error(
-      `\`${name}\` keeps its agent instructions in AGENTS.md, which Claude Code never loads ` +
-        `(${pointer.detail}). Create a CLAUDE.md beside it with exactly:\n\n` +
+      `\`${name}\` has a CLAUDE.md that hides its AGENTS.md from Claude Code ` +
+        `(${pointer.detail}). Add a full-line \`@AGENTS.md\` import to it, e.g.:\n\n` +
         `${generateClaudePointerMd().trimEnd().split("\n").join("\n")}\n\n` +
-        `— or symlink either file to the other — then re-run \`etymd fleet add\`.`,
+        `— or symlink either file to the other, or delete the CLAUDE.md — then re-run \`etymd fleet add\`.`,
+    )
+  }
+  if (!pointer.ok) {
+    print(
+      `  ${theme.warn("note")} ${pointer.detail}. Update Claude Code, or add a CLAUDE.md containing \`@AGENTS.md\`.`,
     )
   }
 

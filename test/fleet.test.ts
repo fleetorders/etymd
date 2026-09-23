@@ -7,7 +7,7 @@ import { promisify } from "node:util"
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { checkClaudePointer } from "../src/core/detect.js"
+import { CLAUDE_AGENTS_FALLBACK_VERSION, checkClaudePointer } from "../src/core/detect.js"
 import { loadFleetManifest } from "../src/core/fleet.js"
 import { readConfig } from "../src/core/config.js"
 import { planWorkflow } from "../src/core/generate.js"
@@ -38,6 +38,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await fs.rm(dir, { recursive: true, force: true })
 })
 
@@ -778,7 +779,14 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
 
   // Every row of the contract. Pass rows name the `via` that must be reported; fail rows are
   // the shapes `fleet add` refuses and the sweep reports as `claude-pointer-missing`.
-  const rows: { name: string; build: (root: string) => Promise<void>; via?: string }[] = [
+  // `version` is the Claude Code reading the repo; rows that leave it out read as current.
+  const rows: {
+    name: string
+    build: (root: string) => Promise<void>
+    version?: string | null
+    via?: string
+    kind?: string
+  }[] = [
     {
       name: "no AGENTS.md at all",
       build: async () => {},
@@ -826,10 +834,36 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
       via: "dotclaude-import",
     },
     {
-      name: "bare AGENTS.md, no CLAUDE.md",
+      name: "bare AGENTS.md, no CLAUDE.md, current Claude Code",
       build: async (root) => {
         await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
       },
+      via: "native-fallback",
+    },
+    {
+      name: "bare AGENTS.md, no Claude Code on the machine",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+      },
+      version: null,
+      via: "native-fallback",
+    },
+    {
+      name: "bare AGENTS.md, Claude Code older than the fallback",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+      },
+      version: "2.1.276",
+      kind: "old-reader",
+    },
+    {
+      name: ".claude/CLAUDE.md without the import shadows AGENTS.md",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.mkdir(path.join(root, ".claude"), { recursive: true })
+        await fs.writeFile(path.join(root, ".claude", "CLAUDE.md"), "own content\n", "utf8")
+      },
+      kind: "no-import",
     },
     {
       name: "CLAUDE.md exists but never imports AGENTS.md",
@@ -837,6 +871,7 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
         await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
         await fs.writeFile(path.join(root, "CLAUDE.md"), "# CLAUDE.md\n\nown content\n", "utf8")
       },
+      kind: "no-import",
     },
     {
       name: "AGENTS.md symlinked elsewhere, no pointer",
@@ -845,6 +880,8 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
         await fs.writeFile(path.join(root, "docs", "policy.md"), AGENTS, "utf8")
         await fs.symlink("docs/policy.md", path.join(root, "AGENTS.md"))
       },
+      version: "2.0.0",
+      kind: "old-reader",
     },
     {
       name: "an inline mention is not an import",
@@ -856,6 +893,7 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
           "utf8",
         )
       },
+      kind: "no-import",
     },
   ]
 
@@ -863,21 +901,41 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
     for (const [i, row] of rows.entries()) {
       const root = await fixture(`row-${i}`)
       await row.build(root)
-      const result = await checkClaudePointer(root)
+      const version = row.version === undefined ? CLAUDE_AGENTS_FALLBACK_VERSION : row.version
+      const result = await checkClaudePointer(root, version)
       if (row.via) expect(result, row.name).toEqual({ ok: true, via: row.via })
-      else expect(result, row.name).toMatchObject({ ok: false })
+      else expect(result, row.name).toMatchObject({ ok: false, kind: row.kind })
     }
   })
 
-  it("the sweep's wall reports claude-pointer-missing for a bare AGENTS.md repo", async () => {
-    await initRepo("bare-contract")
-    await write("bare-contract/AGENTS.md", AGENTS)
-    const manifestPath = await writeHub([personal("bare-contract")])
+  it("the sweep's wall reports a CLAUDE.md that never imports AGENTS.md as a risk", async () => {
+    vi.stubEnv("ETYMD_CLAUDE_VERSION", CLAUDE_AGENTS_FALLBACK_VERSION)
+    await initRepo("shadowed")
+    await write("shadowed/AGENTS.md", AGENTS)
+    await write("shadowed/CLAUDE.md", "# CLAUDE.md\n\nown content\n")
+    const manifestPath = await writeHub([personal("shadowed")])
     const { findings } = await collectWallFindings(await manifestAt(manifestPath))
-    const hit = findings.find((f) => f.id === "fleet-manifest/claude-pointer-missing:bare-contract")
+    const hit = findings.find((f) => f.id === "fleet-manifest/claude-pointer-missing:shadowed")
     expect(hit).toBeDefined()
     expect(hit?.tier).toBe("risk")
     expect(hit?.action).toContain("@AGENTS.md")
+  })
+
+  it("a bare AGENTS.md is a gap only for a Claude Code older than the fallback", async () => {
+    await initRepo("bare-contract")
+    await write("bare-contract/AGENTS.md", AGENTS)
+    const manifestPath = await writeHub([personal("bare-contract")])
+
+    vi.stubEnv("ETYMD_CLAUDE_VERSION", "2.1.276")
+    const old = await collectWallFindings(await manifestAt(manifestPath))
+    const hit = old.findings.find(
+      (f) => f.id === "fleet-manifest/claude-pointer-missing:bare-contract",
+    )
+    expect(hit?.tier).toBe("gap")
+
+    vi.stubEnv("ETYMD_CLAUDE_VERSION", CLAUDE_AGENTS_FALLBACK_VERSION)
+    const current = await collectWallFindings(await manifestAt(manifestPath))
+    expect(current.findings.some((f) => f.id.includes("claude-pointer-missing"))).toBe(false)
   })
 
   it("emits nothing for the passing shapes — pointer, symlink, and no-contract repos", async () => {
@@ -891,6 +949,7 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
   })
 
   it('contract.placement "none" does not exempt a repo that HAS an AGENTS.md', async () => {
+    vi.stubEnv("ETYMD_CLAUDE_VERSION", "2.1.276")
     // The declaration covers instruction files legitimately ABSENT — not one a whole harness
     // cannot see. A pointer-exempt reading would let the declaration quiet a truth finding.
     await initRepo("declared-none")
@@ -904,15 +963,31 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
     ).toBe(true)
   })
 
-  it("`fleet add` refuses a bare-AGENTS.md repo naming the fix, and writes nothing", async () => {
+  it("`fleet add` refuses a CLAUDE.md that hides AGENTS.md, naming the fix, and writes nothing", async () => {
     await initRepo("wants-in")
     await write("wants-in/AGENTS.md", AGENTS)
+    await write("wants-in/CLAUDE.md", "# CLAUDE.md\n\nown content\n")
     const manifestPath = await writeHub([])
     await expect(
       add({ cwd: path.dirname(manifestPath), target: path.join(dir, "wants-in"), yes: true }),
-    ).rejects.toThrow(/which Claude Code never loads/)
+    ).rejects.toThrow(/hides its AGENTS.md from Claude Code/)
     const after = JSON.parse(await fs.readFile(manifestPath, "utf8")) as { projects: unknown[] }
     expect(after.projects).toEqual([])
+  })
+
+  it("`fleet add` registers a bare-AGENTS.md repo, noting an old Claude Code rather than refusing", async () => {
+    vi.stubEnv("ETYMD_CLAUDE_VERSION", "2.1.276")
+    await initRepo("bare-in")
+    await write("bare-in/AGENTS.md", AGENTS)
+    const manifestPath = await writeHub([])
+    await add({
+      cwd: path.dirname(manifestPath),
+      target: path.join(dir, "bare-in"),
+      trust: "private",
+      yes: true,
+    })
+    const after = JSON.parse(await fs.readFile(manifestPath, "utf8")) as { projects: unknown[] }
+    expect(after.projects).toHaveLength(1)
   })
 
   it("`fleet add` registers a repo whose pointer satisfies the contract", async () => {
@@ -1041,9 +1116,10 @@ describe.skipIf(!existsSync(CLI))("fleet CLI wiring (built binary)", () => {
     ).rejects.toThrow(/already registered/)
   })
 
-  it("PINNED: `fleet add` on a bare-AGENTS.md repo exits non-zero and prints the pointer to create", async () => {
+  it("PINNED: `fleet add` on a repo whose CLAUDE.md hides AGENTS.md exits non-zero and prints the import", async () => {
     await initRepo("blind")
     await write("blind/AGENTS.md", "# AGENTS.md\n\nthe contract\n")
+    await write("blind/CLAUDE.md", "# CLAUDE.md\n\nown content\n")
     const manifestPath = await writeHub([])
     // A non-zero exit rejects the exec; the thrown error carries the CLI's stderr, which must
     // name the reason AND the fix — the exact file body, import line included.
@@ -1055,7 +1131,7 @@ describe.skipIf(!existsSync(CLI))("fleet CLI wiring (built binary)", () => {
           cwd: dir,
         },
       ),
-    ).rejects.toThrow(/which Claude Code never loads[\s\S]*@AGENTS\.md/)
+    ).rejects.toThrow(/hides its AGENTS\.md from Claude Code[\s\S]*@AGENTS\.md/)
     const after = JSON.parse(await fs.readFile(manifestPath, "utf8")) as { projects: unknown[] }
     expect(after.projects).toEqual([])
   })
@@ -1075,7 +1151,7 @@ describe.skipIf(!existsSync(CLI))("fleet CLI wiring (built binary)", () => {
     const { stdout } = await pExecFile(
       "node",
       [CLI, "fleet", "--json", "--manifest", manifestPath],
-      { cwd: dir },
+      { cwd: dir, env: { ...process.env, ETYMD_CLAUDE_VERSION: "2.1.276" } },
     )
     const parsed = JSON.parse(stdout) as { wall: { id: string }[] }
     const pointerIds = parsed.wall
