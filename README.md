@@ -174,7 +174,7 @@ personal and guarded repos. See [the fleet manifest](#the-fleet-manifest-experim
 | Command                          | What it does                                                                                                                                                                                                                                                        |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `etymd audit`                    | Verify every claim; ranked findings (risk → gap → polish) + ledger diff. `--lens`, `--truth`, `--json`, `--no-ledger`, `--fail-on <tier>`.                                                                                                                          |
-| `etymd init`                     | Onboard: approve the committed baseline; scaffold a minimal AGENTS.md **only if missing**, with its `CLAUDE.md` pointer. Never overwrites.                                                                                                                          |
+| `etymd init`                     | Onboard: approve the committed baseline; scaffold a minimal AGENTS.md **only if missing**, with its `CLAUDE.md` pointer **where the local reader needs one** (Claude Code ≥ 2.1.277 reads `AGENTS.md` itself). Never overwrites.                                    |
 | `etymd doctor`                   | Alias for `audit --truth`.                                                                                                                                                                                                                                          |
 | `etymd context`                  | The economy view: per-file always-loaded footprint + extraction candidates.                                                                                                                                                                                         |
 | `etymd gates`                    | Install local git-hook gates (pre-commit / commit-msg / pre-push, plus a publish screen where something ships) built from your own check scripts — and from the repo's shell surface, where it has one.                                                             |
@@ -548,8 +548,10 @@ How the sweep behaves:
   under the fleet root whose remotes match `guardedHosts`, tracked `/Users/` paths in the manifest
   repo, private **needles** — the identifiers the local file holds (labels, dir names, hosts) —
   inside `trust: "public-repo"` entries, guarded-host commit emails on personal entries, and
-  repos whose `AGENTS.md` no `CLAUDE.md` pointer or symlink makes visible to Claude Code
-  (`claude-pointer-missing`) — each a risk finding; each check that cannot run is disclosed.
+  repos whose `AGENTS.md` Claude Code cannot see (`claude-pointer-missing`: a risk when a
+  `CLAUDE.md` shadows it, a gap when there is none and the installed Claude Code predates the
+  2.1.277 `AGENTS.md` fallback, `ETYMD_CLAUDE_VERSION` pins the version checked) — each check
+  that cannot run is disclosed.
 - **No global pointer.** `--manifest` is required unless the cwd holds `registry.json` — there
   is deliberately no env var and no home-directory pointer.
 - **Milestones and the fleet board.** A project declares its plan in one file — `MILESTONES.md`,

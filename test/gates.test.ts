@@ -206,7 +206,7 @@ require("node:fs").appendFileSync("shellcheck.jsonl", JSON.stringify(process.arg
     },
   )
 
-  it("passes whitespace, quotes and leading hyphens unchanged to both checker passes", async () => {
+  it("passes whitespace, quotes and leading hyphens unchanged to the checker", async () => {
     const names = [
       "-leading",
       "tools/a 'single' \"double\" $(false) `false`",
@@ -221,15 +221,16 @@ require("node:fs").appendFileSync("shellcheck.jsonl", JSON.stringify(process.arg
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as string[])
-    expect(calls).toHaveLength(2)
-    for (const args of calls) {
-      // ./ also prevents a filename from being interpreted as an option by the checker.
-      expect(args.filter((arg) => arg.startsWith("./")).sort()).toEqual(
-        [...names, "scripts/run"].map((name) => `./${name}`).sort(),
-      )
-    }
-    expect(calls[0]).toContain("warning")
-    expect(calls[1]).toContain("style")
+    // One invocation carries every name (was two: a blocking pass, then the same files again
+    // for advice) — the verdict and the advice come from the same run now.
+    expect(calls).toHaveLength(1)
+    const only = calls[0] as string[]
+    expect(only).toContain("style")
+    expect(only).toContain("gcc")
+    // ./ also prevents a filename from being interpreted as an option by the checker.
+    expect(only.filter((arg) => arg.startsWith("./")).sort()).toEqual(
+      [...names, "scripts/run"].map((name) => `./${name}`).sort(),
+    )
   })
 
   it("PINNED: a tracked name carrying $(…) reaches the scan as data, never as code", async () => {
@@ -371,6 +372,69 @@ exit 23
     for (const args of calls) {
       expect(args).not.toContain("./docs/example.md")
     }
+  })
+
+  it.skipIf(!hasShellcheck)(
+    "one run is both verdict and advice: a warning blocks, a style note does not",
+    async () => {
+      await write("scripts/warn", "#!/bin/sh\nnever_used=1\necho ok\n")
+      await write("scripts/style", '#!/bin/sh\nx=`date`\necho "$x"\n')
+      const env = await fixture()
+
+      const failure = await pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env }).then(
+        () => {
+          throw new Error("expected the warning to block the push")
+        },
+        (error) => error,
+      )
+      expect(failure.code).toBe(1)
+      // The blocking verdict names its finding; the advice block is never reached, so the
+      // verdict is not reprinted below the bar it already enforced.
+      expect(failure.stdout).toContain("SC2034")
+      expect(failure.stdout).not.toContain("style/info (not blocking)")
+    },
+  )
+
+  it.skipIf(!hasShellcheck)(
+    "a style-only script passes the push and keeps its advice",
+    async () => {
+      await write("scripts/style", '#!/bin/sh\nx=`date`\necho "$x"\n')
+      const env = await fixture()
+
+      const { stdout } = await pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env })
+      expect(stdout).toContain("style/info (not blocking)")
+      expect(stdout).toMatch(/SC\d{4}/)
+    },
+  )
+
+  it("a shebang-only file with no trailing newline is still a script", async () => {
+    // The first-line read must yield the partial line even without its newline — a
+    // final-line-only shebang is a script like any other, not a silent coverage hole.
+    await write("scripts/eol-less", "#!/bin/sh")
+    const env = await fixture()
+    await recordShellcheck()
+
+    await pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env })
+    const calls = (await fs.readFile(path.join(dir, "shellcheck.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[])
+    expect(calls.length).toBeGreaterThan(0)
+    for (const args of calls) expect(args).toContain("./scripts/eol-less")
+  })
+
+  it("stays quiet when the tracked set has no shell scripts at all", async () => {
+    // The step exists (the repo had a shell surface at gates time); an empty discovered set
+    // prints nothing rather than inventing a verdict, and the checker is never invoked.
+    const env = await fixture()
+    await recordShellcheck()
+    await fs.unlink(path.join(dir, "scripts/run"))
+    await pExecFile("git", ["rm", "-q", "--cached", "scripts/run"], { cwd: dir })
+
+    const { stdout } = await pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env })
+    expect(stdout).not.toContain("shellcheck (")
+    expect(stdout).not.toContain("style/info")
+    expect(existsSync(path.join(dir, "shellcheck.jsonl"))).toBe(false)
   })
 })
 
@@ -640,3 +704,75 @@ describe.skipIf(!existsSync(CLI))(
     })
   },
 )
+
+describe.skipIf(!existsSync(CLI))("etymd gates — a set-but-unusable override says so", () => {
+  /** Deterministic doors: no ambient etymd, no shell surface — only the override under test. */
+  async function bareFixture() {
+    await write("package.json", JSON.stringify({ name: "demo", private: true }) + "\n")
+    await write("AGENTS.md", "# AGENTS.md\n")
+    await pExecFile("git", ["add", "."], { cwd: dir })
+    await gates()
+  }
+
+  it("pre-push: CONTENT_GATE naming a missing path is announced on stderr, not silent", async () => {
+    await bareFixture()
+
+    const env = { ...process.env, CONTENT_GATE: path.join(dir, "no-such-checker") }
+    const { stderr } = await pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env })
+    expect(stderr).toContain("pre-push: CONTENT_GATE is set but not usable")
+    expect(stderr).toContain("no-such-checker")
+  })
+
+  it("pre-commit and commit-msg announce their broken overrides too", async () => {
+    await bareFixture()
+
+    const staged = { ...process.env, CONTENT_GATE: path.join(dir, "no-such-checker") }
+    const { stderr: pcErr } = await pExecFile("sh", [".githooks/pre-commit"], {
+      cwd: dir,
+      env: staged,
+    })
+    expect(pcErr).toContain("pre-commit: CONTENT_GATE is set but not usable")
+
+    const msg = path.join(dir, "msg.txt")
+    await fs.writeFile(msg, "chore: gate\n", "utf8")
+    const msgEnv = { ...process.env, COMMIT_MSG_GATE: path.join(dir, "no-such-checker") }
+    const { stderr: cmErr } = await pExecFile("sh", [".githooks/commit-msg", msg], {
+      cwd: dir,
+      env: msgEnv,
+    })
+    expect(cmErr).toContain("commit-msg: COMMIT_MSG_GATE is set but not usable")
+  })
+
+  it("an unset gate stays a silent no-op — the line is for misconfiguration, not absence", async () => {
+    await bareFixture()
+
+    const { stderr } = await pExecFile("sh", [".githooks/pre-push"], { cwd: dir })
+    expect(stderr).not.toContain("is set but not usable")
+  })
+})
+
+describe.skipIf(!existsSync(CLI))("etymd gates — the hooks README", () => {
+  it("writes .githooks/README.md saying how git reaches the hooks", async () => {
+    await write("package.json", JSON.stringify({ name: "demo", private: true }) + "\n")
+    await write("AGENTS.md", "# AGENTS.md\n")
+    await pExecFile("git", ["add", "."], { cwd: dir })
+
+    await gates()
+    const readme = await fs.readFile(path.join(dir, ".githooks/README.md"), "utf8")
+    expect(readme).toContain("core.hooksPath")
+    expect(readme).toContain("machine-local")
+    // Pack-owned and stamped, so regeneration can tell its own file from a stranger's.
+    expect(readme).toContain("etymd:generated")
+  })
+
+  it("keeps a hand-written README — unstamped files are never clobbered", async () => {
+    await write("package.json", JSON.stringify({ name: "demo", private: true }) + "\n")
+    await write("AGENTS.md", "# AGENTS.md\n")
+    await write(".githooks/README.md", "# Our hooks\n")
+    await pExecFile("git", ["add", "."], { cwd: dir })
+
+    await gates()
+    const readme = await fs.readFile(path.join(dir, ".githooks/README.md"), "utf8")
+    expect(readme).toBe("# Our hooks\n")
+  })
+})

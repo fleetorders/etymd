@@ -1,4 +1,13 @@
 {
   "version": 1,
-  "entries": []
+  "entries": [
+    {
+      "id": "instruction-truth/artifact-gone-claude",
+      "status": "done",
+      "tier": "gap",
+      "claim": "CLAUDE.md (Claude Code pointer) was present at baseline but is now missing",
+      "firstSeen": "2026-09-24T11:01:04.045Z",
+      "lastSeen": "2026-09-24T11:01:22.790Z"
+    }
+  ]
 }

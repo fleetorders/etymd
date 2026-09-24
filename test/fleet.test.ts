@@ -857,6 +857,22 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
       kind: "old-reader",
     },
     {
+      name: "bare AGENTS.md, prerelease Claude Code older than the fallback",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+      },
+      version: "2.1.276-beta.4",
+      kind: "old-reader",
+    },
+    {
+      name: "bare AGENTS.md, a version string that is not a version",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+      },
+      version: "latest",
+      kind: "undetermined",
+    },
+    {
       name: ".claude/CLAUDE.md without the import shadows AGENTS.md",
       build: async (root) => {
         await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
@@ -938,6 +954,19 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
     expect(current.findings.some((f) => f.id.includes("claude-pointer-missing"))).toBe(false)
   })
 
+  it("a version that cannot be established is disclosed, never counted as clean", async () => {
+    await initRepo("unknowable")
+    await write("unknowable/AGENTS.md", AGENTS)
+    const manifestPath = await writeHub([personal("unknowable")])
+
+    vi.stubEnv("ETYMD_CLAUDE_VERSION", "latest")
+    const { findings, disclosures } = await collectWallFindings(await manifestAt(manifestPath))
+    expect(findings.some((f) => f.id.includes("claude-pointer-missing"))).toBe(false)
+    expect(
+      disclosures.some((d) => d.includes("unknowable") && d.includes("ETYMD_CLAUDE_VERSION")),
+    ).toBe(true)
+  })
+
   it("emits nothing for the passing shapes — pointer, symlink, and no-contract repos", async () => {
     await initRepo("pointed")
     await write("pointed/AGENTS.md", AGENTS)
@@ -983,6 +1012,21 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
     await add({
       cwd: path.dirname(manifestPath),
       target: path.join(dir, "bare-in"),
+      trust: "private",
+      yes: true,
+    })
+    const after = JSON.parse(await fs.readFile(manifestPath, "utf8")) as { projects: unknown[] }
+    expect(after.projects).toHaveLength(1)
+  })
+
+  it("`fleet add` registers under an undetermined version pin too — the note pins it, nothing refuses", async () => {
+    vi.stubEnv("ETYMD_CLAUDE_VERSION", "latest")
+    await initRepo("pinned-wrong")
+    await write("pinned-wrong/AGENTS.md", AGENTS)
+    const manifestPath = await writeHub([])
+    await add({
+      cwd: path.dirname(manifestPath),
+      target: path.join(dir, "pinned-wrong"),
       trust: "private",
       yes: true,
     })

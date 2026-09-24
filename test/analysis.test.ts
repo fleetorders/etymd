@@ -130,6 +130,7 @@ describe("planWorkflow", () => {
       ".githooks/pre-commit",
       ".githooks/commit-msg",
       ".githooks/pre-push",
+      ".githooks/README.md",
     ])
     expect(plan.every((p) => p.exists === false)).toBe(true)
   })
@@ -619,7 +620,7 @@ describe("preservation is a property of generation, not of the command", () => {
 describe("shell correctness gate — the surface package.json cannot see", () => {
   it("writes a shellcheck step for a repo with a shell surface", () => {
     const hook = generatePrePushHook(facts({ shell: { scripts: 12 } }))
-    expect(hook).toContain("shellcheck -S warning")
+    expect(hook).toContain("shellcheck -S style -f gcc")
     // Discovery happens IN the hook, at push time. A baked-in file list is correct the day it
     // is generated and silently wrong the first time someone adds a script.
     expect(hook).toContain("git ls-files")
@@ -631,7 +632,7 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
     // Step-precise marker: every hook now MENTIONS shellcheck (the scrub helper's disable
     // directive), so the bare word can no longer prove the step's presence or absence.
     expect(hook).not.toContain("command -v shellcheck")
-    expect(hook).not.toContain("shellcheck -S warning")
+    expect(hook).not.toContain("shellcheck -S style -f gcc")
   })
 
   it("treats an absent `shell` fact as not-measured, not as zero", () => {
@@ -639,7 +640,7 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
     // crash, and must not claim a surface it never looked for.
     const hook = generatePrePushHook(facts({ shell: undefined }))
     expect(hook).not.toContain("command -v shellcheck")
-    expect(hook).not.toContain("shellcheck -S warning")
+    expect(hook).not.toContain("shellcheck -S style -f gcc")
   })
 
   it("PINNED: a missing shellcheck binary skips LOUDLY and never blocks", () => {
@@ -654,14 +655,13 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
     // A high false-positive gate does not make a repo careful — it teaches --no-verify, and that
     // flag is shared with the content screen, which must never be bypassed.
     const hook = generatePrePushHook(facts({ shell: { scripts: 3 } }))
-    // Only the warning pass may end the push. Asserting style is never MENTIONED pins the wrong
-    // property — and did: it is what let 0.4.0 ship with the advisory pass missing entirely,
-    // while the docs promised it.
-    // The warning pass is the only one wired to a failure branch...
-    expect(hook).toMatch(/-S warning[^\n]* \|\| \{[^}]*exit 1/)
-    // ...while the style pass is captured into a variable and explicitly tolerated with
-    // `|| true`, so it has no path to the exit code at all.
-    expect(hook).toMatch(/advice=\$\([\s\S]*?-S style[\s\S]*?\|\| true\)/)
+    // One run at the widest severity produces verdict and advice together; only its
+    // error/warning lines are wired to a failure branch...
+    expect(hook).toMatch(/blocking=\$\([\s\S]*?grep -E ':\[0-9\]\+:\[0-9\]\+: \(warning\|error\):'/)
+    expect(hook).toMatch(/\[ -n "\$blocking" \][\s\S]*?exit 1/)
+    // ...while the advice is derived by EXCLUDING those severities and explicitly tolerated
+    // with `|| true`, so it has no path to the exit code at all.
+    expect(hook).toMatch(/advice=\$\([\s\S]*?grep -Ev[\s\S]*?\|\| true\)/)
   })
 
   it("stops claiming 'no correctness commands detected' when shell IS the surface", () => {
@@ -687,19 +687,20 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
 })
 
 describe("shell gate — sub-warning findings are shown, never enforced", () => {
-  it("emits an advisory pass, and it cannot change the exit code", () => {
+  it("emits the advice, and it cannot change the exit code", () => {
     // The published 0.4.0 documented this and did not do it: style findings were discarded
     // entirely. A doc claiming behaviour the code lacks is the exact defect etymd's own
     // instruction-truth lens exists to catch.
     const hook = generatePrePushHook(facts({ shell: { scripts: 5 } }))
     expect(hook).toContain("-S style")
     expect(hook).toContain("style/info (not blocking)")
-    // `|| true` keeps a failing advisory pass from leaking a non-zero status into the hook.
-    expect(hook).toMatch(/-S style[\s\S]*\|\| true/)
+    // The advice grep EXCLUDES the blocking severities and is explicitly tolerated with
+    // `|| true`, so a style finding has no route to a non-zero exit.
+    expect(hook).toMatch(/advice=\$\([\s\S]*?grep -Ev[\s\S]*?\|\| true\)/)
   })
 
-  it("orders the advisory pass AFTER the blocking one, so a real defect reports first", () => {
+  it("derives the advice after the verdict, so a real defect reports first", () => {
     const hook = generatePrePushHook(facts({ shell: { scripts: 5 } }))
-    expect(hook.indexOf("-S warning")).toBeLessThan(hook.indexOf("-S style"))
+    expect(hook.indexOf("blocking=$(printf")).toBeLessThan(hook.indexOf("advice=$(printf"))
   })
 })

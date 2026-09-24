@@ -739,16 +739,28 @@ async function checkGateDrift(
  * The pointer contract (`checkClaudePointer`, the one definition) must hold in every resolved
  * repo, or the repo believes every agent reads a contract Claude Code never receives. A
  * CLAUDE.md that does not import AGENTS.md hides it on every version (risk); a bare AGENTS.md
- * hides it only from a Claude Code older than the fallback (gap). Runs on every profile: guarded
- * worktrees are read here, never written. Not exempted by `contract.placement: "none"` — that
- * declares instruction files legitimately ABSENT, not present-but-invisible to a reader.
+ * hides it only from a Claude Code older than the fallback (gap); a version that could not be
+ * established is disclosed, never counted as clean. Runs on every profile: guarded worktrees
+ * are read here, never written. Not exempted by `contract.placement: "none"` — that declares
+ * instruction files legitimately ABSENT, not present-but-invisible to a reader.
  */
-async function checkClaudePointers(manifest: FleetManifest, findings: Finding[]): Promise<void> {
+async function checkClaudePointers(
+  manifest: FleetManifest,
+  findings: Finding[],
+  disclosures: string[],
+): Promise<void> {
   for (const entry of manifest.entries) {
     const root = entry.resolvedRoot
     if (!root || !(await isDirectory(root))) continue
     const check = await checkClaudePointer(root)
     if (check.ok) continue
+    if (check.kind === "undetermined") {
+      // A check that cannot run says so — undetermined, not clean.
+      disclosures.push(
+        `${entry.name}: ${check.detail}. Pin \`ETYMD_CLAUDE_VERSION\` (X.Y.Z, or "none") to make the check exact.`,
+      )
+      continue
+    }
     findings.push(
       check.kind === "no-import"
         ? finding(
@@ -783,7 +795,7 @@ export async function collectWallFindings(
   await checkHygieneNeedles(manifest, findings, disclosures)
   await checkGuardedEmails(manifest, findings, disclosures)
   await checkGateDrift(manifest, findings, disclosures)
-  await checkClaudePointers(manifest, findings)
+  await checkClaudePointers(manifest, findings, disclosures)
   return { findings, disclosures }
 }
 

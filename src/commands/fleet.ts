@@ -423,12 +423,14 @@ export async function add(opts: FleetAddCmdOptions): Promise<void> {
       `\`${name}\` has a CLAUDE.md that hides its AGENTS.md from Claude Code ` +
         `(${pointer.detail}). Add a full-line \`@AGENTS.md\` import to it, e.g.:\n\n` +
         `${generateClaudePointerMd().trimEnd().split("\n").join("\n")}\n\n` +
-        `— or symlink either file to the other, or delete the CLAUDE.md — then re-run \`etymd fleet add\`.`,
+        `— or symlink either file to the other, or delete the CLAUDE.md if AGENTS.md is the whole contract — then re-run \`etymd fleet add\`.`,
     )
   }
   if (!pointer.ok) {
     print(
-      `  ${theme.warn("note")} ${pointer.detail}. Update Claude Code, or add a CLAUDE.md containing \`@AGENTS.md\`.`,
+      pointer.kind === "undetermined"
+        ? `  ${theme.warn("note")} ${pointer.detail}. Pin \`ETYMD_CLAUDE_VERSION\` (X.Y.Z, or "none") to make the check exact.`
+        : `  ${theme.warn("note")} ${pointer.detail}. Update Claude Code, or add a CLAUDE.md containing \`@AGENTS.md\`.`,
     )
   }
 

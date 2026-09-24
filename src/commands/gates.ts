@@ -263,7 +263,10 @@ export async function run(opts: GatesOptions): Promise<void> {
       // the same flag the fleet's drift comparison passes, so both generate identical bytes.
       gateFailOnPinned: explicit.gatesFailOn,
     })
-    return files.filter((f) => f.executable)
+    // Executable hooks — plus anything else the pack owns under .githooks/ (the README saying
+    // how git reaches them): the filter exists to keep ONBOARDING scaffolding out of a gates
+    // regeneration, not to keep the pack's own directory partial.
+    return files.filter((f) => f.executable || f.path.startsWith(".githooks/"))
   }
   let gateFiles = await plan()
   renderPlan(gateFiles, { regeneratesStale: true })
