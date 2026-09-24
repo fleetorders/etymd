@@ -6,6 +6,7 @@ import {
   generateArtifactCheckScript,
   generateClaudePointerMd,
   generateCommitMsgHook,
+  generateHooksReadme,
   generatePreCommitHook,
   generatePrePushHook,
   generateShellDiscoveryScript,
@@ -249,6 +250,15 @@ export async function planWorkflow(
         true,
       )
     }
+    // The one fact a plain clone cannot recover from the files themselves: git reaches these
+    // hooks through a machine-local core.hooksPath, so on a fresh clone they sit inert until
+    // `etymd gates` runs again. Saying so beside the hooks turns "unreachable" into
+    // "uninstalled" for whoever reads the directory cold.
+    await add(
+      ".githooks/README.md",
+      generateHooksReadme(),
+      "How git reaches these hooks (core.hooksPath is machine-local)",
+    )
     // The publish door is only meaningful where something actually ships. A recorded answer
     // wins; otherwise fall back to the derivation. Note the derivation is a GUESS: npm treats a
     // missing `private` as publishable, which is right about npm's semantics and wrong about a

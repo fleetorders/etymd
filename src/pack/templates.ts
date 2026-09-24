@@ -297,6 +297,23 @@ function contentScreenCall(opts: {
 }
 
 /**
+ * The executable check around a screen door, with the honesty rule attached: set-but-unusable
+ * is a DIFFERENT silence from "no checker installed". An override naming a missing or
+ * non-executable path used to skip the door with no output at all — indistinguishable from
+ * the deliberate no-op of a machine with no checker, so a misconfigured override passed for a
+ * choice. One stderr line separates them; it says, it never blocks.
+ */
+function gateDoor(hook: string, envVar: string, what: string, inner: string): string {
+  return [
+    `if [ -x "$GATE" ]; then`,
+    inner,
+    `elif [ -n "\${${envVar}:-}" ]; then`,
+    `  echo "${hook}: ${envVar} is set but not usable: $GATE (${what} skipped)" >&2`,
+    `fi`,
+  ].join("\n")
+}
+
+/**
  * The seam between what the pack owns and what the repo owns.
  *
  * A generated file that cannot hold anything local forces a false choice: accept the pack and
@@ -338,9 +355,12 @@ ${localHookCall("pre-commit")}
 #
 # Bypass, with a reason: git commit --no-verify
 ${contentGateResolution(selfBuild)}
-if [ -x "$GATE" ]; then
-${contentScreenCall({ args: "--staged", envVar: "CONTENT_GATE", blocking: true, indent: "  " })}
-fi
+${gateDoor(
+  "pre-commit",
+  "CONTENT_GATE",
+  "staged screen",
+  contentScreenCall({ args: "--staged", envVar: "CONTENT_GATE", blocking: true, indent: "  " }),
+)}
 
 exit 0
 `)
@@ -423,14 +443,49 @@ export function generateCommitMsgHook(gates?: GateConfig): string {
 #
 # Bypass, with a reason: git commit --no-verify
 GATE="\${COMMIT_MSG_GATE:-$(command -v etymd || true)}"
-if [ -x "$GATE" ]; then
-${contentScreenCall({ args: '--message "$1"', envVar: "COMMIT_MSG_GATE", blocking: true, indent: "  " })}
-fi
+${gateDoor(
+  "commit-msg",
+  "COMMIT_MSG_GATE",
+  "message screen",
+  contentScreenCall({
+    args: '--message "$1"',
+    envVar: "COMMIT_MSG_GATE",
+    blocking: true,
+    indent: "  ",
+  }),
+)}
 ${format}
 ${localHookCall("commit-msg")}
 
 exit 0
 `)
+}
+
+/**
+ * How git reaches the gates at all — the one fact a plain clone cannot recover from the files
+ * themselves. `etymd gates` sets `core.hooksPath` to `.githooks`, and that setting lives in the
+ * machine's git config, not the repo: on a fresh clone the committed hooks sit inert and the
+ * push gate looks unreachable rather than uninstalled (observed in review). Markdown, stamped
+ * like the hooks so regeneration treats it as pack-owned; a hand-written README is kept like
+ * any other unstamped file.
+ */
+export function generateHooksReadme(): string {
+  return stampGenerated(
+    `# How git reaches these hooks
+
+Everything in this directory except this file and the \`*.local\` guards is etymd's generated
+gate pack (see the \`etymd:generated\` stamps at the end of each file). \`etymd gates\` installs
+the pack and points git at it by setting \`core.hooksPath\` to \`.githooks\` — that setting is
+machine-local, which is why git runs these hooks in this checkout and not in a plain clone;
+there they sit inert until \`etymd gates\` runs again or you set \`core.hooksPath\` by hand. Of
+the checks inside, only the \`screen\` calls need etymd — the shell correctness and audit
+checks in \`pre-push\` need nothing but their tools being on PATH. A later \`etymd gates\` run
+overwrites the generated hooks (it asks before clobbering hand-edited ones), so fixes to them
+belong upstream in etymd's pack; your own guards go in \`pre-push.local\`, \`pre-commit.local\`
+or \`commit-msg.local\`, which etymd never reads, writes or regenerates.
+`,
+    "md",
+  )
 }
 
 /**
@@ -523,7 +578,8 @@ done
  * with a high false-positive rate does not make a repo careful, it teaches everyone the bypass
  * flag — and the flag is shared with the gates that must never be bypassed. Discarding the
  * sub-warning findings instead of showing them would be the opposite mistake: the cheap ones are
- * how a script gets better between defects, and they cost one extra pass over files already read.
+ * how a script gets better between defects, and they ride along free: one run at the widest
+ * severity yields the verdict and the advice together.
  */
 function shellcheckStep(): string {
   return `
@@ -576,14 +632,32 @@ if command -v shellcheck >/dev/null 2>&1; then
     fi
     if [ "$count" -gt 0 ]; then
       echo "› shellcheck ($((count)) scripts, blocking at severity=warning)"
-      xargs -0 shellcheck -S warning -- < "$shellcheck_tmp/scripts" || {
+      # One run at the widest severity, gcc format (was two: a blocking pass, then the same
+      # scripts again for advice). The error/warning lines in the one output ARE the blocking
+      # verdict; every other line is the advice — one read of one run instead of two passes
+      # over files already read.
+      out=$(xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/scripts" 2> "$shellcheck_tmp/err")
+      sc_rc=$?
+      err=$(cat "$shellcheck_tmp/err")
+      blocking=$(printf '%s\\n' "$out" | grep -E ':[0-9]+:[0-9]+: (warning|error):' || true)
+      # xargs folds the checker's own exit status into 1 (BSD) or 123 (GNU), so findings and
+      # "the checker itself failed" can share a number; stderr separates them — and both block,
+      # exactly as a failed run of the old blocking pass always did.
+      if [ -n "$blocking" ] || [ -n "$err" ] || { [ "$sc_rc" -ne 0 ] && [ "$sc_rc" -ne 1 ] && [ "$sc_rc" -ne 123 ]; }; then
+        if [ -n "$err" ]; then
+          printf '%s\\n' "$err"
+        fi
+        if [ -n "$blocking" ]; then
+          printf '%s\\n' "$blocking"
+        fi
         echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
         exit 1
-      }
+      fi
       # Everything below the blocking bar, shown once the push is already cleared. Never affects
-      # the exit code — advice that can fail a push is not advice.
-      advice=$(xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/scripts" 2>/dev/null \\
-        | grep -v ': warning:\\|: error:' || true)
+      # the exit code — advice that can fail a push is not advice. ERE on purpose: the '\\|'
+      # alternation this replaced is a GNU-ism BSD grep reads literally, which reprinted the
+      # blocking findings verbatim as "advice" on a BSD desk.
+      advice=$(printf '%s\\n' "$out" | grep -Ev ':[0-9]+:[0-9]+: (warning|error):' || true)
       if [ -n "$advice" ]; then
         echo "  · style/info (not blocking):"
         printf '%s\\n' "$advice" | sed 's/^/    /'
@@ -674,9 +748,17 @@ ${auditStep}
 # with --no-verify and anything a rebase or merge brought in from elsewhere. Advisory here (it
 # never blocks the push): the blocking decision belongs at commit time, where the fix is cheap.
 ${contentGateResolution(selfBuild)}
-if [ -x "$GATE" ]; then
-${contentScreenCall({ args: "--tree --advisory", envVar: "CONTENT_GATE", blocking: false, indent: "  " })}
-fi
+${gateDoor(
+  "pre-push",
+  "CONTENT_GATE",
+  "advisory screen",
+  contentScreenCall({
+    args: "--tree --advisory",
+    envVar: "CONTENT_GATE",
+    blocking: false,
+    indent: "  ",
+  }),
+)}
 
 exit 0
 `)
