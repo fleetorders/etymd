@@ -592,8 +592,18 @@ const ROOT_POINTER_IMPORT_RE = /^\s*@(\.\/)?AGENTS\.md\s*$/m
 /** `.claude/CLAUDE.md`: the same import, one directory up — the other location Claude Code reads. */
 const DOT_CLAUDE_IMPORT_RE = /^\s*@\.\.\/AGENTS\.md\s*$/m
 
-/** The first Claude Code release that reads `AGENTS.md` when a directory has no `CLAUDE.md`. */
+/**
+ * The first Claude Code release that reads `AGENTS.md` when a directory has no `CLAUDE.md`.
+ * Source: the Claude Code changelog, entry for 2.1.277 — "Added AGENTS.md support: in a project
+ * with no CLAUDE.md, Claude Code reads AGENTS.md instead" —
+ * https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md
+ */
 export const CLAUDE_AGENTS_FALLBACK_VERSION = "2.1.277"
+
+/** True when that Claude Code release reads a bare `AGENTS.md` with no pointer beside it. */
+export function readsAgentsNatively(version: string): boolean {
+  return !versionBefore(version, CLAUDE_AGENTS_FALLBACK_VERSION)
+}
 
 export type ClaudePointerResult =
   | {
@@ -605,29 +615,69 @@ export type ClaudePointerResult =
       /**
        * `no-import`: a CLAUDE.md exists and does not import AGENTS.md, so Claude Code reads it
        * instead of AGENTS.md on every version. `old-reader`: no CLAUDE.md, and the installed
-       * Claude Code predates the AGENTS.md fallback.
+       * Claude Code predates the AGENTS.md fallback. `undetermined`: no CLAUDE.md, and the
+       * Claude Code version could not be established — the check could not run, which callers
+       * disclose rather than count as a pass.
        */
-      kind: "no-import" | "old-reader"
+      kind: "no-import" | "old-reader" | "undetermined"
       /** What the repo actually looks like, for the finding's evidence line. */
       detail: string
     }
 
+/** What a probe of the local Claude Code established — three answers, not two. */
+export type ClaudeVersion =
+  | { state: "version"; version: string }
+  | { state: "absent" }
+  | { state: "undetermined"; reason: string }
+
+const VERSION_RE = /(\d+\.\d+\.\d+)/
 const pExecFile = promisify(execFile)
-let claudeVersionMemo: Promise<string | null> | undefined
+let claudeVersionMemo: Promise<ClaudeVersion> | undefined
 
 /**
- * The installed Claude Code version, or null when none can be read. `ETYMD_CLAUDE_VERSION`
- * overrides the probe: a version string pins it, `none` means "no Claude Code here". Read once
- * per process, since a fleet sweep asks for every repo.
+ * The installed Claude Code version, when it can be established. `ETYMD_CLAUDE_VERSION`
+ * overrides the probe: a version string pins it (`2.1.276-beta` reads as `2.1.276` — the numeric
+ * triple is the comparable fact), `none` means "no Claude Code here", and anything else is a
+ * broken pin, returned as undetermined rather than quietly ignored — a typo'd `latest` used to
+ * compare as "current" and silently disable the old-reader check. A probe that fails reads as
+ * absent ONLY for ENOENT (no binary); timeouts, broken shims and versionless output are
+ * undetermined, because a check that cannot run says so. Read once per process, since a fleet
+ * sweep asks for every repo.
  */
-export function detectClaudeCodeVersion(): Promise<string | null> {
+export function detectClaudeCodeVersion(): Promise<ClaudeVersion> {
   const override = process.env.ETYMD_CLAUDE_VERSION
   if (override !== undefined) {
-    return Promise.resolve(override === "none" || override === "" ? null : override)
+    if (override === "" || override === "none") return Promise.resolve({ state: "absent" })
+    const pinned = VERSION_RE.exec(override)?.[1]
+    return Promise.resolve(
+      pinned
+        ? { state: "version", version: pinned }
+        : {
+            state: "undetermined",
+            reason: `ETYMD_CLAUDE_VERSION=${override} is not a version — want X.Y.Z, or "none"`,
+          },
+    )
   }
-  claudeVersionMemo ??= pExecFile("claude", ["--version"], { timeout: 5000 })
-    .then(({ stdout }) => /(\d+\.\d+\.\d+)/.exec(stdout)?.[1] ?? null)
-    .catch(() => null)
+  claudeVersionMemo ??= pExecFile("claude", ["--version"], { timeout: 5000 }).then(
+    ({ stdout }) => {
+      const version = VERSION_RE.exec(stdout)?.[1]
+      return version
+        ? { state: "version", version }
+        : {
+            state: "undetermined",
+            reason: `\`claude --version\` printed no version (${JSON.stringify(stdout.trim().slice(0, 80))})`,
+          }
+    },
+    (err: unknown) => {
+      if ((err as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+        return { state: "absent" }
+      }
+      return {
+        state: "undetermined",
+        reason: `\`claude --version\` failed: ${err instanceof Error ? err.message : String(err)}`,
+      }
+    },
+  )
   return claudeVersionMemo
 }
 
@@ -657,14 +707,16 @@ function versionBefore(a: string, b: string): boolean {
  * Passes when `AGENTS.md` is absent; either name is a symlink to the other (stat follows
  * links, so same dev:ino covers chains in both directions); the root `CLAUDE.md` carries a
  * full-line `@AGENTS.md` import; `.claude/CLAUDE.md` carries `@../AGENTS.md`; or there is no
- * `CLAUDE.md` in either place and the Claude Code version is at or past the fallback, or cannot
- * be read (a machine without Claude Code has no reader to warn about). A declared
+ * `CLAUDE.md` in either place and the Claude Code version is at or past the fallback, or no
+ * Claude Code is installed (a machine without it has no reader to warn about — genuinely
+ * absent, ENOENT, is a pass; a probe that failed any other way returns `undetermined`, which
+ * callers must disclose rather than count as a pass). A declared
  * `contract.placement: "none"` does not exempt a repo that HAS an `AGENTS.md` — the declaration
  * covers absent instruction files, not one a whole harness cannot see.
  */
 export async function checkClaudePointer(
   root: string,
-  claudeVersion?: string | null,
+  claudeVersion?: string | null | ClaudeVersion,
 ): Promise<ClaudePointerResult> {
   const agentsAbs = path.join(root, "AGENTS.md")
   const claudeAbs = path.join(root, "CLAUDE.md")
@@ -711,12 +763,31 @@ export async function checkClaudePointer(
     }
   }
 
-  const version = claudeVersion === undefined ? await detectClaudeCodeVersion() : claudeVersion
-  if (version !== null && versionBefore(version, CLAUDE_AGENTS_FALLBACK_VERSION)) {
+  let resolved: ClaudeVersion
+  if (claudeVersion === undefined) resolved = await detectClaudeCodeVersion()
+  else if (claudeVersion === null) resolved = { state: "absent" }
+  else if (typeof claudeVersion === "string") {
+    // Injected versions pass the same extraction as pinned ones — one rule, no drift.
+    const v = VERSION_RE.exec(claudeVersion)?.[1]
+    resolved = v
+      ? { state: "version", version: v }
+      : { state: "undetermined", reason: `version ${claudeVersion} is not X.Y.Z` }
+  } else resolved = claudeVersion
+  if (resolved.state === "undetermined") {
+    return {
+      ok: false,
+      kind: "undetermined",
+      detail: `AGENTS.md present, no CLAUDE.md, and the Claude Code version could not be established — ${resolved.reason}`,
+    }
+  }
+  if (
+    resolved.state === "version" &&
+    versionBefore(resolved.version, CLAUDE_AGENTS_FALLBACK_VERSION)
+  ) {
     return {
       ok: false,
       kind: "old-reader",
-      detail: `AGENTS.md present, no CLAUDE.md, and Claude Code ${version} predates the AGENTS.md fallback (${CLAUDE_AGENTS_FALLBACK_VERSION})`,
+      detail: `AGENTS.md present, no CLAUDE.md, and Claude Code ${resolved.version} predates the AGENTS.md fallback (${CLAUDE_AGENTS_FALLBACK_VERSION})`,
     }
   }
   return { ok: true, via: "native-fallback" }

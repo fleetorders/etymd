@@ -112,6 +112,15 @@ export interface GeneratedFile {
 export interface PlanOptions {
   /** Scaffold a minimal AGENTS.md (init only offers this when none exists). */
   agents: boolean
+  /**
+   * Write the scaffold's `CLAUDE.md` pointer alongside AGENTS.md. Defaults to true — a pointer
+   * is never wrong, every reader either follows it or ignores it. `etymd init` passes false on
+   * a machine whose Claude Code reads `AGENTS.md` natively (or has none at all): the pointer
+   * exists exactly where a reader needs it, the stance this tool's own repo wears. Deliberately
+   * a caller-supplied fact, never probed here — the plan stays a pure function of its inputs
+   * because the fleet's gate drift compares two runs byte-for-byte.
+   */
+  agentsPointer?: boolean
   gates: boolean
   /**
    * Emit the publish-time screen. Defaults to `facts.publishable` — set it explicitly to
@@ -162,9 +171,12 @@ export async function planWorkflow(
     await add("AGENTS.md", generateAgentsMd(facts), "Minimal operating contract (scaffold)")
     // The scaffold must satisfy the pointer contract it is about to be held to: `fleet add`
     // refuses a repo whose AGENTS.md Claude Code cannot see, so the same onboarding that
-    // writes the contract writes its CLAUDE.md pointer too. An existing CLAUDE.md is kept —
+    // writes the contract writes its CLAUDE.md pointer too — unless the local reader provably
+    // does not need one (see PlanOptions.agentsPointer). An existing CLAUDE.md is kept —
     // apply never overwrites what it did not write.
-    await add("CLAUDE.md", generateClaudePointerMd(), "Claude Code pointer to AGENTS.md")
+    if (opts.agentsPointer !== false) {
+      await add("CLAUDE.md", generateClaudePointerMd(), "Claude Code pointer to AGENTS.md")
+    }
   }
   if (opts.gates) {
     // Preservation belongs HERE, not in the command that calls this. `etymd gates` used to read

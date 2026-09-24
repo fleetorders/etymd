@@ -203,7 +203,7 @@ ${
  * `AGENTS.md` when a directory has no `CLAUDE.md`; older releases never load it, so a repo whose
  * instructions live only in `AGENTS.md` is skipped by them. This pointer keeps those readers
  * covered, and it is a pack artifact so `fleet add` can print the exact bytes it wants and
- * `init` can scaffold the same thing.
+ * `init` can scaffold the same thing where the local reader still needs it.
  */
 export function generateClaudePointerMd(): string {
   return stampGenerated(
