@@ -4,9 +4,10 @@
 # side, positional here). Verdicts land in the scratch: scripts (NUL-delimited matches) and one
 # dot per decision into count / zsh-count / skip-count, tallied by the hook after the pipeline.
 #
-# A path with nothing readable behind it — a submodule entry, a dangling symlink, a file
-# deleted from the worktree while still tracked — cannot lie about its contents, so it is a
-# disclosed skip, never a block: an absent worktree file is routine dirty state. A regular file
+# The hook runs it from inside a commit materialised from git's object store, so paths resolve
+# against that tree, never the working tree. A path with nothing readable behind it — a
+# submodule entry, a dangling symlink — cannot lie about its contents, so it is a disclosed
+# skip, never a block. A regular file
 # that EXISTS but cannot be read is the other branch — coverage would silently shrink, so it
 # fails, naming the path.
 #
@@ -42,4 +43,4 @@ for file do
     fi
   fi
 done
-# etymd:generated pack-v14 4420a1de6074bb6d
+# etymd:generated pack-v15 bcb4ff51f228493d
