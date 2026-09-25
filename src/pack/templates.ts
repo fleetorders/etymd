@@ -585,8 +585,10 @@ if command -v shellcheck >/dev/null 2>&1; then
     # An all-zero local sha is a delete (nothing to check). An all-zero REMOTE sha is a new
     # branch: everything no remote already has is being pushed, so the range is the local sha
     # minus every remote-tracking ref — commits a remote already received were gated when they
-    # landed there, and the residue is exactly this push's new commits. Enumeration failure
-    # refuses the push: a range the gate could not list is a range it did not read.
+    # landed there, and the residue is exactly this push's new commits. A remote sha this clone
+    # has never seen (the remote moved on since the last fetch) cannot bound a range, so it takes
+    # the same new-branch rule instead of refusing a push the gate could have read. Enumeration
+    # failure refuses the push: a range the gate could not list is a range it did not read.
     # (pattern) with both parens: bash 3.2 (macOS /bin/sh) cannot parse an unbalanced )
     # in a case pattern.
     : > "$shellcheck_tmp/shas" || exit 1
@@ -596,7 +598,12 @@ if command -v shellcheck >/dev/null 2>&1; then
         (*) continue ;;
       esac
       case "$rsha" in
-        (*[!0]*) git rev-list "$rsha..$lsha" ;;
+        (*[!0]*)
+          if git cat-file -e "\${rsha}^{commit}" 2>/dev/null; then
+            git rev-list "$rsha..$lsha"
+          else
+            git rev-list "$lsha" --not --remotes
+          fi ;;
         (*) git rev-list "$lsha" --not --remotes ;;
       esac >> "$shellcheck_tmp/shas" || exit 1
     done || {
@@ -609,15 +616,19 @@ if command -v shellcheck >/dev/null 2>&1; then
     # relative hook path would no longer point at it from there.
     discover="$(cd "$(dirname "$0")" && pwd)/discover-shell-scripts.sh" || exit 1
     for sha in $shas; do
-      # A fresh directory per commit: nothing is deleted inside the loop — the subshell trap
-      # above cleans the one root on every path out.
+      # A fresh directory per commit, removed once that commit is checked so a long push does
+      # not pile up one full tree per commit; the subshell trap above still cleans the root on
+      # every early exit.
       tree=$(mktemp -d "$shellcheck_tmp/commit.XXXXXX") || exit 1
-      # archive to a FILE, then extract: in a git-archive-piped-to-tar pipeline the status is
-      # tar's, and tar on empty input exits 0 — a sha git could not read would pass as an
-      # empty, clean tree.
+      # Checked out through a scratch index, never \`git archive\`: archive honours the
+      # export-ignore and export-subst attributes, so a script marked export-ignore would leave
+      # the checked set without a word. read-tree + checkout-index writes every tracked blob.
+      # Large-file pointers stay pointers — they are never shell, and a push must not need the
+      # network to be checked.
       if ! git cat-file -e "\${sha}^{commit}" 2>/dev/null \\
-         || ! git archive "$sha" > "$shellcheck_tmp/tarball" 2>/dev/null \\
-         || ! tar -x -C "$tree" -f "$shellcheck_tmp/tarball" 2>/dev/null; then
+         || ! GIT_INDEX_FILE="$shellcheck_tmp/index" git read-tree "$sha" 2>/dev/null \\
+         || ! GIT_INDEX_FILE="$shellcheck_tmp/index" GIT_LFS_SKIP_SMUDGE=1 \\
+              git checkout-index -a -f --prefix="$tree/" 2>/dev/null; then
         echo "✗ shellcheck: could not materialise $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha") — refusing the push rather than certifying bytes this gate did not read" >&2
         exit 1
       fi
@@ -658,6 +669,7 @@ if command -v shellcheck >/dev/null 2>&1; then
           printf '%s\\n' "$advice" | sed 's/^/    /'
         fi
       fi
+      rm -rf "$tree" || exit 1
     done
   ) || exit 1
 else

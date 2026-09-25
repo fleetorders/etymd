@@ -464,6 +464,122 @@ exit 23
   })
 })
 
+describe.skipIf(!existsSync(CLI))(
+  "etymd gates — the range being pushed, not the tree or the tip",
+  () => {
+    it.skipIf(!hasShellcheck)(
+      "PINNED: a bad middle commit under a clean tip refuses the push",
+      async () => {
+        // The failure being fixed: a tip-only read passed exactly this push — bad script
+        // committed, then fixed — and the bad commit landed on the remote. Every commit in
+        // the range is materialised and checked, so the middle commit refuses the push even
+        // though HEAD is clean.
+        await baseRepo()
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: bad script")
+        await write("tool/do.sh", "#!/bin/sh\necho ok\n")
+        await commitAll("chore: fix it")
+        await gates()
+        const env = await stubEnv()
+        const base = await revParse("HEAD~2")
+        const head = await revParse("HEAD")
+
+        await expect(runPrePush(env, update("main", head, base))).rejects.toMatchObject({
+          code: 1,
+          stdout: expect.stringContaining("SC2034"),
+        })
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "an all-zero remote sha (a new branch) checks every commit no remote already has",
+      async () => {
+        await baseRepo()
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: bad script")
+        await gates()
+        const env = await stubEnv()
+        const head = await revParse("HEAD")
+
+        // No remote exists in the fixture, so --not --remotes negates nothing: the whole
+        // young history is the push, bad commit included.
+        await expect(
+          runPrePush(env, `refs/heads/topic ${head} refs/heads/topic ${ZERO}`),
+        ).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining("SC2034") })
+      },
+    )
+
+    it.skipIf(!hasShellcheck)("a delete-only push has nothing to check and says so", async () => {
+      await baseRepo()
+      await write("scripts/run", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: scripts")
+      await gates()
+      const env = await stubEnv()
+      const head = await revParse("HEAD")
+
+      const { stdout } = await runPrePush(env, `refs/heads/gone ${ZERO} refs/heads/gone ${head}`)
+      expect(stdout).toContain("no commit in the pushed refs")
+    })
+
+    it.skipIf(!hasShellcheck)(
+      "an empty range (nothing new to push) is clean and says so",
+      async () => {
+        await baseRepo()
+        await write("scripts/run", "#!/bin/sh\necho ok\n")
+        await commitAll("chore: scripts")
+        await gates()
+        const env = await stubEnv()
+        const head = await revParse("HEAD")
+
+        const { stdout } = await runPrePush(env, update("main", head, head))
+        expect(stdout).toContain("nothing to check")
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: a script marked export-ignore is still checked — the read is not an archive",
+      async () => {
+        // `git archive` drops export-ignore paths, so an archive-based read let a script leave
+        // the checked set without a word. The pushed commit is checked out whole instead.
+        await baseRepo()
+        await write(".gitattributes", "tool/do.sh export-ignore\n")
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: hidden bad script")
+        await gates()
+        const env = await stubEnv()
+        const base = await revParse("HEAD~1")
+        const head = await revParse("HEAD")
+
+        await expect(runPrePush(env, update("main", head, base))).rejects.toMatchObject({
+          code: 1,
+          stdout: expect.stringContaining("SC2034"),
+        })
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "a remote sha this clone has never seen falls back to the new-branch range, not a refusal",
+      async () => {
+        // The remote moved on since the last fetch: its sha cannot bound a range here. Refusing
+        // would block a push the gate can read, so the push is checked as a new branch — and a
+        // bad commit in it still refuses.
+        await baseRepo()
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: bad script")
+        await gates()
+        const env = await stubEnv()
+        const head = await revParse("HEAD")
+        const unseen = "1".repeat(40)
+
+        await expect(runPrePush(env, update("main", head, unseen))).rejects.toMatchObject({
+          code: 1,
+          stdout: expect.stringContaining("SC2034"),
+        })
+      },
+    )
+  },
+)
+
 describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's reach", () => {
   it("the shebang scan hands only sh/bash/dash to shellcheck, and the hook says why", async () => {
     await write("package.json", JSON.stringify({ name: "zshy", private: true }, null, 2) + "\n")
