@@ -497,12 +497,15 @@ for file do
     exit 1
   }
   head -n 1 "$work/head-bytes" > "$work/first-line" || exit 1
-  if grep -qE "^#!.*[/ ](ba|da)?sh( |$)" "$work/first-line"; then
+  # Trailing whitespace after the interpreter name is still the interpreter: a tab before a
+  # flag (sh<TAB>-e) or a CRLF-committed first line (sh<CR>) must classify, or the script
+  # leaves every bucket — unchecked, unexcluded, undisclosed.
+  if grep -qE "^#!.*[/ ](ba|da)?sh([[:space:]].*)?$" "$work/first-line"; then
     printf "./%s\\0" "$file" >> "$work/scripts" || exit 1
     printf . >> "$work/count" || exit 1
   else
     [ "$?" -eq 1 ] || exit 1
-    if grep -qE "^#!.*[/ ]zsh( |$)" "$work/first-line"; then
+    if grep -qE "^#!.*[/ ]zsh([[:space:]].*)?$" "$work/first-line"; then
       printf . >> "$work/zsh-count" || exit 1
     else
       [ "$?" -eq 1 ] || exit 1
