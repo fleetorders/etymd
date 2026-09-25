@@ -701,6 +701,9 @@ export async function checkClaudePointer(
   }
 
   if (rootClaude !== null || dotClaude !== null) {
+    // `.claude/CLAUDE.md` alone also shadows AGENTS.md — the fallback does not fire beside it.
+    // Observed on Claude Code 2.1.283 (headless, markers planted one per file): a project with
+    // AGENTS.md and `.claude/CLAUDE.md` but no root CLAUDE.md loaded ONLY the `.claude/CLAUDE.md`.
     return {
       ok: false,
       kind: "no-import",

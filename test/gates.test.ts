@@ -72,6 +72,16 @@ async function runPrePush(env: NodeJS.ProcessEnv, ...refLines: string[]) {
   return pExecFile("sh", ["-c", '".githooks/pre-push" < "$1"', "sh", refsFile], { cwd: dir, env })
 }
 
+/** The same, with git's first argument — the remote name the push targets. */
+async function runPrePushTo(env: NodeJS.ProcessEnv, remote: string, ...refLines: string[]) {
+  const refsFile = path.join(dir, ".pushed-refs")
+  await fs.writeFile(refsFile, refLines.join("\n") + (refLines.length ? "\n" : ""), "utf8")
+  return pExecFile("sh", ["-c", '".githooks/pre-push" "$2" < "$1"', "sh", refsFile, remote], {
+    cwd: dir,
+    env,
+  })
+}
+
 /** The base every fixture builds on: a manifest, an instruction file, one commit for HEAD. */
 async function baseRepo() {
   await write("package.json", JSON.stringify({ name: "demo", private: true }) + "\n")
@@ -506,6 +516,47 @@ describe.skipIf(!existsSync(CLI))(
         await expect(
           runPrePush(env, `refs/heads/topic ${head} refs/heads/topic ${ZERO}`),
         ).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining("SC2034") })
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: a commit only a SECOND remote's tracking ref holds is checked when pushing to the target",
+      async () => {
+        // The failure being fixed: the new-branch range subtracted every remote's tracking
+        // refs, so a bad commit fetched from a fork — never gated for the target — left the
+        // checked set because some other remote happened to have it. The exclusion is scoped
+        // to the remote this push aims at, which git names as the hook's first argument.
+        await baseRepo()
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: bad script")
+        const head = await revParse("HEAD")
+        await pExecFile("git", ["update-ref", "refs/remotes/fork/main", head], { cwd: dir })
+        await gates()
+        const env = await stubEnv()
+
+        await expect(
+          runPrePushTo(env, "origin", `refs/heads/topic ${head} refs/heads/topic ${ZERO}`),
+        ).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining("SC2034") })
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "commits the TARGET remote already has stay excluded from a new-branch push",
+      async () => {
+        await baseRepo()
+        await write("scripts/run", "#!/bin/sh\necho ok\n")
+        await commitAll("chore: scripts")
+        const head = await revParse("HEAD")
+        await pExecFile("git", ["update-ref", "refs/remotes/origin/main", head], { cwd: dir })
+        await gates()
+        const env = await stubEnv()
+
+        const { stdout } = await runPrePushTo(
+          env,
+          "origin",
+          `refs/heads/topic ${head} refs/heads/topic ${ZERO}`,
+        )
+        expect(stdout).toContain("no commit in the pushed refs")
       },
     )
 

@@ -4,6 +4,7 @@ import path from "node:path"
 import { cancel, confirm, intro, isCancel, outro, select, spinner } from "@clack/prompts"
 
 import { applyFiles } from "../core/apply.js"
+import { CLAUDE_AGENTS_FALLBACK_VERSION, checkClaudePointer } from "../core/detect.js"
 import { CACHE_DIR, deriveProfile, writeBaseline, writeCachedFacts } from "../core/facts.js"
 import { planWorkflow } from "../core/generate.js"
 import { scanProject } from "../core/scan.js"
@@ -29,6 +30,16 @@ function bail(): never {
 function guard<T>(value: T | symbol): T {
   if (isCancel(value)) bail()
   return value as T
+}
+
+/**
+ * True when a kept CLAUDE.md shadows AGENTS.md from Claude Code — the shape `fleet add`
+ * refuses. The pinned version keeps the verdict on the no-import half: this note is about a
+ * file that exists, never about the local reader's age.
+ */
+async function keptClaudeHidesAgents(root: string): Promise<boolean> {
+  const pointer = await checkClaudePointer(root, CLAUDE_AGENTS_FALLBACK_VERSION)
+  return !pointer.ok && pointer.kind === "no-import"
 }
 
 /** The transient cache must never be committed; the baseline and ledger must be. */
@@ -137,6 +148,14 @@ export async function run(opts: InitOptions): Promise<void> {
   section("Onboarded")
   for (const w of result.written) print(`  ${glyph.ok} ${theme.dim("wrote")} ${theme.info(w)}`)
   for (const sk of result.skipped) print(`  ${glyph.bullet} ${theme.dim("kept")} ${theme.dim(sk)}`)
+  // The refusal `fleet add` would make later, said at scaffold time instead: a kept CLAUDE.md
+  // without the import hides AGENTS.md from Claude Code on every version, and onboarding is
+  // the moment the fix is one line the user is already looking at.
+  if (await keptClaudeHidesAgents(opts.cwd)) {
+    print(
+      `  ${theme.warn("note")} the kept CLAUDE.md does not import AGENTS.md — Claude Code will not see the contract; add a full-line \`@AGENTS.md\` import (or delete the CLAUDE.md), or \`fleet add\` will refuse this repo`,
+    )
+  }
   print(
     `  ${glyph.ok} ${theme.dim("baseline approved →")} ${theme.info(".etymd/baseline.json")} ${theme.dim("(commit it — drift is measured against it)")}`,
   )
