@@ -174,7 +174,7 @@ personal and guarded repos. See [the fleet manifest](#the-fleet-manifest-experim
 | Command                          | What it does                                                                                                                                                                                                                                                        |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `etymd audit`                    | Verify every claim; ranked findings (risk → gap → polish) + ledger diff. `--lens`, `--truth`, `--json`, `--no-ledger`, `--fail-on <tier>`.                                                                                                                          |
-| `etymd init`                     | Onboard: approve the committed baseline; scaffold a minimal AGENTS.md **only if missing**. Never overwrites.                                                                                                                                                        |
+| `etymd init`                     | Onboard: approve the committed baseline; scaffold a minimal AGENTS.md **only if missing**, with its `CLAUDE.md` pointer. Never overwrites.                                                                                                                          |
 | `etymd doctor`                   | Alias for `audit --truth`.                                                                                                                                                                                                                                          |
 | `etymd context`                  | The economy view: per-file always-loaded footprint + extraction candidates.                                                                                                                                                                                         |
 | `etymd gates`                    | Install local git-hook gates (pre-commit / commit-msg / pre-push, plus a publish screen where something ships) built from your own check scripts — and from the repo's shell surface, where it has one.                                                             |
@@ -188,7 +188,7 @@ personal and guarded repos. See [the fleet manifest](#the-fleet-manifest-experim
 | `etymd accept`                   | `accept <id>` — record a finding as accepted reality; visible in the ledger, out of the report.                                                                                                                                                                     |
 | `etymd fleet`                    | Sweep every project in a fleet manifest: read-only per-repo audits + manifest/wall checks. `--manifest`, `--only`, `--profile`, `--truth`, `--persist-ledgers`, `--json`, `--fail-on`.                                                                              |
 | `etymd fleet check`              | Validate the manifest pair alone (no lenses): dangling mappings, duplicate names, privacy leaks, undeclared trust, machine paths. Non-zero exit on any finding.                                                                                                     |
-| `etymd fleet add`                | `add <dir>` — register a project: scans it, asks for what no scan can derive, and refuses to write an entry missing a mandatory field. `--name`, `--kind`, `--profile`, `--trust`, `-y`.                                                                            |
+| `etymd fleet add`                | `add <dir>` — register a project: scans it, asks for what no scan can derive, and refuses to write an entry missing a mandatory field, or a repo whose `AGENTS.md` Claude Code cannot see. `--name`, `--kind`, `--profile`, `--trust`, `-y`.                        |
 | `etymd fleet board`              | Render the fleet board: every project's `MILESTONES.md` (contract key `milestones`, shape-checked by the sweep) plus a ranked initiatives table on one page. `--initiatives <file>`, `--out <file>`, `--json`.                                                      |
 | `etymd propose`                  | Score the sweep's improvement findings + recurring classes against a fleet-authored rubric — stable `proposal/1` records, read-only, deterministic, guarded entries excluded. `--rubric <file>` (required), `--manifest <file>` or `--from <fleet.json>`, `--json`. |
 | `etymd fleet dismiss` / `accept` | `<name> <id>` — resolve a project's finding from any cwd; guarded findings persist beside the manifest, never in the guarded worktree.                                                                                                                              |
@@ -520,7 +520,11 @@ Two fields the scan can never derive, so the manifest must declare them:
 
 `etymd fleet add <dir>` is the gate that keeps both true: it scans the project, prompts for what
 no scan can derive, and **refuses to write an incomplete entry**. Non-interactive runs (`--yes`,
-CI) must pass every mandatory value as a flag — there is deliberately no default.
+CI) must pass every mandatory value as a flag — there is deliberately no default. It also refuses
+a repo whose `CLAUDE.md` hides its `AGENTS.md`: Claude Code reads `CLAUDE.md` when one exists and
+falls back to `AGENTS.md` (from 2.1.277) only when none does, so a `CLAUDE.md` must import
+`@AGENTS.md` or be a symlink to it — the refusal prints the fix. A repo with `AGENTS.md` alone
+registers; on a Claude Code older than 2.1.277 it gets a note, since that version cannot see it.
 
 How the sweep behaves:
 
@@ -543,8 +547,9 @@ How the sweep behaves:
 - **Wall checks.** Guarded contract files found inside a guarded worktree, unregistered checkouts
   under the fleet root whose remotes match `guardedHosts`, tracked `/Users/` paths in the manifest
   repo, private **needles** — the identifiers the local file holds (labels, dir names, hosts) —
-  inside `trust: "public-repo"` entries, and guarded-host commit emails on personal entries — each
-  a risk finding; each check that cannot run is disclosed.
+  inside `trust: "public-repo"` entries, guarded-host commit emails on personal entries, and
+  repos whose `AGENTS.md` no `CLAUDE.md` pointer or symlink makes visible to Claude Code
+  (`claude-pointer-missing`) — each a risk finding; each check that cannot run is disclosed.
 - **No global pointer.** `--manifest` is required unless the cwd holds `registry.json` — there
   is deliberately no env var and no home-directory pointer.
 - **Milestones and the fleet board.** A project declares its plan in one file — `MILESTONES.md`,

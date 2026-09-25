@@ -4,9 +4,11 @@ import {
   fileOrigin,
   generateAgentsMd,
   generateArtifactCheckScript,
+  generateClaudePointerMd,
   generateCommitMsgHook,
   generatePreCommitHook,
   generatePrePushHook,
+  generateShellDiscoveryScript,
   isSafeGateCommand,
   isSelfBuildRepo,
 } from "../pack/templates.js"
@@ -158,6 +160,11 @@ export async function planWorkflow(
 
   if (opts.agents) {
     await add("AGENTS.md", generateAgentsMd(facts), "Minimal operating contract (scaffold)")
+    // The scaffold must satisfy the pointer contract it is about to be held to: `fleet add`
+    // refuses a repo whose AGENTS.md Claude Code cannot see, so the same onboarding that
+    // writes the contract writes its CLAUDE.md pointer too. An existing CLAUDE.md is kept —
+    // apply never overwrites what it did not write.
+    await add("CLAUDE.md", generateClaudePointerMd(), "Claude Code pointer to AGENTS.md")
   }
   if (opts.gates) {
     // Preservation belongs HERE, not in the command that calls this. `etymd gates` used to read
@@ -218,6 +225,18 @@ export async function planWorkflow(
       "Correctness gate (pre-push)",
       true,
     )
+    // The classifier the shellcheck step above runs, under the same condition that emits the
+    // step — a helper with no caller is dead text in a directory people read to learn what
+    // their gate does. Shebanged and executable, so once the gates are committed the discovery
+    // finds it and the checker covers the gate's own most intricate code.
+    if (facts.shell?.scripts) {
+      await add(
+        ".githooks/discover-shell-scripts.sh",
+        generateShellDiscoveryScript(),
+        "Shell discovery (pre-push shellcheck helper)",
+        true,
+      )
+    }
     // The publish door is only meaningful where something actually ships. A recorded answer
     // wins; otherwise fall back to the derivation. Note the derivation is a GUESS: npm treats a
     // missing `private` as publishable, which is right about npm's semantics and wrong about a

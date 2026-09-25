@@ -4,6 +4,7 @@ import path from "node:path"
 import { promisify } from "node:util"
 
 import { DEFAULT_CONFIG, type StateBudgets } from "../core/config.js"
+import { CLAUDE_AGENTS_FALLBACK_VERSION, checkClaudePointer } from "../core/detect.js"
 import { ETYMD_DIR } from "../core/facts.js"
 import type { FleetEntry, FleetManifest } from "../core/fleet.js"
 import { FLEET_TRUST_VALUES } from "../core/fleet.js"
@@ -734,6 +735,42 @@ async function checkGateDrift(
   }
 }
 
+/**
+ * The pointer contract (`checkClaudePointer`, the one definition) must hold in every resolved
+ * repo, or the repo believes every agent reads a contract Claude Code never receives. A
+ * CLAUDE.md that does not import AGENTS.md hides it on every version (risk); a bare AGENTS.md
+ * hides it only from a Claude Code older than the fallback (gap). Runs on every profile: guarded
+ * worktrees are read here, never written. Not exempted by `contract.placement: "none"` — that
+ * declares instruction files legitimately ABSENT, not present-but-invisible to a reader.
+ */
+async function checkClaudePointers(manifest: FleetManifest, findings: Finding[]): Promise<void> {
+  for (const entry of manifest.entries) {
+    const root = entry.resolvedRoot
+    if (!root || !(await isDirectory(root))) continue
+    const check = await checkClaudePointer(root)
+    if (check.ok) continue
+    findings.push(
+      check.kind === "no-import"
+        ? finding(
+            `${FLEET_LENS}/claude-pointer-missing:${entry.name}`,
+            "risk",
+            `\`${entry.name}\` has a CLAUDE.md that never imports its AGENTS.md`,
+            [`${entry.name}: ${check.detail}`],
+            "Claude Code reads CLAUDE.md when one exists and falls back to AGENTS.md only when none does. A CLAUDE.md without the import shadows AGENTS.md, so the contract looks universal from inside the repo while Claude Code never receives it.",
+            "Add a full-line `@AGENTS.md` import to that CLAUDE.md, symlink either file to the other, or delete the CLAUDE.md if AGENTS.md is the whole contract.",
+          )
+        : finding(
+            `${FLEET_LENS}/claude-pointer-missing:${entry.name}`,
+            "gap",
+            `\`${entry.name}\` relies on the AGENTS.md fallback, which the installed Claude Code predates`,
+            [`${entry.name}: ${check.detail}`],
+            `Claude Code reads AGENTS.md on its own only from ${CLAUDE_AGENTS_FALLBACK_VERSION}; older releases load CLAUDE.md alone, so this repo's contract is invisible to them.`,
+            "Update Claude Code, or create a CLAUDE.md beside AGENTS.md whose only import line is `@AGENTS.md`.",
+          ),
+    )
+  }
+}
+
 /** All fleet-scope wall checks. Each check that cannot run says so — undetermined, not clean. */
 export async function collectWallFindings(
   manifest: FleetManifest,
@@ -746,6 +783,7 @@ export async function collectWallFindings(
   await checkHygieneNeedles(manifest, findings, disclosures)
   await checkGuardedEmails(manifest, findings, disclosures)
   await checkGateDrift(manifest, findings, disclosures)
+  await checkClaudePointers(manifest, findings)
   return { findings, disclosures }
 }
 

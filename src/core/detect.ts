@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process"
 import { promises as fs } from "node:fs"
 import path from "node:path"
+import { promisify } from "node:util"
 
 import type {
   CiSystem,
@@ -579,6 +581,145 @@ export async function detectArtifacts(root: string): Promise<DetectedArtifact[]>
     exists: adrFiles,
   })
   return artifacts
+}
+
+// -------------------------------------------------------------------------------------------
+// the Claude Code pointer contract — ONE definition, used by `fleet add` and the fleet sweep
+// -------------------------------------------------------------------------------------------
+
+/** Root `CLAUDE.md`: a full-line `@AGENTS.md` (or `@./AGENTS.md`) import — Claude Code follows it. */
+const ROOT_POINTER_IMPORT_RE = /^\s*@(\.\/)?AGENTS\.md\s*$/m
+/** `.claude/CLAUDE.md`: the same import, one directory up — the other location Claude Code reads. */
+const DOT_CLAUDE_IMPORT_RE = /^\s*@\.\.\/AGENTS\.md\s*$/m
+
+/** The first Claude Code release that reads `AGENTS.md` when a directory has no `CLAUDE.md`. */
+export const CLAUDE_AGENTS_FALLBACK_VERSION = "2.1.277"
+
+export type ClaudePointerResult =
+  | {
+      ok: true
+      via: "no-agents" | "same-file" | "root-import" | "dotclaude-import" | "native-fallback"
+    }
+  | {
+      ok: false
+      /**
+       * `no-import`: a CLAUDE.md exists and does not import AGENTS.md, so Claude Code reads it
+       * instead of AGENTS.md on every version. `old-reader`: no CLAUDE.md, and the installed
+       * Claude Code predates the AGENTS.md fallback.
+       */
+      kind: "no-import" | "old-reader"
+      /** What the repo actually looks like, for the finding's evidence line. */
+      detail: string
+    }
+
+const pExecFile = promisify(execFile)
+let claudeVersionMemo: Promise<string | null> | undefined
+
+/**
+ * The installed Claude Code version, or null when none can be read. `ETYMD_CLAUDE_VERSION`
+ * overrides the probe: a version string pins it, `none` means "no Claude Code here". Read once
+ * per process, since a fleet sweep asks for every repo.
+ */
+export function detectClaudeCodeVersion(): Promise<string | null> {
+  const override = process.env.ETYMD_CLAUDE_VERSION
+  if (override !== undefined) {
+    return Promise.resolve(override === "none" || override === "" ? null : override)
+  }
+  claudeVersionMemo ??= pExecFile("claude", ["--version"], { timeout: 5000 })
+    .then(({ stdout }) => /(\d+\.\d+\.\d+)/.exec(stdout)?.[1] ?? null)
+    .catch(() => null)
+  return claudeVersionMemo
+}
+
+/** `a < b` for dotted numeric versions. */
+function versionBefore(a: string, b: string): boolean {
+  const pa = a.split(".").map(Number)
+  const pb = b.split(".").map(Number)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? 0
+    const y = pb[i] ?? 0
+    if (x !== y) return x < y
+  }
+  return false
+}
+
+/**
+ * Can Claude Code see this repo's agent instructions?
+ *
+ * Claude Code auto-discovers `CLAUDE.md` and follows its `@` imports. Since 2.1.277 it also reads
+ * `AGENTS.md` when a directory has no `CLAUDE.md`; before that it never loaded `AGENTS.md`. So
+ * instructions kept in `AGENTS.md` are invisible to it in two shapes: a `CLAUDE.md` that exists
+ * and does not import them (every version reads that file instead), and no `CLAUDE.md` at all
+ * on a Claude Code older than the fallback. The check is the pointer contract both `fleet add`
+ * and the fleet sweep (`claude-pointer-missing`) speak — defined once here so the two surfaces
+ * cannot drift apart, which is the failure this tool exists to catch.
+ *
+ * Passes when `AGENTS.md` is absent; either name is a symlink to the other (stat follows
+ * links, so same dev:ino covers chains in both directions); the root `CLAUDE.md` carries a
+ * full-line `@AGENTS.md` import; `.claude/CLAUDE.md` carries `@../AGENTS.md`; or there is no
+ * `CLAUDE.md` in either place and the Claude Code version is at or past the fallback, or cannot
+ * be read (a machine without Claude Code has no reader to warn about). A declared
+ * `contract.placement: "none"` does not exempt a repo that HAS an `AGENTS.md` — the declaration
+ * covers absent instruction files, not one a whole harness cannot see.
+ */
+export async function checkClaudePointer(
+  root: string,
+  claudeVersion?: string | null,
+): Promise<ClaudePointerResult> {
+  const agentsAbs = path.join(root, "AGENTS.md")
+  const claudeAbs = path.join(root, "CLAUDE.md")
+  if (!(await pathExists(agentsAbs))) return { ok: true, via: "no-agents" }
+
+  const statOrNone = async (p: string) => {
+    try {
+      return await fs.stat(p)
+    } catch {
+      return null
+    }
+  }
+  const [agentsSt, claudeSt] = await Promise.all([statOrNone(agentsAbs), statOrNone(claudeAbs)])
+  // `stat` follows symlinks, so identical dev:ino means the two names are one file whichever
+  // direction the link points — Claude Code reads the same bytes Codex does. ino 0 is "this
+  // filesystem has no inode answer" and must not read as a match.
+  if (
+    agentsSt &&
+    claudeSt &&
+    agentsSt.ino !== 0 &&
+    agentsSt.ino === claudeSt.ino &&
+    agentsSt.dev === claudeSt.dev
+  ) {
+    return { ok: true, via: "same-file" }
+  }
+
+  const rootClaude = await readText(claudeAbs)
+  if (rootClaude !== null && ROOT_POINTER_IMPORT_RE.test(rootClaude)) {
+    return { ok: true, via: "root-import" }
+  }
+  const dotClaude = await readText(path.join(root, ".claude", "CLAUDE.md"))
+  if (dotClaude !== null && DOT_CLAUDE_IMPORT_RE.test(dotClaude)) {
+    return { ok: true, via: "dotclaude-import" }
+  }
+
+  if (rootClaude !== null || dotClaude !== null) {
+    return {
+      ok: false,
+      kind: "no-import",
+      detail:
+        rootClaude !== null
+          ? "AGENTS.md and CLAUDE.md both present, but CLAUDE.md does not import it"
+          : "AGENTS.md and .claude/CLAUDE.md both present, but .claude/CLAUDE.md does not import it",
+    }
+  }
+
+  const version = claudeVersion === undefined ? await detectClaudeCodeVersion() : claudeVersion
+  if (version !== null && versionBefore(version, CLAUDE_AGENTS_FALLBACK_VERSION)) {
+    return {
+      ok: false,
+      kind: "old-reader",
+      detail: `AGENTS.md present, no CLAUDE.md, and Claude Code ${version} predates the AGENTS.md fallback (${CLAUDE_AGENTS_FALLBACK_VERSION})`,
+    }
+  }
+  return { ok: true, via: "native-fallback" }
 }
 
 /** Top-level directory index with bounded file counts (skips ignored/heavy dirs; caps work). */

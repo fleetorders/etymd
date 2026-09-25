@@ -238,6 +238,11 @@ export const instructionTruthLens: Lens = {
         `${counters.prospectiveSkipped} path claim(s) sit in create-this prose (the file instructs generating them) — forward-looking, not stale; skipped, not flagged.`,
       )
     }
+    if (counters.fetchedSkipped) {
+      disclosures.push(
+        `${counters.fetchedSkipped} path claim(s) sit beside the URL they are fetched from — another tree's files, unverifiable here; skipped, not flagged.`,
+      )
+    }
     if (counters.placeholderSkipped) {
       disclosures.push(
         `${counters.placeholderSkipped} path claim(s) are naming stand-ins (e.g. \`my-custom-skill\`) rather than real references; skipped, not flagged.`,
@@ -281,7 +286,7 @@ export const instructionTruthLens: Lens = {
       )
     }
     disclosures.push(
-      `Checked ${files.length} instruction file(s); commands resolved against root + ${facts.packages.length} workspace manifest(s) plus installed binaries; paths matched against root and package roots. Heuristics: workspace-filtered commands skipped (${counters.filteredSkipped}); tokens without a recognized extension treated as prose (a dir claim needs a trailing slash); gitignored claims unverifiable; create-this and stand-in path claims skipped; absolute/globbed/placeholder tokens skipped; doc mentions inside \`~/\` home paths skipped; framework-pattern staleness not checked.`,
+      `Checked ${files.length} instruction file(s); commands resolved against root + ${facts.packages.length} workspace manifest(s) plus installed binaries; paths matched against root, package roots, the claiming file's directory, and directories the same file names; existence judged on the working tree (gitignored-but-present is true, gitignored-and-absent unverifiable). Heuristics: workspace-filtered commands skipped (${counters.filteredSkipped}); tokens without a recognized extension treated as prose (a dir claim needs a trailing slash); schemeless hosts read as URLs; gitignored claims unverifiable; create-this, fetched-from-URL, and stand-in path claims skipped; absolute/globbed/placeholder tokens skipped; doc mentions inside \`~/\` home paths skipped; framework-pattern staleness not checked.`,
     )
 
     return {
