@@ -73,9 +73,14 @@ describe.skipIf(!existsSync(CLI))("etymd init — the AGENTS.md scaffold is opt-
     await write(".githooks/pre-commit", "#!/bin/sh\nexit 0\n")
     await write("CLAUDE.md", "# bespoke Claude instructions, kept\n")
 
-    await init("-y", "--with-agents")
+    const stdout = await init("-y", "--with-agents")
     expect(await fs.readFile(path.join(dir, "CLAUDE.md"), "utf8")).toBe(
       "# bespoke Claude instructions, kept\n",
     )
+    // The refusal `fleet add` would make later, said here instead: a kept CLAUDE.md without
+    // the import hides the contract from Claude Code, and scaffold time is when the one-line
+    // fix is in front of the user.
+    expect(stdout).toContain("the kept CLAUDE.md does not import AGENTS.md")
+    expect(stdout).toContain("`fleet add` will refuse this repo")
   })
 })

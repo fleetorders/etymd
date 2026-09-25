@@ -16,6 +16,13 @@
 # failing matcher pass as "not a shell script" — the exact silent coverage-shrink the
 # fail-closed rules exist to prevent. The checker does not associate `$?` with the enclosing
 # if-condition, which is why this shape survives the pass it serves; keep it that way.
+#
+# The scratch names (head-bytes, first-line) are FIXED and shared across invocations: xargs
+# starts one process per batch, sequentially, and each batch overwrites the same two files on
+# its way to appending its verdicts. That is safe ONLY while the batches never overlap — the
+# load-bearing invariant. Never add -P to the xargs that drives this, and never run a second
+# consumer of the same scratch directory: concurrent batches would interleave head reads with
+# another file's verdicts, and the tally protocol below would count scripts it never read.
 work=$1
 shift
 for file do
@@ -43,4 +50,4 @@ for file do
     fi
   fi
 done
-# etymd:generated pack-v15 bcb4ff51f228493d
+# etymd:generated pack-v17 b5bf2afe936ba644

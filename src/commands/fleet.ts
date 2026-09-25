@@ -417,12 +417,16 @@ export async function add(opts: FleetAddCmdOptions): Promise<void> {
   // hides the contract from it on every version. The fleet would then sweep a repo whose
   // instructions one whole agent never receives — registered coverage that isn't. A bare
   // AGENTS.md is only a problem for a Claude Code older than the fallback: noted, not refused.
+  // "one exists" includes `.claude/CLAUDE.md` alone — observed on Claude Code 2.1.283: a
+  // project with AGENTS.md and `.claude/CLAUDE.md` (no root CLAUDE.md) loads only the
+  // `.claude/CLAUDE.md`; the AGENTS.md fallback does not fire beside it, so that shape is a
+  // hidden contract too, not a native read.
   const pointer = await checkClaudePointer(absTarget)
   if (!pointer.ok && pointer.kind === "no-import") {
     throw new Error(
       `\`${name}\` has a CLAUDE.md that hides its AGENTS.md from Claude Code ` +
         `(${pointer.detail}). Add a full-line \`@AGENTS.md\` import to it, e.g.:\n\n` +
-        `${generateClaudePointerMd().trimEnd().split("\n").join("\n")}\n\n` +
+        `${generateClaudePointerMd().trimEnd()}\n\n` +
         `— or symlink either file to the other, or delete the CLAUDE.md — then re-run \`etymd fleet add\`.`,
     )
   }

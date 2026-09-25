@@ -482,6 +482,13 @@ export function generateShellDiscoveryScript(): string {
 # failing matcher pass as "not a shell script" — the exact silent coverage-shrink the
 # fail-closed rules exist to prevent. The checker does not associate \`$?\` with the enclosing
 # if-condition, which is why this shape survives the pass it serves; keep it that way.
+#
+# The scratch names (head-bytes, first-line) are FIXED and shared across invocations: xargs
+# starts one process per batch, sequentially, and each batch overwrites the same two files on
+# its way to appending its verdicts. That is safe ONLY while the batches never overlap — the
+# load-bearing invariant. Never add -P to the xargs that drives this, and never run a second
+# consumer of the same scratch directory: concurrent batches would interleave head reads with
+# another file's verdicts, and the tally protocol below would count scripts it never read.
 work=$1
 shift
 for file do
@@ -583,14 +590,28 @@ if command -v shellcheck >/dev/null 2>&1; then
     # Every commit in each pushed range, never the tip alone: pushing two commits — a bad
     # script, then its fix — passed a tip-only read while the bad commit landed on the remote.
     # An all-zero local sha is a delete (nothing to check). An all-zero REMOTE sha is a new
-    # branch: everything no remote already has is being pushed, so the range is the local sha
-    # minus every remote-tracking ref — commits a remote already received were gated when they
-    # landed there, and the residue is exactly this push's new commits. A remote sha this clone
-    # has never seen (the remote moved on since the last fetch) cannot bound a range, so it takes
-    # the same new-branch rule instead of refusing a push the gate could have read. Enumeration
-    # failure refuses the push: a range the gate could not list is a range it did not read.
-    # (pattern) with both parens: bash 3.2 (macOS /bin/sh) cannot parse an unbalanced )
-    # in a case pattern.
+    # branch: everything the TARGET remote does not already have is being pushed, so the range
+    # is the local sha minus that remote's tracking refs — commits it already received were
+    # gated when they landed there, and the residue is exactly this push's new commits. The
+    # exclusion is scoped to the target on purpose: a commit only some OTHER remote's tracking
+    # ref holds — fetched from a fork, a teammate's branch — was never gated for the remote
+    # this push aims at, and subtracting every remote would skip bytes this gate never read.
+    # A remote sha this clone has never seen (the remote moved on since the last fetch) cannot
+    # bound a range, so it takes the same new-branch rule instead of refusing a push the gate
+    # could have read. Enumeration failure refuses the push: a range the gate could not list is
+    # a range it did not read. (pattern) with both parens: bash 3.2 (macOS /bin/sh) cannot
+    # parse an unbalanced ) in a case pattern.
+    # git names the target remote as this hook's first argument. An invocation without it (a
+    # manual run, a test harness) keeps the wider every-remote exclusion of the previous
+    # behaviour rather than excluding nothing.
+    remote=$1
+    list_new_commits() {
+      if [ -n "$remote" ]; then
+        git rev-list "$1" --not --remotes="$remote"
+      else
+        git rev-list "$1" --not --remotes
+      fi
+    }
     : > "$shellcheck_tmp/shas" || exit 1
     printf '%s\\n' "$refs" | while read -r _lref lsha _rref rsha; do
       case "$lsha" in
@@ -602,9 +623,9 @@ if command -v shellcheck >/dev/null 2>&1; then
           if git cat-file -e "\${rsha}^{commit}" 2>/dev/null; then
             git rev-list "$rsha..$lsha"
           else
-            git rev-list "$lsha" --not --remotes
+            list_new_commits "$lsha"
           fi ;;
-        (*) git rev-list "$lsha" --not --remotes ;;
+        (*) list_new_commits "$lsha" ;;
       esac >> "$shellcheck_tmp/shas" || exit 1
     done || {
       echo "etymd: could not enumerate the commits being pushed for shellcheck" >&2
