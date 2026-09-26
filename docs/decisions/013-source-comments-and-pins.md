@@ -13,13 +13,11 @@ checked. That is the larger half of the tool's own thesis: the README argues a w
 complains when it goes stale", and a comment is a written rule that happens to live in a `.ts`
 file.
 
-The evidence that motivated this, measured on a repo of the validation corpus: decision
-references in comments outnumbered every other checkable class by an order of magnitude,
-against an in-repo `DECISIONS.md` — the one claim class etymd already knew how to verify,
-present in bulk, checked by nothing. Renumber or supersede an entry and the code silently lies.
-The same repo measured no TODO/FIXME/`@ts-ignore` rot at all — the generic "stale TODO" pitch
-is not what motivates this, which is why the decision reference leads and no TODO checker ships
-here.
+The commonest checkable claim in source comments is a decision reference ("see decision 12",
+"per DECISIONS.md") — the one claim class etymd already knew how to verify, and in a code base
+that keeps a decision record it can appear in bulk, checked by nothing. Renumber or supersede an
+entry and the code silently lies. A generic "stale TODO" checker answers a different question,
+which is why the decision reference leads and no TODO checker ships here.
 
 The second half is the same shape one layer down the manifest: pins (`overrides`,
 `resolutions`, `patchedDependencies`) are claims about the tree that rot the same way — the
@@ -72,7 +70,7 @@ likely to be stale.
 - **Precision over recall.** String-aware extraction; promotion stricter than the extractor;
   name-only verification for range pins; unverifiable is a disclosure, never a guess.
 - **No project names in the shipped package.** Fixtures describe shapes (`src/app.ts`,
-  `shape-demo`), never the repo the evidence came from.
+  `shape-demo`), never a real project.
 
 ## The fitness test, answered (005)
 
@@ -88,8 +86,8 @@ answers are on record — for each shipped surface:
    extractor; the pin checks are three manifest shapes against three lockfile shapes, table-driven.
 4. **Is it already expressible?** No — nothing scanned comments or pins.
 5. **What does its absence cost?** The check that becomes impossible is "does anything in this
-   repo still cite the decision I am about to delete" — the single cheapest thing that would have
-   caught the motivating case — and, for pins, "does this override still bind".
+   repo still cite the decision I am about to delete" — the single cheapest check against a
+   code base that silently lies — and, for pins, "does this override still bind".
 
 ## Deliberately parked (not designed here)
 
