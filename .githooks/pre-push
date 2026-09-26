@@ -192,15 +192,15 @@ if command -v shellcheck >/dev/null 2>&1; then
       # tracked file's filters, and an unrelated failing one would refuse the push.
       if [ -e "$shellcheck_tmp/external-sources" ]; then
         : > "$shellcheck_tmp/source-names" || exit 1
-        # An argument is a double-quoted path, a single-quoted one, or a bare word, so a quoted
-        # name with a space stays whole. The pattern travels as an argument: a single-quote
+        # An argument is a double-quoted path, a single-quoted one, or a bare word whose
+        # backslash escapes are kept and then undone, so a name with a space stays whole. The pattern travels as an argument: a single-quote
         # alternative cannot sit inside the single-quoted sh -c body.
-        src_pat='(^|[;&|[:space:]])(\.|source)[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];&|]+)|source=[^[:space:]]+'
+        src_pat='(^|[;&|[:space:]])(\.|source)[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|([^[:space:];&|\]|\\.)+)|source=[^[:space:]]+'
         while :; do
           # Each step's status is its own: in a pipeline only the last one counts, and a failed
           # extraction would pass as a short list of names.
           ( cd "$tree" && find . -type f ! -name .shellcheckrc -exec sh -c 'pat=$1; shift; grep -h -o -E -e "$pat" -- "$@"; st=$?; [ "$st" -le 1 ]' sh "$src_pat" {} + ) > "$shellcheck_tmp/source-lines" \
-            && sed -E -e 's/^[;&|[:space:]]?(\.|source)[[:space:]]+//' -e 's/^source=//' -e 's/^"(.*)"$/\1/' -e "s/^'(.*)'\$/\\1/" -e 's|.*/||' "$shellcheck_tmp/source-lines" > "$shellcheck_tmp/source-args" || {
+            && sed -E -e 's/^[;&|[:space:]]?(\.|source)[[:space:]]+//' -e 's/^source=//' -e '/^["'"'"']/!s/\\(.)/\1/g' -e 's/^"(.*)"$/\1/' -e "s/^'(.*)'\$/\\1/" -e 's|.*/||' "$shellcheck_tmp/source-lines" > "$shellcheck_tmp/source-args" || {
             echo "etymd: cannot read what the scripts of $short source" >&2
             exit 1
           }
@@ -270,4 +270,4 @@ if [ -x "$GATE" ]; then
 fi
 
 exit 0
-# etymd:generated pack-v18 8dea13d55df1385f
+# etymd:generated pack-v18 2eaaffae0aa6006a

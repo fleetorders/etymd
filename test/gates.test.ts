@@ -773,6 +773,25 @@ describe.skipIf(!existsSync(CLI))(
     )
 
     it.skipIf(!hasShellcheck)(
+      "PINNED: with external-sources on, a backslash-escaped helper path is staged whole",
+      async () => {
+        await baseRepo()
+        await write(".shellcheckrc", "external-sources=true\n")
+        await write("tool/my helper.inc", "greeting=hi\n")
+        await write("tool/do.sh", '#!/bin/sh\n. ./tool/my\\ helper.inc\necho "$greeting"\n')
+        await commitAll("chore: script sourcing an escaped helper path")
+        await gates()
+        const env = await stubEnv()
+
+        const { stdout } = await runPrePush(
+          env,
+          update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+        )
+        expect(stdout).not.toContain("SC1091")
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
       "PINNED: with external-sources on, an unrelated file's failing checkout filter does not block",
       async () => {
         // Context is staged as raw blobs of what the scripts source — never a checkout, which
