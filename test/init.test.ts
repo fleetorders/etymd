@@ -95,6 +95,8 @@ describe.skipIf(!existsSync(CLI))("etymd init — the AGENTS.md scaffold is opt-
     await write("AGENTS.md", "# AGENTS.md\n")
     await write(".claude/CLAUDE.md", "# own content\n")
 
-    expect(await init("-y")).toContain(".claude/CLAUDE.md does not import it")
+    const out = await init("-y")
+    expect(out).toContain(".claude/CLAUDE.md does not import it")
+    expect(out).toContain("@../AGENTS.md")
   })
 })

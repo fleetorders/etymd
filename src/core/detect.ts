@@ -656,7 +656,7 @@ export function detectClaudeCodeVersion(): Promise<string | null> {
     return Promise.resolve(override === "none" || override === "" ? null : override)
   }
   claudeVersionMemo ??= pExecFile("claude", ["--version"], { timeout: 5000 })
-    .then(({ stdout }) => /(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/.exec(stdout)?.[1] ?? null)
+    .then(({ stdout }) => /(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?=\s|$)/.exec(stdout)?.[1] ?? null)
     .catch(() => null)
   return claudeVersionMemo
 }

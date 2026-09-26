@@ -142,10 +142,13 @@ export async function run(opts: InitOptions): Promise<void> {
   // the shape `fleet add` refuses. Said here, whichever files this run wrote, not first at
   // registration.
   const pointer = await checkClaudePointer(opts.cwd)
-  if (!pointer.ok && pointer.kind === "no-import")
+  if (!pointer.ok && pointer.kind === "no-import") {
+    // The import is relative to the file that carries it.
+    const line = pointer.detail.includes(".claude/CLAUDE.md") ? "@../AGENTS.md" : "@AGENTS.md"
     print(
-      `  ${glyph.partial} ${theme.warn(pointer.detail)} ${theme.dim("— Claude Code reads that file instead; add a full-line @AGENTS.md import")}`,
+      `  ${glyph.partial} ${theme.warn(pointer.detail)} ${theme.dim(`— Claude Code reads that file instead; add a full-line ${line} import`)}`,
     )
+  }
   print(
     `  ${glyph.ok} ${theme.dim("baseline approved →")} ${theme.info(".etymd/baseline.json")} ${theme.dim("(commit it — drift is measured against it)")}`,
   )
