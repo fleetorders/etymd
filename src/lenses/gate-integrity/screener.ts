@@ -70,7 +70,7 @@ export async function probeScreener(root: string, facts: ProjectFacts): Promise<
   const doors: string[] = []
   let devBuildArm = false
   for (const name of HOOK_FILES) {
-    const text = await readText(path.join(root, dir, name))
+    const text = await readText(path.resolve(root, dir, name))
     if (!text || !SCREEN_CALL_RE.test(text)) continue
     doors.push(`${dir}/${name}`)
     if (text.includes(DEV_BUILD_ARM)) devBuildArm = true

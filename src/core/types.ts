@@ -83,6 +83,11 @@ export interface GitFacts {
   isRepo: boolean
   branch?: string
   head?: string
+  /**
+   * `core.hooksPath`, stated repo-relative whenever the directory sits inside the worktree — git
+   * accepts an absolute spelling of the same directory, and the spelling is neither a fact nor
+   * something a committed baseline should carry. Absolute only when it points outside the repo.
+   */
   hooksPath?: string
   husky: boolean
   /** Distinct commit authors in recent history — the solo-vs-team profile signal. */

@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process"
 import { promises as fs } from "node:fs"
 import path from "node:path"
+import { promisify } from "node:util"
 
 import type {
   CiSystem,
@@ -345,6 +347,22 @@ async function hasLintStagedConfig(root: string, pkg: PackageJson | null): Promi
   return false
 }
 
+/**
+ * `core.hooksPath` the way git reads it: relative to the worktree root, or absolute — two
+ * spellings of one directory, identical in effect. The DIRECTORY is the fact and the spelling is
+ * not: an absolute path to the tracked `.githooks/` is the tracked-githooks setup, and comparing
+ * the literal string reported it as a custom one — a gap that does not exist. Returns the
+ * repo-relative form for a directory inside the worktree (which is also what a committed baseline
+ * may carry — a machine-absolute path never belongs in a tracked file), and the resolved absolute
+ * path for one outside it.
+ */
+export function normalizeHooksPath(root: string, raw: string): string {
+  const abs = path.resolve(root, raw)
+  const rel = path.relative(root, abs)
+  const outside = path.isAbsolute(rel) || rel === ".." || rel.startsWith(`..${path.sep}`)
+  return outside ? abs : normalizeRelPath(rel) || "."
+}
+
 export async function detectHooks(
   root: string,
   hooksPath: string | undefined,
@@ -354,9 +372,10 @@ export async function detectHooks(
 
   // A custom core.hooksPath wins: git actually runs those hooks, wherever they live.
   if (hooksPath) {
+    const dir = normalizeHooksPath(root, hooksPath)
     // husky v9's `prepare` wires core.hooksPath to `.husky/_` (its shim dir); the user's real
     // hooks live one level up in `.husky/` — that is husky, not a custom hook setup.
-    if (hooksPath.replace(/\/+$/, "") === ".husky/_") {
+    if (dir === ".husky/_") {
       const base = path.join(root, ".husky")
       return {
         source: "husky",
@@ -367,10 +386,11 @@ export async function detectHooks(
         lintStaged,
       }
     }
-    const base = path.join(root, hooksPath)
+    // `resolve`, not `join`: a directory outside the repo stays where git runs it.
+    const base = path.resolve(root, dir)
     return {
-      source: hooksPath === ".githooks" ? "githooks" : "custom",
-      dir: hooksPath,
+      source: dir === ".githooks" ? "githooks" : "custom",
+      dir,
       preCommit: await pathExists(path.join(base, "pre-commit")),
       prePush: await pathExists(path.join(base, "pre-push")),
       commitMsg: await pathExists(path.join(base, "commit-msg")),
@@ -572,30 +592,80 @@ const ROOT_POINTER_IMPORT_RE = /^\s*@(\.\/)?AGENTS\.md\s*$/m
 /** `.claude/CLAUDE.md`: the same import, one directory up — the other location Claude Code reads. */
 const DOT_CLAUDE_IMPORT_RE = /^\s*@\.\.\/AGENTS\.md\s*$/m
 
+/** The first Claude Code release that reads `AGENTS.md` when a directory has no `CLAUDE.md`. */
+export const CLAUDE_AGENTS_FALLBACK_VERSION = "2.1.277"
+
 export type ClaudePointerResult =
-  | { ok: true; via: "no-agents" | "same-file" | "root-import" | "dotclaude-import" }
+  | {
+      ok: true
+      via: "no-agents" | "same-file" | "root-import" | "dotclaude-import" | "native-fallback"
+    }
   | {
       ok: false
+      /**
+       * `no-import`: a CLAUDE.md exists and does not import AGENTS.md, so Claude Code reads it
+       * instead of AGENTS.md on every version. `old-reader`: no CLAUDE.md, and the installed
+       * Claude Code predates the AGENTS.md fallback.
+       */
+      kind: "no-import" | "old-reader"
       /** What the repo actually looks like, for the finding's evidence line. */
       detail: string
     }
 
+const pExecFile = promisify(execFile)
+let claudeVersionMemo: Promise<string | null> | undefined
+
+/**
+ * The installed Claude Code version, or null when none can be read. `ETYMD_CLAUDE_VERSION`
+ * overrides the probe: a version string pins it, `none` means "no Claude Code here". Read once
+ * per process, since a fleet sweep asks for every repo.
+ */
+export function detectClaudeCodeVersion(): Promise<string | null> {
+  const override = process.env.ETYMD_CLAUDE_VERSION
+  if (override !== undefined) {
+    return Promise.resolve(override === "none" || override === "" ? null : override)
+  }
+  claudeVersionMemo ??= pExecFile("claude", ["--version"], { timeout: 5000 })
+    .then(({ stdout }) => /(\d+\.\d+\.\d+)/.exec(stdout)?.[1] ?? null)
+    .catch(() => null)
+  return claudeVersionMemo
+}
+
+/** `a < b` for dotted numeric versions. */
+function versionBefore(a: string, b: string): boolean {
+  const pa = a.split(".").map(Number)
+  const pb = b.split(".").map(Number)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? 0
+    const y = pb[i] ?? 0
+    if (x !== y) return x < y
+  }
+  return false
+}
+
 /**
  * Can Claude Code see this repo's agent instructions?
  *
- * Claude Code auto-discovers `CLAUDE.md` and follows its `@` imports; it never loads `AGENTS.md`.
- * So instructions kept only in `AGENTS.md` are read by the harnesses that honor the standard
- * name and silently skipped by this one. The check is the pointer contract both `fleet add`
- * (refuse) and the fleet sweep (`claude-pointer-missing`) speak — defined once here so the two
- * surfaces cannot drift apart, which is the failure this tool exists to catch.
+ * Claude Code auto-discovers `CLAUDE.md` and follows its `@` imports. Since 2.1.277 it also reads
+ * `AGENTS.md` when a directory has no `CLAUDE.md`; before that it never loaded `AGENTS.md`. So
+ * instructions kept in `AGENTS.md` are invisible to it in two shapes: a `CLAUDE.md` that exists
+ * and does not import them (every version reads that file instead), and no `CLAUDE.md` at all
+ * on a Claude Code older than the fallback. The check is the pointer contract both `fleet add`
+ * and the fleet sweep (`claude-pointer-missing`) speak — defined once here so the two surfaces
+ * cannot drift apart, which is the failure this tool exists to catch.
  *
  * Passes when `AGENTS.md` is absent; either name is a symlink to the other (stat follows
  * links, so same dev:ino covers chains in both directions); the root `CLAUDE.md` carries a
- * full-line `@AGENTS.md` import; or `.claude/CLAUDE.md` carries `@../AGENTS.md`. A declared
+ * full-line `@AGENTS.md` import; `.claude/CLAUDE.md` carries `@../AGENTS.md`; or there is no
+ * `CLAUDE.md` in either place and the Claude Code version is at or past the fallback, or cannot
+ * be read (a machine without Claude Code has no reader to warn about). A declared
  * `contract.placement: "none"` does not exempt a repo that HAS an `AGENTS.md` — the declaration
  * covers absent instruction files, not one a whole harness cannot see.
  */
-export async function checkClaudePointer(root: string): Promise<ClaudePointerResult> {
+export async function checkClaudePointer(
+  root: string,
+  claudeVersion?: string | null,
+): Promise<ClaudePointerResult> {
   const agentsAbs = path.join(root, "AGENTS.md")
   const claudeAbs = path.join(root, "CLAUDE.md")
   if (!(await pathExists(agentsAbs))) return { ok: true, via: "no-agents" }
@@ -630,13 +700,26 @@ export async function checkClaudePointer(root: string): Promise<ClaudePointerRes
     return { ok: true, via: "dotclaude-import" }
   }
 
-  return {
-    ok: false,
-    detail:
-      rootClaude === null
-        ? "AGENTS.md present, no CLAUDE.md"
-        : `AGENTS.md and CLAUDE.md both present, but CLAUDE.md does not import it`,
+  if (rootClaude !== null || dotClaude !== null) {
+    return {
+      ok: false,
+      kind: "no-import",
+      detail:
+        rootClaude !== null
+          ? "AGENTS.md and CLAUDE.md both present, but CLAUDE.md does not import it"
+          : "AGENTS.md and .claude/CLAUDE.md both present, but .claude/CLAUDE.md does not import it",
+    }
   }
+
+  const version = claudeVersion === undefined ? await detectClaudeCodeVersion() : claudeVersion
+  if (version !== null && versionBefore(version, CLAUDE_AGENTS_FALLBACK_VERSION)) {
+    return {
+      ok: false,
+      kind: "old-reader",
+      detail: `AGENTS.md present, no CLAUDE.md, and Claude Code ${version} predates the AGENTS.md fallback (${CLAUDE_AGENTS_FALLBACK_VERSION})`,
+    }
+  }
+  return { ok: true, via: "native-fallback" }
 }
 
 /** Top-level directory index with bounded file counts (skips ignored/heavy dirs; caps work). */

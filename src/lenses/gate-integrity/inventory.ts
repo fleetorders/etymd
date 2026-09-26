@@ -454,7 +454,8 @@ async function localHookTools(
   const inertCompanions: string[] = []
   const readHook = async (name: string): Promise<GateTool[]> => {
     if (!hooks.dir) return empty
-    const text = await readText(path.join(root, hooks.dir, name))
+    // `resolve`, not `join`: a hooks directory outside the repo is absolute and must stay so.
+    const text = await readText(path.resolve(root, hooks.dir, name))
     if (!text) return empty
     const tools = new Set<GateTool>(matchTools(text, scripts))
     const companion = await companionOf(root, hooks.dir, name, text, scripts)

@@ -37,6 +37,75 @@ async function prePush(): Promise<string> {
   return fs.readFile(path.join(dir, ".githooks", "pre-push"), "utf8")
 }
 
+const GIT_ENV = {
+  ...process.env,
+  GIT_AUTHOR_NAME: "t",
+  GIT_AUTHOR_EMAIL: "t@example.invalid",
+  GIT_COMMITTER_NAME: "t",
+  GIT_COMMITTER_EMAIL: "t@example.invalid",
+}
+
+/** Commit the fixture's files, so the gate has real commits to be pointed at. */
+async function commitAll(message: string) {
+  await pExecFile("git", ["add", "."], { cwd: dir })
+  await pExecFile("git", ["commit", "-q", "-m", message], { cwd: dir, env: GIT_ENV })
+}
+
+async function revParse(rev: string): Promise<string> {
+  const { stdout } = await pExecFile("git", ["rev-parse", rev], { cwd: dir })
+  return stdout.trim()
+}
+
+/** A refs line for updating `branch` from `base` to `head` — one pushed ref, as git reports it. */
+const update = (branch: string, head: string, base: string) =>
+  `refs/heads/${branch} ${head} refs/heads/${branch} ${base}`
+
+const ZERO = "0".repeat(40)
+
+/**
+ * Run the generated pre-push the way git does: one "<local ref> <local sha> <remote ref>
+ * <remote sha>" line per pushed ref, on stdin.
+ */
+async function runPrePush(env: NodeJS.ProcessEnv, ...refLines: string[]) {
+  const refsFile = path.join(dir, ".pushed-refs")
+  await fs.writeFile(refsFile, refLines.join("\n") + (refLines.length ? "\n" : ""), "utf8")
+  return pExecFile("sh", ["-c", '".githooks/pre-push" < "$1"', "sh", refsFile], { cwd: dir, env })
+}
+
+/** The base every fixture builds on: a manifest, an instruction file, one commit for HEAD. */
+async function baseRepo() {
+  await write("package.json", JSON.stringify({ name: "demo", private: true }) + "\n")
+  await write("AGENTS.md", "# AGENTS.md\n")
+  await commitAll("chore: base")
+}
+
+async function stub(command: string, body: string) {
+  const rel = `.stub-bin/${command}`
+  await write(rel, body)
+  await fs.chmod(path.join(dir, rel), 0o755)
+}
+
+/** Only the unrelated audit/content checks are stubbed; discovery runs in the generated hook. */
+async function stubEnv(extra: Record<string, string> = {}): Promise<NodeJS.ProcessEnv> {
+  await stub("etymd", "#!/bin/sh\nexit 0\n")
+  return {
+    ...process.env,
+    ...extra,
+    PATH: `${path.join(dir, ".stub-bin")}${path.delimiter}${process.env.PATH}`,
+  }
+}
+
+/** A recording checker stand-in. The hook runs it inside the materialised tree, so the log
+ * path travels by environment, never by relative filename. */
+async function recordShellcheck() {
+  await stub(
+    "shellcheck",
+    `#!/usr/bin/env node
+require("node:fs").appendFileSync(process.env.ETYMD_RECORD, JSON.stringify(process.argv.slice(2)) + "\\n")
+`,
+  )
+}
+
 describe.skipIf(!existsSync(CLI))("etymd gates — the written tier is derived and disclosed", () => {
   it("PINNED: a repo where no risk-tier rule can fire never gets a gate that cannot fail", async () => {
     // Documents only: no manifest to contradict a script claim, no state doc to fall behind.
@@ -138,48 +207,58 @@ try {
   /* not on PATH — the hook's own absent-checker branch covers that case */
 }
 
+/** The discovery fixture: files the test wrote, plus a manifest, an instruction file, one
+ * script, and fresh gates. Nothing is committed yet — `commitFixture` does that, once. */
+async function fixture(): Promise<NodeJS.ProcessEnv> {
+  await write("package.json", JSON.stringify({ name: "demo", private: true }) + "\n")
+  await write("AGENTS.md", "# AGENTS.md\n")
+  await write("scripts/run", "#!/bin/sh\necho ok\n")
+  await pExecFile("git", ["add", "."], { cwd: dir })
+  await gates()
+  return stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+}
+
+/** Commit everything as ONE commit and return the refs line that pushes it as a new branch.
+ * The hook reads commits, not the working tree, so a fixture counts only once committed.
+ * --no-verify: the generated pre-commit is not what these tests exercise. `stage: false` commits
+ * the index as the test left it — `git add .` would drop an entry with no worktree file behind
+ * it, such as a hand-staged submodule. */
+async function commitFixture({ stage = true } = {}): Promise<string> {
+  if (stage) await pExecFile("git", ["add", "."], { cwd: dir })
+  await pExecFile("git", ["commit", "-q", "--no-verify", "-m", "chore: fixture"], {
+    cwd: dir,
+    env: GIT_ENV,
+  })
+  return update("main", await revParse("HEAD"), ZERO)
+}
+
+/** Every argument list the recording checker received, one per invocation. */
+async function recorded(): Promise<string[][]> {
+  return (await fs.readFile(path.join(dir, "shellcheck.jsonl"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as string[])
+}
+
 describe.skipIf(!existsSync(CLI))("etymd gates — shell discovery fails closed", () => {
-  async function stub(command: string, body: string) {
-    const rel = `.stub-bin/${command}`
-    await write(rel, body)
-    await fs.chmod(path.join(dir, rel), 0o755)
-  }
-
-  async function fixture() {
-    await write("package.json", JSON.stringify({ name: "demo", private: true }) + "\n")
-    await write("AGENTS.md", "# AGENTS.md\n")
-    await write("scripts/run", "#!/bin/sh\necho ok\n")
-    await pExecFile("git", ["add", "."], { cwd: dir })
-    await gates()
-    // Only unrelated audit/content checks are stubbed; discovery runs in the generated hook.
-    await stub("etymd", "#!/bin/sh\nexit 0\n")
-    return {
-      ...process.env,
-      PATH: `${path.join(dir, ".stub-bin")}${path.delimiter}${process.env.PATH}`,
-    }
-  }
-
-  async function recordShellcheck() {
-    await stub(
-      "shellcheck",
-      `#!/usr/bin/env node
-require("node:fs").appendFileSync("shellcheck.jsonl", JSON.stringify(process.argv.slice(2)) + "\\n")
-`,
-    )
-  }
-
   it.skipIf(!hasShellcheck)(
     "checks an extensionless script after a long tracked non-shell path",
     async () => {
       // BSD xargs -I caps each replaced argument at 255 bytes. Repeating this filename inside
       // sh -c exceeds that cap; the old trailing sort hid the failure and the later warning.
+      await baseRepo()
       await write(`docs/${"a".repeat(100)}.txt`, "ordinary text\n")
       await write("z-later", "#!/bin/sh\nnever_used=1\necho ok\n")
-      const env = await fixture()
+      await commitAll("chore: scripts")
+      await gates()
+      const env = await stubEnv()
+      const base = await revParse("HEAD~1")
+      const head = await revParse("HEAD")
 
-      await expect(
-        pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env }),
-      ).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining("SC2034") })
+      await expect(runPrePush(env, update("main", head, base))).rejects.toMatchObject({
+        code: 1,
+        stdout: expect.stringContaining("SC2034"),
+      })
     },
   )
 
@@ -192,8 +271,9 @@ require("node:fs").appendFileSync("shellcheck.jsonl", JSON.stringify(process.arg
       const long = `docs/${"d".repeat(90)}/tool-${"t".repeat(24)}`
       await write(long, "#!/bin/sh\nnever_used=1\necho ok\n")
       const env = await fixture()
+      const pushed = await commitFixture()
 
-      const failure = await pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env }).then(
+      const failure = await runPrePush(env, pushed).then(
         () => {
           throw new Error("expected the long-path script to block the push")
         },
@@ -212,12 +292,19 @@ require("node:fs").appendFileSync("shellcheck.jsonl", JSON.stringify(process.arg
       "tools/a 'single' \"double\" $(false) `false`",
       "tools/tab\tand\nline",
     ]
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
     for (const name of names) await write(name, "#!/bin/sh\necho ok\n")
-    const env = await fixture()
+    await commitAll("chore: scripts")
+    await gates()
     await recordShellcheck()
+    const log = path.join(dir, "shellcheck.jsonl")
+    const env = await stubEnv({ ETYMD_RECORD: log })
+    const base = await revParse("HEAD~1")
+    const head = await revParse("HEAD")
 
-    await pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env })
-    const calls = (await fs.readFile(path.join(dir, "shellcheck.jsonl"), "utf8"))
+    await runPrePush(env, update("main", head, base))
+    const calls = (await fs.readFile(log, "utf8"))
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as string[])
@@ -232,18 +319,54 @@ require("node:fs").appendFileSync("shellcheck.jsonl", JSON.stringify(process.arg
     expect(calls[1]).toContain("style")
   })
 
+  it("PINNED: a tracked name carrying $(…) reaches the scan as data, never as code", async () => {
+    // The defect this pins: the -I{} discovery interpolated each filename into a double-quoted
+    // shell string, so one commit of a name like the one below executed on every push. The
+    // marker makes execution observable — if the old shape ran, the payload fires with the
+    // hook's cwd at the repo root and `pwned` lands beside these fixtures. The payload carries
+    // no slash: a path separator cannot occur inside a filename, only inside what it executes.
+    const hostile = "tool/sub$(touch pwned).sh"
+    await write(hostile, "#!/bin/sh\necho ok\n")
+    await write("tool/plain.sh", "#!/bin/sh\necho ok\n")
+    await write("tool/not-a-script.txt", "no shebang here\n")
+    const env = await fixture()
+    // The shape itself, pinned on the generated bytes: every xargs INVOCATION is -I-free
+    // (names move as arguments, never as replacements inside a quoted script). Prose that
+    // names the retired shape is exempt — only command position counts.
+    const hook = await prePush()
+    const xargsLines = hook
+      .split("\n")
+      .filter((line) => /^\s*(\( cd "\$tree" && )?xargs\b/.test(line))
+    expect(xargsLines.length).toBeGreaterThan(0)
+    for (const line of xargsLines) expect(line).not.toMatch(/-I/)
+    await recordShellcheck()
+    const pushed = await commitFixture()
+
+    await runPrePush(env, pushed)
+    expect(existsSync(path.join(dir, "pwned"))).toBe(false)
+    for (const args of await recorded()) {
+      // Byte-for-byte arrival: the substitution survives into the checked set instead of being
+      // mangled by re-quoting, the plain script is beside it, and the non-script is not.
+      expect(args).toContain(`./${hostile}`)
+      expect(args).toContain("./tool/plain.sh")
+      expect(args.some((arg) => arg.includes("not-a-script"))).toBe(false)
+    }
+  })
+
   // Each stub also asserts the message of the step it means to break: a failing `git` (or
   // `grep`) on PATH disturbs other hook steps too, so "the hook blocked" alone would not prove
-  // the discovery step caused it. The head stub fails on the FIRST tracked file it is given, so
-  // only the message prefix is pinned here — the unreadable-file test below pins the filename.
+  // the discovery step caused it. The stubs go on PATH only after the fixture is committed, so
+  // they break the push, never the setup. ETYMD_RECORD stays set: a regression that reached
+  // the checker after partial discovery would write the log, not throw before it.
   it.each([
-    ["git", "etymd: cannot enumerate tracked files for shellcheck"],
+    ["git", "etymd: could not enumerate the commits being pushed for shellcheck"],
     ["head", "etymd: cannot read tracked file for shellcheck:"],
     ["grep", "etymd: shell script discovery failed"],
     ["xargs", "etymd: shell script discovery failed"],
   ])("blocks when %s fails during discovery, even after partial output", async (command, step) => {
     const env = await fixture()
     await recordShellcheck()
+    const pushed = await commitFixture()
     await stub(
       command,
       `#!/bin/sh
@@ -253,7 +376,7 @@ exit 23
 `,
     )
 
-    const run = pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env })
+    const run = runPrePush(env, pushed)
     await expect(run).rejects.toMatchObject({
       code: 1,
       stderr: expect.stringContaining("forced discovery failure"),
@@ -264,18 +387,25 @@ exit 23
     expect(existsSync(path.join(dir, "shellcheck.jsonl"))).toBe(false)
   })
 
-  it("blocks when a tracked regular file cannot be read, naming the file", async () => {
-    const env = await fixture()
+  it("PINNED: the pushed commit is the read — a deleted working-tree copy neither dodges the gate nor blocks it", async () => {
+    // The 2026-09-15 shape inverted: the working tree was never the right read. Deleting the
+    // only working-tree copy of a script must not skip the commit's copy — and must not break
+    // an unrelated push the way a tree-reading gate did.
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await commitAll("chore: scripts")
+    await gates()
     await recordShellcheck()
-    await fs.chmod(path.join(dir, "scripts/run"), 0o000)
+    const log = path.join(dir, "shellcheck.jsonl")
+    const env = await stubEnv({ ETYMD_RECORD: log })
+    const base = await revParse("HEAD~1")
+    const head = await revParse("HEAD")
+    await fs.unlink(path.join(dir, "scripts/run"))
 
-    await expect(pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env })).rejects.toMatchObject({
-      code: 1,
-      stderr: expect.stringContaining(
-        "etymd: cannot read tracked file for shellcheck: scripts/run",
-      ),
-    })
-    expect(existsSync(path.join(dir, "shellcheck.jsonl"))).toBe(false)
+    await runPrePush(env, update("main", head, base))
+    const calls = await recorded()
+    expect(calls.length).toBeGreaterThan(0)
+    for (const args of calls) expect(args).toContain("./scripts/run")
   })
 
   it("discovers and checks its own classifier once the gates are tracked", async () => {
@@ -284,13 +414,10 @@ exit 23
     // set it computes — the gate checks itself.
     const env = await fixture()
     await recordShellcheck()
-    await pExecFile("git", ["add", ".githooks"], { cwd: dir })
+    const pushed = await commitFixture()
 
-    await pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env })
-    const calls = (await fs.readFile(path.join(dir, "shellcheck.jsonl"), "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as string[])
+    await runPrePush(env, pushed)
+    const calls = await recorded()
     expect(calls.length).toBeGreaterThan(0)
     for (const args of calls) {
       expect(args).toContain("./.githooks/discover-shell-scripts.sh")
@@ -299,25 +426,26 @@ exit 23
   })
 
   it("skips tracked paths with nothing readable behind them, and says so", async () => {
-    // Deleted from the worktree while still tracked, plus a dangling symlink: neither is a
-    // checking hazard that can lie, so neither blocks — but both are disclosed, never silent.
+    // A submodule entry and a dangling symlink, both committed: neither is a checking hazard
+    // that can lie, so neither blocks — but both are disclosed, never silent.
     await write("scripts/keep", "#!/bin/sh\necho ok\n")
     const env = await fixture()
     await recordShellcheck()
-    await fs.unlink(path.join(dir, "scripts/run"))
     await fs.symlink("nowhere-at-all", path.join(dir, "dangling"))
-    await pExecFile("git", ["add", "dangling"], { cwd: dir })
+    await pExecFile("git", ["add", "."], { cwd: dir })
+    await pExecFile(
+      "git",
+      ["update-index", "--add", "--cacheinfo", `160000,${"1".repeat(40)},vendored`],
+      { cwd: dir },
+    )
+    const pushed = await commitFixture({ stage: false })
 
-    const { stdout } = await pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env })
+    const { stdout } = await runPrePush(env, pushed)
     expect(stdout).toContain("2 tracked path(s) with nothing readable behind them")
-    const calls = (await fs.readFile(path.join(dir, "shellcheck.jsonl"), "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as string[])
-    for (const args of calls) {
+    for (const args of await recorded()) {
       expect(args).toContain("./scripts/keep")
-      expect(args).not.toContain("./scripts/run")
       expect(args).not.toContain("./dangling")
+      expect(args).not.toContain("./vendored")
     }
   })
 
@@ -327,17 +455,130 @@ exit 23
     await write("docs/example.md", "# Notes\n\n```sh\n#!/bin/sh\necho hi\n```\n")
     const env = await fixture()
     await recordShellcheck()
+    const pushed = await commitFixture()
 
-    await pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env })
-    const calls = (await fs.readFile(path.join(dir, "shellcheck.jsonl"), "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as string[])
-    for (const args of calls) {
+    await runPrePush(env, pushed)
+    for (const args of await recorded()) {
       expect(args).not.toContain("./docs/example.md")
     }
   })
 })
+
+describe.skipIf(!existsSync(CLI))(
+  "etymd gates — the range being pushed, not the tree or the tip",
+  () => {
+    it.skipIf(!hasShellcheck)(
+      "PINNED: a bad middle commit under a clean tip refuses the push",
+      async () => {
+        // The failure being fixed: a tip-only read passed exactly this push — bad script
+        // committed, then fixed — and the bad commit landed on the remote. Every commit in
+        // the range is materialised and checked, so the middle commit refuses the push even
+        // though HEAD is clean.
+        await baseRepo()
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: bad script")
+        await write("tool/do.sh", "#!/bin/sh\necho ok\n")
+        await commitAll("chore: fix it")
+        await gates()
+        const env = await stubEnv()
+        const base = await revParse("HEAD~2")
+        const head = await revParse("HEAD")
+
+        await expect(runPrePush(env, update("main", head, base))).rejects.toMatchObject({
+          code: 1,
+          stdout: expect.stringContaining("SC2034"),
+        })
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "an all-zero remote sha (a new branch) checks every commit no remote already has",
+      async () => {
+        await baseRepo()
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: bad script")
+        await gates()
+        const env = await stubEnv()
+        const head = await revParse("HEAD")
+
+        // No remote exists in the fixture, so --not --remotes negates nothing: the whole
+        // young history is the push, bad commit included.
+        await expect(
+          runPrePush(env, `refs/heads/topic ${head} refs/heads/topic ${ZERO}`),
+        ).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining("SC2034") })
+      },
+    )
+
+    it.skipIf(!hasShellcheck)("a delete-only push has nothing to check and says so", async () => {
+      await baseRepo()
+      await write("scripts/run", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: scripts")
+      await gates()
+      const env = await stubEnv()
+      const head = await revParse("HEAD")
+
+      const { stdout } = await runPrePush(env, `refs/heads/gone ${ZERO} refs/heads/gone ${head}`)
+      expect(stdout).toContain("no commit in the pushed refs")
+    })
+
+    it.skipIf(!hasShellcheck)(
+      "an empty range (nothing new to push) is clean and says so",
+      async () => {
+        await baseRepo()
+        await write("scripts/run", "#!/bin/sh\necho ok\n")
+        await commitAll("chore: scripts")
+        await gates()
+        const env = await stubEnv()
+        const head = await revParse("HEAD")
+
+        const { stdout } = await runPrePush(env, update("main", head, head))
+        expect(stdout).toContain("nothing to check")
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: a script marked export-ignore is still checked — the read is not an archive",
+      async () => {
+        // `git archive` drops export-ignore paths, so an archive-based read let a script leave
+        // the checked set without a word. The pushed commit is checked out whole instead.
+        await baseRepo()
+        await write(".gitattributes", "tool/do.sh export-ignore\n")
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: hidden bad script")
+        await gates()
+        const env = await stubEnv()
+        const base = await revParse("HEAD~1")
+        const head = await revParse("HEAD")
+
+        await expect(runPrePush(env, update("main", head, base))).rejects.toMatchObject({
+          code: 1,
+          stdout: expect.stringContaining("SC2034"),
+        })
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "a remote sha this clone has never seen falls back to the new-branch range, not a refusal",
+      async () => {
+        // The remote moved on since the last fetch: its sha cannot bound a range here. Refusing
+        // would block a push the gate can read, so the push is checked as a new branch — and a
+        // bad commit in it still refuses.
+        await baseRepo()
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: bad script")
+        await gates()
+        const env = await stubEnv()
+        const head = await revParse("HEAD")
+        const unseen = "1".repeat(40)
+
+        await expect(runPrePush(env, update("main", head, unseen))).rejects.toMatchObject({
+          code: 1,
+          stdout: expect.stringContaining("SC2034"),
+        })
+      },
+    )
+  },
+)
 
 describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's reach", () => {
   it("the shebang scan hands only sh/bash/dash to shellcheck, and the hook says why", async () => {
@@ -365,31 +606,29 @@ describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's r
   it.skipIf(!hasShellcheck)(
     "PINNED: a repo whose surface is zsh pushes clean through the fresh hook",
     async () => {
-      await write("package.json", JSON.stringify({ name: "zshy", private: true }, null, 2) + "\n")
-      await write("AGENTS.md", "# AGENTS.md\n")
+      await baseRepo()
       await write("tool/run.zsh", "#!/bin/zsh\necho hi\n")
-      await pExecFile("git", ["add", "."], { cwd: dir })
-
+      await commitAll("chore: zsh tool")
       await gates()
-      // Running the generated hook directly is what a push executes. Before the fix this died
-      // inside shellcheck on SC1071 — a parser error, not a finding.
-      const { stdout } = await pExecFile("sh", [path.join(dir, ".githooks", "pre-push")], {
-        cwd: dir,
-      })
+      const env = await stubEnv()
+      const base = await revParse("HEAD~1")
+      const head = await revParse("HEAD")
+      // Running the generated hook with git's ref lines on stdin is what a push executes.
+      // Before the fix this died inside shellcheck on SC1071 — a parser error, not a finding.
+      const { stdout } = await runPrePush(env, update("main", head, base))
       expect(stdout).toContain("zsh script(s) excluded")
     },
   )
 
   it.skipIf(!hasShellcheck)("a bash script with a real warning still blocks the push", async () => {
-    await write("package.json", JSON.stringify({ name: "bashy", private: true }, null, 2) + "\n")
-    await write("AGENTS.md", "# AGENTS.md\n")
+    await baseRepo()
     await write("tool/do.sh", "#!/bin/bash\nnever_used=1\necho ok\n")
-    await pExecFile("git", ["add", "."], { cwd: dir })
-
+    await commitAll("chore: bash tool")
     await gates()
-    await expect(
-      pExecFile("sh", [path.join(dir, ".githooks", "pre-push")], { cwd: dir }),
-    ).rejects.toThrow()
+    const env = await stubEnv()
+    const base = await revParse("HEAD~1")
+    const head = await revParse("HEAD")
+    await expect(runPrePush(env, update("main", head, base))).rejects.toThrow()
   })
 })
 
