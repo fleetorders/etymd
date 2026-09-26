@@ -909,6 +909,26 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
       kind: "no-import",
     },
     {
+      name: "a fence line with an info string does not close an open fence",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.writeFile(
+          path.join(root, "CLAUDE.md"),
+          "```\nexample\n```md\n@AGENTS.md\n```\n",
+          "utf8",
+        )
+      },
+      kind: "no-import",
+    },
+    {
+      name: "trailing garbage after the version is unparseable, and fails closed",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+      },
+      version: `${CLAUDE_AGENTS_FALLBACK_VERSION}garbage`,
+      kind: "old-reader",
+    },
+    {
       name: "an import indented by two spaces still loads",
       build: async (root) => {
         await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")

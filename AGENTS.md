@@ -28,7 +28,8 @@ Distilled from a frontrunner project workflow, validated against a sibling-repo 
 - **Build:** tsup — two builds: `src/cli.ts` (binary, shebang, per-command code-splitting) and
   `src/index.ts` (programmatic surface, dts). Runtime deps external + exact-pinned.
 - **Tests:** vitest (`test/`), including read-only smoke tests over the sibling corpus repos.
-- **CI:** GitHub Actions workflow file ready in `.github/workflows/ci.yml` (activates on a remote).
+- **CI:** GitHub Actions — `.github/workflows/ci.yml` and `.github/workflows/checks.yml`, on every
+  push to main and every pull request.
 
 ## Working rules (the leash)
 

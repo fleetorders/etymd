@@ -94,7 +94,7 @@ if command -v shellcheck >/dev/null 2>&1; then
     if [ -n "$shas" ]; then
       # Said up front: a first push from a fresh clone can carry the whole history, and a long
       # silent hook reads as a hung one.
-      echo "› shellcheck: $(printf '%s\n' "$shas" | wc -l | tr -d ' ') commit(s) in the pushed range, each checked for the scripts it changes"
+      echo "› shellcheck: $(printf '%s\n' "$shas" | wc -l | tr -d ' ') commit(s) in the pushed range"
     else
       echo "› shellcheck: no commit in the pushed refs (deletes only, or nothing on stdin) — nothing to check"
     fi
@@ -126,35 +126,43 @@ if command -v shellcheck >/dev/null 2>&1; then
       # Only the paths this commit adds, copies, modifies, renames or retypes against its first
       # parent. A script the commit did not touch has its parent's bytes, and that parent was
       # either gated when it reached the remote or sits in this range and is checked here; a
-      # merge diffed against its first parent brings in everything the other side added. Checking
-      # every script in every commit multiplied the cost by the range length, so a long push of a
-      # script-heavy repo ran long enough to look hung. Two changes alter the verdict on bytes nobody touched — the classifier deciding
-      # what is a script, and a .shellcheckrc deciding what is a finding — so a commit carrying
-      # either is checked whole.
+      # merge diffed against its first parent brings in everything the other side added.
+      # Checking every script in every commit multiplied the cost by the range length, so a long
+      # push of a script-heavy repo ran long enough to look hung. Two changes alter the verdict
+      # on bytes nobody touched — the classifier deciding what is a script, and a .shellcheckrc
+      # deciding what is a finding — so a commit that touches either, deletion included (a
+      # removed .shellcheckrc re-enables every check it disabled), is checked whole. So is a
+      # commit that adds or changes this hook: a repo adopting the gate after the fact has
+      # scripts no gate ever read, and the commit installing it is where they get read once.
       short=$(git rev-parse --short "$sha" 2>/dev/null || echo "$sha")
       if git rev-parse -q --verify "${sha}^1^{commit}" >/dev/null 2>&1; then
-        git diff-tree -r -z --name-only --no-commit-id --diff-filter=ACMRT "${sha}^1" "$sha"
+        git diff-tree -r -z --name-only --no-commit-id "${sha}^1" "$sha" > "$shellcheck_tmp/touched" \
+          && git diff-tree -r -z --name-only --no-commit-id --diff-filter=ACMRT "${sha}^1" "$sha" > "$shellcheck_tmp/tracked"
       else
-        git diff-tree -r -z --name-only --no-commit-id --root "$sha"
-      fi > "$shellcheck_tmp/tracked" || {
+        git diff-tree -r -z --name-only --no-commit-id --root "$sha" > "$shellcheck_tmp/touched" \
+          && cp "$shellcheck_tmp/touched" "$shellcheck_tmp/tracked"
+      fi || {
         echo "etymd: cannot enumerate the paths $short changes for shellcheck" >&2
         exit 1
       }
-      scope="changed in"
+      where="changed in $short"
+      # Through a file, not a pipe: a pipeline reports only grep's status, and a failing tr would
+      # hand grep nothing — a "no match" that silently takes the narrow path.
+      tr '\000' '\n' < "$shellcheck_tmp/touched" > "$shellcheck_tmp/touched-lines" || exit 1
       # grep: 1 is "no match", a verdict; anything higher is the matcher failing. The status is
       # taken on the grep's own line so nothing added later can come between them.
       st=0
-      tr '\000' '\n' < "$shellcheck_tmp/tracked" | grep -qE '(^|/)(\.shellcheckrc|discover-shell-scripts\.sh)$' || st=$?
+      grep -qE '(^|/)(\.shellcheckrc|discover-shell-scripts\.sh|pre-push)$' "$shellcheck_tmp/touched-lines" || st=$?
       case $st in
         (0)
-          scope="in (whole tree: the classifier or a .shellcheckrc changed)"
+          where="in $short (whole tree: the gate, its classifier or a .shellcheckrc changed)"
           git ls-tree -r -z --name-only "$sha" > "$shellcheck_tmp/tracked" || {
             echo "etymd: cannot enumerate the tree of $short for shellcheck" >&2
             exit 1
           } ;;
         (1) ;;
         (*)
-          echo "etymd: shell script discovery failed; cannot tell whether $short changes the classifier or a .shellcheckrc" >&2
+          echo "etymd: shell script discovery failed; cannot tell whether $short changes the gate, its classifier or a .shellcheckrc" >&2
           exit 1 ;;
       esac
       ( cd "$tree" && xargs -0 "$discover" "$shellcheck_tmp" ) < "$shellcheck_tmp/tracked" || {
@@ -171,9 +179,9 @@ if command -v shellcheck >/dev/null 2>&1; then
         echo "› shellcheck: $((zsh_count)) zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
       fi
       if [ "$count" -eq 0 ]; then
-        echo "› shellcheck: no shell script $scope $short — nothing to check there"
+        echo "› shellcheck: no shell script $where — nothing to check there"
       else
-        echo "› shellcheck ($((count)) scripts $scope $short, blocking at severity=warning)"
+        echo "› shellcheck ($((count)) scripts $where, blocking at severity=warning)"
         ( cd "$tree" && xargs -0 shellcheck -S warning -- < "$shellcheck_tmp/scripts" ) || {
           echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
           exit 1
@@ -213,4 +221,4 @@ if [ -x "$GATE" ]; then
 fi
 
 exit 0
-# etymd:generated pack-v16 89f8e0f137ac0ba3
+# etymd:generated pack-v16 842e12fbbd4d6dde

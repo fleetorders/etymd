@@ -138,15 +138,14 @@ export async function run(opts: InitOptions): Promise<void> {
   section("Onboarded")
   for (const w of result.written) print(`  ${glyph.ok} ${theme.dim("wrote")} ${theme.info(w)}`)
   for (const sk of result.skipped) print(`  ${glyph.bullet} ${theme.dim("kept")} ${theme.dim(sk)}`)
-  // A CLAUDE.md kept as it was can still hide the AGENTS.md this run wrote beside it — the same
-  // shape `fleet add` refuses. Said here, at scaffold time, not first at registration.
-  if (scaffoldAgents && result.skipped.includes("CLAUDE.md")) {
-    const pointer = await checkClaudePointer(opts.cwd)
-    if (!pointer.ok && pointer.kind === "no-import")
-      print(
-        `  ${glyph.partial} ${theme.warn("CLAUDE.md kept, but it does not import AGENTS.md")} ${theme.dim("— Claude Code reads it instead; add a full-line @AGENTS.md import")}`,
-      )
-  }
+  // A CLAUDE.md (root or .claude/) that does not import AGENTS.md hides it from Claude Code —
+  // the shape `fleet add` refuses. Said here, whichever files this run wrote, not first at
+  // registration.
+  const pointer = await checkClaudePointer(opts.cwd)
+  if (!pointer.ok && pointer.kind === "no-import")
+    print(
+      `  ${glyph.partial} ${theme.warn(pointer.detail)} ${theme.dim("— Claude Code reads that file instead; add a full-line @AGENTS.md import")}`,
+    )
   print(
     `  ${glyph.ok} ${theme.dim("baseline approved →")} ${theme.info(".etymd/baseline.json")} ${theme.dim("(commit it — drift is measured against it)")}`,
   )

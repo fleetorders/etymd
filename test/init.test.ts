@@ -78,7 +78,7 @@ describe.skipIf(!existsSync(CLI))("etymd init — the AGENTS.md scaffold is opt-
       "# bespoke Claude instructions, kept\n",
     )
     // Kept, and it hides the AGENTS.md just written — said now, not first at `fleet add`.
-    expect(out).toContain("CLAUDE.md kept, but it does not import AGENTS.md")
+    expect(out).toContain("CLAUDE.md does not import it")
   })
 
   it("a kept CLAUDE.md that already imports AGENTS.md draws no warning", async () => {
@@ -86,6 +86,15 @@ describe.skipIf(!existsSync(CLI))("etymd init — the AGENTS.md scaffold is opt-
     await write(".githooks/pre-commit", "#!/bin/sh\nexit 0\n")
     await write("CLAUDE.md", "# CLAUDE.md\n\n@AGENTS.md\n")
 
-    expect(await init("-y", "--with-agents")).not.toContain("does not import AGENTS.md")
+    expect(await init("-y", "--with-agents")).not.toContain("does not import it")
+  })
+
+  it("plain init warns about a .claude/CLAUDE.md that hides an existing AGENTS.md", async () => {
+    await write("package.json", JSON.stringify({ name: "demo", private: true }, null, 2) + "\n")
+    await write(".githooks/pre-commit", "#!/bin/sh\nexit 0\n")
+    await write("AGENTS.md", "# AGENTS.md\n")
+    await write(".claude/CLAUDE.md", "# own content\n")
+
+    expect(await init("-y")).toContain(".claude/CLAUDE.md does not import it")
   })
 })

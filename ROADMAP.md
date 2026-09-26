@@ -154,6 +154,12 @@ does not ship. Decision record: [`docs/decisions/003-truth-guard-pivot.md`](docs
 - **Workspace-filtered commands** (`pnpm --filter x test`) are skipped, counted, and disclosed —
   not resolved into the target package.
 - **Sonar/server-side thresholds** cannot be read from the repo; findings say exactly that.
+- **A script a pushed commit did not touch is not re-checked.** The pre-push shellcheck step reads
+  only what each commit changes; an untouched script carries bytes a previous push already
+  checked. The commit that installs or changes the gate, its classifier, or a `.shellcheckrc` is
+  checked whole, so a repo's existing scripts are read once at adoption. The cost: a commit
+  pushed with `--no-verify` is never re-read by a later push; a periodic whole-tree
+  `shellcheck` run closes that gap.
 - **A hook generated before the generation stamp existed cannot be proven untouched.** It has no
   stamp, so `etymd gates` keeps it rather than regenerating — stating the reason and the way out
   instead of the old silent `kept (hand-edited)`. One regeneration makes it provable from then on.

@@ -606,12 +606,17 @@ function withoutFencedCode(text: string): string {
   const kept: string[] = []
   let fence: string | null = null
   for (const line of text.split("\n")) {
-    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1]
     if (fence === null) {
-      if (marker) fence = marker
+      // An opener may carry an info string (```md), but a backtick fence's info string may not
+      // contain a backtick — that line is inline code, not a fence.
+      const open = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+      if (open?.[1] && !(open[1][0] === "`" && open[2]?.includes("`"))) fence = open[1]
       else kept.push(line)
-    } else if (marker && marker[0] === fence[0] && marker.length >= fence.length) {
-      fence = null
+    } else {
+      // A closing fence is the opener's character, at least as long, and nothing after it but
+      // whitespace — so ```md inside an open block does not close it.
+      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line)?.[1]
+      if (close && close[0] === fence[0] && close.length >= fence.length) fence = null
     }
   }
   return kept.join("\n")
@@ -651,18 +656,19 @@ export function detectClaudeCodeVersion(): Promise<string | null> {
     return Promise.resolve(override === "none" || override === "" ? null : override)
   }
   claudeVersionMemo ??= pExecFile("claude", ["--version"], { timeout: 5000 })
-    .then(({ stdout }) => /(\d+\.\d+\.\d+)/.exec(stdout)?.[1] ?? null)
+    .then(({ stdout }) => /(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/.exec(stdout)?.[1] ?? null)
     .catch(() => null)
   return claudeVersionMemo
 }
 
 /**
- * `a < b` for `major.minor.patch` versions. A prerelease (`2.1.277-rc1`) sorts before its
- * release. A version that does not parse counts as older: this answers "may the reader be too
- * old to see AGENTS.md", and a version nobody can read must not pass that check.
+ * May version `a` predate `b`? Deliberately not a general comparison — it leans one way. A
+ * prerelease (`2.1.277-rc1`) sorts before its release, and a version that does not parse counts
+ * as older: this answers "may the reader be too old to see AGENTS.md", and a version nobody can
+ * read must not pass that check. Two prereleases of one release are not ordered.
  */
-function versionBefore(a: string, b: string): boolean {
-  const parse = (v: string) => /^(\d+)\.(\d+)\.(\d+)(-\S+)?/.exec(v.trim())
+function mayPredate(a: string, b: string): boolean {
+  const parse = (v: string) => /^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?$/.exec(v.trim())
   const pa = parse(a)
   const pb = parse(b)
   if (!pa || !pb) return true
@@ -743,7 +749,7 @@ export async function checkClaudePointer(
   }
 
   const version = claudeVersion === undefined ? await detectClaudeCodeVersion() : claudeVersion
-  if (version !== null && versionBefore(version, CLAUDE_AGENTS_FALLBACK_VERSION)) {
+  if (version !== null && mayPredate(version, CLAUDE_AGENTS_FALLBACK_VERSION)) {
     return {
       ok: false,
       kind: "old-reader",
