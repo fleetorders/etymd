@@ -465,34 +465,58 @@ exit 0
  */
 export function generateShellDiscoveryScript(): string {
   return stampGenerated(`#!/usr/bin/env sh
-# etymd: shell script discovery for the pre-push shellcheck step. Arguments: the scratch
-# directory the hook created, then the tracked paths to classify (NUL-delimited on the hook's
-# side, positional here). Verdicts land in the scratch: scripts (NUL-delimited matches) and one
-# dot per decision into count / zsh-count / skip-count, tallied by the hook after the pipeline.
+# etymd: shell script discovery for the pre-push shellcheck step. Two calls per commit:
+#   discover-shell-scripts.sh --skips <scratch> <ls-tree record>...
+#   discover-shell-scripts.sh --commit <scratch> <tree> <commit> <commit>:<path>...
+# The first counts the changed paths that are symlinks or submodule entries. The second reads
+# the candidates \`git grep\` found with a line starting \`#!\`, and classifies each by its FIRST
+# line. Verdicts land in the scratch: scripts (NUL-delimited matches) and one dot per decision
+# into count / zsh-count / skip-count, tallied by the hook after the pipeline. Each script found
+# is written into <tree> at its path, so the checker reads it there.
 #
-# The hook runs it from inside a commit materialised from git's object store, so paths resolve
-# against that tree, never the working tree. A path with nothing readable behind it — a
-# submodule entry, a dangling symlink — cannot lie about its contents, so it is a disclosed
-# skip, never a block. A regular file
-# that EXISTS but cannot be read is the other branch — coverage would silently shrink, so it
-# fails, naming the path.
+# Every byte comes from git's object store as the raw blob — \`git cat-file blob\`, which
+# applies no eol, text or filter attribute. A checkout converts: under \`eol=crlf\` the shebang
+# line ends in a carriage return, the match below fails, and the script leaves the checked set
+# without a word. Only the entries handed in are read, never the whole commit.
+#
+# A symlink or submodule entry has no script bytes of its own — a link's target is a tracked
+# path checked under its own name — so it is a disclosed skip, never a block. A candidate that
+# cannot be read fails, naming the path: coverage would otherwise silently shrink.
 #
 # The match/error protocol: grep reports "no match" as 1 and a failure as 2 or more, and only
 # the first is a verdict. Letting a failure fall through would pass a broken matcher as "not a
 # shell script" — the exact silent coverage-shrink the fail-closed rules exist to prevent. The
 # status is captured on the grep's own line (\`|| st=$?\`), so no command added later can come
 # between the grep and the check and silently replace the status being read.
-work=$1
-shift
-for file do
-  if [ ! -f "./$file" ]; then
-    printf . >> "$work/skip-count" || exit 1
-    continue
-  fi
-  # 4096 bytes bound the read — a binary with no newline would otherwise be copied whole
-  # into the scratch on every push. The second head restores line-1-only semantics, so a
-  # shebang embedded on a LATER line of a document cannot match the patterns below.
-  head -c 4096 "./$file" > "$work/head-bytes" || {
+case \${1-} in
+  (--skips)
+    # Records only: a symlink or submodule entry is counted, everything else is left to the
+    # candidate pass. Builtins only — this loop sees every changed path.
+    work=$2
+    shift 2
+    for record do
+      case \${record%% *} in
+        (100644|100755) ;;
+        (*) printf . >> "$work/skip-count" || exit 1 ;;
+      esac
+    done
+    exit 0 ;;
+  (--commit)
+    [ $# -ge 4 ] || exit 1 ;;
+  (*)
+    echo "etymd: discover-shell-scripts.sh expects --commit or --skips; the pre-push beside it is older than this classifier — run 'etymd gates'" >&2
+    exit 1 ;;
+esac
+work=$2
+tree=$3
+sha=$4
+shift 4
+for entry do
+  file=\${entry#"$sha":}
+  # 4096 bytes bound the classifying read — a binary with no newline would otherwise be copied
+  # whole into the next step. The second head restores line-1-only semantics, so a shebang
+  # embedded on a LATER line of a document cannot match the patterns below.
+  git cat-file blob "$sha:$file" > "$work/blob" && head -c 4096 "$work/blob" > "$work/head-bytes" || {
     echo "etymd: cannot read tracked file for shellcheck: $file" >&2
     exit 1
   }
@@ -501,6 +525,14 @@ for file do
   grep -qE "^#!.*[/ ](ba|da)?sh( |$)" "$work/first-line" || st=$?
   case $st in
     (0)
+      case $file in
+        (*/*) dir=\${file%/*} ;;
+        (*) dir=. ;;
+      esac
+      mkdir -p -- "$tree/$dir" && mv -- "$work/blob" "$tree/$file" || {
+        echo "etymd: cannot stage tracked file for shellcheck: $file" >&2
+        exit 1
+      }
       printf "./%s\\0" "$file" >> "$work/scripts" || exit 1
       printf . >> "$work/count" || exit 1 ;;
     (1)
@@ -528,11 +560,11 @@ done
  * doing that discovery is itself a tracked, shebanged file (see `generateShellDiscoveryScript`),
  * so the scan finds it too once the gates are committed — the gate covers its own classifier.
  *
- * The check reads the commits BEING PUSHED, each materialised from git's object store — never
+ * The check reads the commits BEING PUSHED, each script read as its raw blob from git's object store — never
  * the working tree (a fixed tree let an unfixed commit ship while the gate read the
  * tree, and a dirty tree shared by several sessions blocked an unrelated push), and never the
  * tip alone (a bad commit under its own fix shipped while the gate read only the tip). A
- * commit that cannot be materialised refuses the push: certifying bytes the gate did not read
+ * commit or blob that cannot be read refuses the push: certifying bytes the gate did not read
  * is the one thing this gate must never do.
  *
  * Discovery fails closed only where coverage could silently shrink: failed enumeration, and a
@@ -554,7 +586,7 @@ function shellcheckStep(): string {
   return `
 # Shell correctness. Scripts are discovered by shebang over TRACKED files at push time, so a
 # script added later is covered without regenerating this hook. The commits BEING PUSHED are
-# the bytes that ship, so each one is materialised from git's object store and checked there —
+# the bytes that ship, so each script is read as its raw blob from git's object store —
 # never the working tree (wrong in both directions: a fixed tree let an unfixed commit ship, and
 # a dirty tree shared by several sessions blocked an unrelated push) and never the tip alone (a
 # bad commit under a clean tip shipped while the gate read only the tip's fix). The classifier
@@ -623,28 +655,15 @@ if command -v shellcheck >/dev/null 2>&1; then
     else
       echo "› shellcheck: no commit in the pushed refs (deletes only, or nothing on stdin) — nothing to check"
     fi
-    # Resolved once, before any cd: the classifier runs inside each materialised tree, and a
+    # Resolved once, before any cd: the checker runs inside each commit's scratch tree, and a
     # relative hook path would no longer point at it from there.
     discover="$(cd "$(dirname "$0")" && pwd)/discover-shell-scripts.sh" || exit 1
     for sha in $shas; do
-      # A fresh directory per commit, removed once that commit is checked so a long push does
-      # not pile up one full tree per commit; the subshell trap above still cleans the root on
-      # every early exit.
+      # A fresh directory per commit holding only that commit's scripts, removed once it is
+      # checked; the subshell trap above still cleans the root on every early exit.
       tree=$(mktemp -d "$shellcheck_tmp/commit.XXXXXX") || exit 1
-      # Checked out through a scratch index, never \`git archive\`: archive honours the
-      # export-ignore and export-subst attributes, so a script marked export-ignore would leave
-      # the checked set without a word. read-tree + checkout-index writes every tracked blob.
-      # Large-file pointers stay pointers — they are never shell, and a push must not need the
-      # network to be checked.
-      if ! git cat-file -e "\${sha}^{commit}" 2>/dev/null \\
-         || ! GIT_INDEX_FILE="$shellcheck_tmp/index" git read-tree "$sha" 2>/dev/null \\
-         || ! GIT_INDEX_FILE="$shellcheck_tmp/index" GIT_LFS_SKIP_SMUDGE=1 \\
-              git checkout-index -a -f --prefix="$tree/" 2>/dev/null; then
-        echo "✗ shellcheck: could not materialise $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha") — refusing the push rather than certifying bytes this gate did not read" >&2
-        exit 1
-      fi
-      if [ -n "$(git ls-tree -r --name-only "$sha")" ] && [ -z "$(ls -A "$tree")" ]; then
-        echo "✗ shellcheck: $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha") extracted to an empty tree — refusing the push" >&2
+      if ! git cat-file -e "\${sha}^{commit}" 2>/dev/null; then
+        echo "✗ shellcheck: cannot read commit $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha") — refusing the push rather than certifying bytes this gate did not read" >&2
         exit 1
       fi
       : > "$shellcheck_tmp/scripts" && : > "$shellcheck_tmp/count" && : > "$shellcheck_tmp/zsh-count" && : > "$shellcheck_tmp/skip-count" || exit 1
@@ -690,7 +709,26 @@ if command -v shellcheck >/dev/null 2>&1; then
           echo "etymd: shell script discovery failed; cannot tell whether $short changes the gate, its classifier or a .shellcheckrc" >&2
           exit 1 ;;
       esac
-      ( cd "$tree" && xargs -0 "$discover" "$shellcheck_tmp" ) < "$shellcheck_tmp/tracked" || {
+      # Only these paths are read, each as its raw blob — never a checkout of the commit, which
+      # would apply eol and filter attributes (a CRLF shebang left the checked set silently) and
+      # write the whole tree to check a handful of files. Never \`git archive\` either: it honours
+      # export-ignore, so a script so marked would leave the set without a word.
+      : > "$shellcheck_tmp/records" && : > "$shellcheck_tmp/candidates" || exit 1
+      if [ -s "$shellcheck_tmp/tracked" ]; then
+        # The candidates: changed blobs holding a line that starts \`#!\`, found in one pass over
+        # the raw blobs (git grep reads no eol or filter conversion). Only these are read one by
+        # one — a file with no such line cannot have a shebang first line. grep's "no match" is
+        # 1, a verdict; xargs would fold it into a failure, so the wrapper maps 1 to 0 and lets
+        # anything higher through as the failure it is.
+        xargs -0 git --literal-pathspecs ls-tree -z "$sha" -- < "$shellcheck_tmp/tracked" > "$shellcheck_tmp/records" \\
+          && xargs -0 sh -c 'git --literal-pathspecs grep -z -l --full-name -e "^#!" "$0" -- "$@"; st=$?; [ "$st" -le 1 ]' "$sha" \\
+            < "$shellcheck_tmp/tracked" > "$shellcheck_tmp/candidates" || {
+          echo "etymd: shell script discovery failed; cannot list the tracked entries of $short" >&2
+          exit 1
+        }
+      fi
+      xargs -0 "$discover" --skips "$shellcheck_tmp" < "$shellcheck_tmp/records" \\
+        && xargs -0 "$discover" --commit "$shellcheck_tmp" "$tree" "$sha" < "$shellcheck_tmp/candidates" || {
         echo "etymd: shell script discovery failed; shellcheck coverage is incomplete" >&2
         exit 1
       }
@@ -698,7 +736,7 @@ if command -v shellcheck >/dev/null 2>&1; then
       zsh_count=$(wc -c < "$shellcheck_tmp/zsh-count") || exit 1
       skip_count=$(wc -c < "$shellcheck_tmp/skip-count") || exit 1
       if [ "$skip_count" -gt 0 ]; then
-        echo "› shellcheck: $((skip_count)) tracked path(s) with nothing readable behind them (submodule or dangling symlink) — not checked, not failed"
+        echo "› shellcheck: $((skip_count)) tracked path(s) that are symlinks or submodule entries — no script bytes of their own (a link's target is checked under its own path); not checked, not failed"
       fi
       if [ "$zsh_count" -gt 0 ]; then
         echo "› shellcheck: $((zsh_count)) zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
