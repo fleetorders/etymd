@@ -1,18 +1,18 @@
 {
-  "packVersion": "13",
-  "etymdVersion": "0.17.0",
-  "approvedAt": "2026-09-10T23:13:34.332Z",
+  "packVersion": "16",
+  "etymdVersion": "0.19.1",
+  "approvedAt": "2026-09-26T07:33:07.855Z",
   "profile": "solo",
   "facts": {
-    "etymdVersion": "0.17.0",
-    "packVersion": "13",
-    "generatedAt": "2026-09-10T23:13:34.331Z",
+    "etymdVersion": "0.19.1",
+    "packVersion": "16",
+    "generatedAt": "2026-09-26T07:33:07.854Z",
     "root": ".",
     "name": "etymd",
     "git": {
       "isRepo": true,
-      "branch": "worker/batch-2026-09-11",
-      "head": "3dd2683",
+      "branch": "fix/review-055",
+      "head": "ec7056f",
       "hooksPath": ".githooks",
       "husky": false,
       "recentAuthors": 1
@@ -51,6 +51,7 @@
     "ci": {
       "system": "github",
       "files": [
+        ".github/workflows/checks.yml",
         ".github/workflows/ci.yml"
       ]
     },
@@ -105,7 +106,7 @@
         "label": "CLAUDE.md (Claude Code pointer)",
         "path": "CLAUDE.md",
         "kind": "adapter",
-        "exists": true
+        "exists": false
       },
       {
         "id": "copilot",
@@ -200,10 +201,10 @@
       }
     ],
     "shell": {
-      "scripts": 4
+      "scripts": 5
     },
     "freshness": {
-      "repoLastCommit": "2026-09-09T21:51:15+03:00",
+      "repoLastCommit": "2026-09-25T07:41:44+03:00",
       "artifacts": [
         {
           "artifactId": "decisions-dir",
@@ -230,19 +231,19 @@
         },
         {
           "name": ".githooks",
-          "files": 5
+          "files": 7
         },
         {
           "name": ".changeset",
-          "files": 3
-        },
-        {
-          "name": "media",
           "files": 2
         },
         {
           "name": ".github",
-          "files": 1
+          "files": 2
+        },
+        {
+          "name": "media",
+          "files": 2
         },
         {
           "name": ".vscode",
