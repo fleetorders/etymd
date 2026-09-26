@@ -712,6 +712,88 @@ describe.skipIf(!existsSync(CLI))(
     )
 
     it.skipIf(!hasShellcheck)(
+      "PINNED: a .shellcheckrc in the pushed commit still governs the check",
+      async () => {
+        // Only scripts are read into the scratch tree; the checker finds its config by walking
+        // up from each script, so a repo's .shellcheckrc must be read in beside them.
+        await baseRepo()
+        await write(".shellcheckrc", "disable=SC2034\n")
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: script with a disabled check")
+        await gates()
+        const env = await stubEnv()
+
+        await runPrePush(env, update("main", await revParse("HEAD"), await revParse("HEAD~1")))
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: with external-sources on, a sourced file without a shebang is there to follow",
+      async () => {
+        // A sourced helper has no shebang, so it is no script — but under external-sources the
+        // checker follows it, and a missing file turns its assignments into false findings.
+        await baseRepo()
+        await write(".shellcheckrc", "external-sources=true\n")
+        await write("tool/lib.inc", "# shellcheck source=tool/inner.inc\n. ./tool/inner.inc\n")
+        await write("tool/inner.inc", "greeting=hi\n")
+        await write(
+          "tool/do.sh",
+          '#!/bin/sh\n# shellcheck source=tool/lib.inc\n. ./tool/lib.inc\necho "$greeting"\n',
+        )
+        await commitAll("chore: script sourcing a helper")
+        await gates()
+        const env = await stubEnv()
+
+        const { stdout } = await runPrePush(
+          env,
+          update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+        )
+        expect(stdout).not.toContain("SC1091")
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: with external-sources on, a quoted helper path with a space is staged whole",
+      async () => {
+        // Split at the space, the name read would be "my" and the helper never staged.
+        await baseRepo()
+        await write(".shellcheckrc", "external-sources=true\n")
+        await write("tool/my helper.inc", "greeting=hi\n")
+        await write("tool/do.sh", '#!/bin/sh\n. "./tool/my helper.inc"\necho "$greeting"\n')
+        await commitAll("chore: script sourcing a helper with a space in its name")
+        await gates()
+        const env = await stubEnv()
+
+        const { stdout } = await runPrePush(
+          env,
+          update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+        )
+        expect(stdout).not.toContain("SC1091")
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: with external-sources on, an unrelated file's failing checkout filter does not block",
+      async () => {
+        // Context is staged as raw blobs of what the scripts source — never a checkout, which
+        // would run every tracked file's filters and let an unrelated one refuse the push.
+        await baseRepo()
+        await pExecFile("git", ["config", "filter.boom.clean", "cat"], { cwd: dir })
+        await pExecFile("git", ["config", "filter.boom.smudge", "false"], { cwd: dir })
+        await pExecFile("git", ["config", "filter.boom.required", "true"], { cwd: dir })
+        await write(".gitattributes", "*.bin filter=boom\n")
+        await write("data.bin", "payload\n")
+        await write(".shellcheckrc", "external-sources=true\n")
+        await write("tool/do.sh", "#!/bin/sh\necho ok\n")
+        await commitAll("chore: a filtered file beside a script")
+        await gates()
+        const env = await stubEnv()
+
+        await runPrePush(env, update("main", await revParse("HEAD"), await revParse("HEAD~1")))
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
       "a remote sha this clone has never seen falls back to the new-branch range, not a refusal",
       async () => {
         // The remote moved on since the last fetch: its sha cannot bound a range here. Refusing
