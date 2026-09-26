@@ -724,6 +724,78 @@ describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's r
     expect(hook).toContain("zsh script(s) excluded")
   })
 
+  it("a tab or carriage return after the interpreter still lands the script in the sh bucket", async () => {
+    // `( |$)` matched a literal space or end-of-line only, so `#!/bin/sh<TAB>-e` and any
+    // CRLF-committed first line matched NO bucket: not checked, not excluded, not disclosed —
+    // the silent coverage shrink the fail-closed rules promise cannot happen.
+    await pExecFile("git", ["config", "core.autocrlf", "false"], { cwd: dir })
+    await baseRepo()
+    await write("tool/tab.sh", "#!/bin/sh\t-e\nexit 0\n")
+    await write("tool/crlf.sh", "#!/bin/sh\r\nexit 0\r\n")
+    await write("tool/run.zsh", "#!/bin/zsh\necho hi\n")
+    await commitAll("chore: shebang edge cases")
+    await gates()
+    await recordShellcheck()
+    const log = path.join(dir, "shellcheck.jsonl")
+    const env = await stubEnv({ ETYMD_RECORD: log })
+    const base = await revParse("HEAD~1")
+    const head = await revParse("HEAD")
+
+    const { stdout } = await runPrePush(env, update("main", head, base))
+    const calls = (await fs.readFile(log, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[])
+    expect(calls).toHaveLength(2)
+    for (const args of calls) {
+      expect(args.filter((arg) => arg.startsWith("./")).sort()).toEqual([
+        "./tool/crlf.sh",
+        "./tool/tab.sh",
+      ])
+    }
+    expect(stdout).toContain("2 scripts")
+    // The zsh twin keeps its disclosed exclusion — widening sh must not swallow it.
+    expect(stdout).toContain("1 zsh script(s) excluded")
+  })
+
+  it.skipIf(!hasShellcheck)(
+    "PINNED: a shebang with a tab before its flag pushes clean through real shellcheck",
+    async () => {
+      await baseRepo()
+      await write("tool/tab.sh", "#!/bin/sh\t-e\nexit 0\n")
+      await commitAll("chore: tab shebang")
+      await gates()
+      const env = await stubEnv()
+      const base = await revParse("HEAD~1")
+      const head = await revParse("HEAD")
+      // Before the fix this push said nothing at all about the script — no bucket, no check.
+      const { stdout } = await runPrePush(env, update("main", head, base))
+      expect(stdout).toContain("shellcheck (1 scripts")
+    },
+  )
+
+  it.skipIf(!hasShellcheck)(
+    "PINNED: a CRLF-committed sh script is checked and blocks naming SC1017",
+    async () => {
+      await pExecFile("git", ["config", "core.autocrlf", "false"], { cwd: dir })
+      await baseRepo()
+      await write("tool/crlf.sh", "#!/bin/sh\r\nexit 0\r\n")
+      await commitAll("chore: crlf script")
+      await gates()
+      const env = await stubEnv()
+      const base = await revParse("HEAD~1")
+      const head = await revParse("HEAD")
+      let blocked: { stdout?: string; stderr?: string } | undefined
+      await runPrePush(env, update("main", head, base)).catch((e) => {
+        blocked = e
+      })
+      // SC1017 is shellcheck's own carriage-return verdict: the script was read, named and
+      // blocked. The old class checked nothing and the push sailed through — the hole this
+      // pins shut.
+      expect(blocked?.stdout ?? "").toContain("SC1017")
+    },
+  )
+
   it.skipIf(!hasShellcheck)(
     "PINNED: a repo whose surface is zsh pushes clean through the fresh hook",
     async () => {
