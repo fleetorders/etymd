@@ -425,9 +425,10 @@ exit 23
     }
   })
 
-  it("skips tracked paths with nothing readable behind them, and says so", async () => {
-    // A submodule entry and a dangling symlink, both committed: neither is a checking hazard
-    // that can lie, so neither blocks — but both are disclosed, never silent.
+  it("skips symlink and submodule entries, and says so", async () => {
+    // A submodule entry and a symlink, both committed: neither carries script bytes of its own
+    // (a link's target is a tracked path, checked under its own name), so neither blocks — but
+    // both are disclosed, never silent.
     await write("scripts/keep", "#!/bin/sh\necho ok\n")
     const env = await fixture()
     await recordShellcheck()
@@ -441,12 +442,22 @@ exit 23
     const pushed = await commitFixture({ stage: false })
 
     const { stdout } = await runPrePush(env, pushed)
-    expect(stdout).toContain("2 tracked path(s) with nothing readable behind them")
+    expect(stdout).toContain("2 tracked path(s) that are symlinks or submodule entries")
     for (const args of await recorded()) {
       expect(args).toContain("./scripts/keep")
       expect(args).not.toContain("./dangling")
       expect(args).not.toContain("./vendored")
     }
+  })
+
+  it("refuses loudly when a pre-push older than the classifier calls it in the old form", async () => {
+    // A hand-edited pre-push is kept across a regeneration while its classifier is replaced.
+    // The old call shape must stop the push with a way out — never classify nothing and pass.
+    const env = await fixture()
+    const discoverOld = path.join(dir, ".githooks", "discover-shell-scripts.sh")
+    await expect(
+      pExecFile(discoverOld, [path.join(dir, "scratch"), "scripts/run"], { cwd: dir, env }),
+    ).rejects.toMatchObject({ stderr: expect.stringContaining("run 'etymd gates'") })
   })
 
   it("treats only the first line as a shebang, so docs embedding one are not scripts", async () => {
@@ -666,6 +677,28 @@ describe.skipIf(!existsSync(CLI))(
         await write(".gitattributes", "tool/do.sh export-ignore\n")
         await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
         await commitAll("chore: hidden bad script")
+        await gates()
+        const env = await stubEnv()
+        const base = await revParse("HEAD~1")
+        const head = await revParse("HEAD")
+
+        await expect(runPrePush(env, update("main", head, base))).rejects.toMatchObject({
+          code: 1,
+          stdout: expect.stringContaining("SC2034"),
+        })
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: a script checked out with CRLF line endings is still checked — the read is the raw blob",
+      async () => {
+        // A checkout applies eol and filter attributes: under `eol=crlf` the shebang line ends
+        // in a carriage return, the shebang match fails, and the script left the checked set
+        // without a word. The gate reads the committed bytes, never a converted checkout.
+        await baseRepo()
+        await write(".gitattributes", "*.sh text eol=crlf\n")
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: bad script under a crlf attribute")
         await gates()
         const env = await stubEnv()
         const base = await revParse("HEAD~1")
