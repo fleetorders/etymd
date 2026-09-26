@@ -172,8 +172,9 @@ describe("planWorkflow", () => {
     })
     expect(plan.map((p) => p.path)).not.toContain("scripts/artifact-check.sh")
     const prePush = plan.find((p) => p.path === ".githooks/pre-push")?.contents ?? ""
-    expect(prePush).toContain("typecheck")
-    expect(prePush).not.toContain("lint")
+    // Wired steps, not bare words: the hook's own comments name every candidate command.
+    expect(prePush).toContain("run_gate pnpm typecheck")
+    expect(prePush).not.toContain("run_gate pnpm lint")
     expect(prePush).toContain("--fail-on gap")
   })
 

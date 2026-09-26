@@ -747,7 +747,9 @@ fi`
  */
 const SCRUBBED_RUNNER = `
 # Gate steps run scrubbed of git's exported GIT_* names: a child git that inherits them ignores
-# its cwd, so a hook-run suite building fixture repositories would operate on the real repo.
+# its cwd, so any step building fixture repositories would operate on the real repo. The derived
+# steps (format:check / typecheck / lint) are static checks that build none — the scrub is
+# standing protection for a step that ever does, a suite pinned into the gate commands above all.
 run_gate() (
   # shellcheck disable=SC2046  # word-splitting is the point: one -u per exported GIT_* name
   env $(env | grep -o '^GIT_[A-Za-z0-9_]*' | sed 's/^/-u /') "$@"
