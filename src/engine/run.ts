@@ -11,9 +11,11 @@ import { readConfig, type LoadedConfig, type StateBudgets } from "../core/config
 import { scanProject } from "../core/scan.js"
 import { pathExists } from "../core/util.js"
 import type { ProjectFacts } from "../core/types.js"
+import { commentTruthLens } from "../lenses/comment-truth.js"
 import { contextEconomyLens } from "../lenses/context-economy.js"
 import { gateIntegrityLens } from "../lenses/gate-integrity/lens.js"
 import { instructionTruthLens } from "../lenses/instruction-truth/lens.js"
+import { pinIntegrityLens } from "../lenses/pin-integrity.js"
 import { stateFreshnessLens } from "../lenses/state-freshness.js"
 import {
   rankFindings,
@@ -36,6 +38,8 @@ import {
 export const LENSES: Lens[] = [
   instructionTruthLens,
   stateFreshnessLens,
+  commentTruthLens,
+  pinIntegrityLens,
   gateIntegrityLens,
   contextEconomyLens,
 ]

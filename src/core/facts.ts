@@ -6,7 +6,7 @@ import type { ProjectFacts } from "./types.js"
 import { readJson } from "./util.js"
 
 // Two stores with opposite lifecycles:
-// - cache/facts.json — transient, re-derivable, GITIGNORED: the last scan, a convenience.
+// - the scan cache — transient, re-derivable, GITIGNORED: the last scan, a convenience.
 // - baseline.json    — COMMITTED: the approved reckoning drift is measured against. Written at
 //   init (approval time), pack-versioned. Doctor/audit truth-lenses compare tree vs baseline,
 //   never vs the last peek — otherwise looking at the project resets what "drift" means.

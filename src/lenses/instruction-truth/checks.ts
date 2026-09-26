@@ -33,7 +33,7 @@ export interface TruthEnv {
    * references the way an agent reading it resolves them: against its siblings.
    */
   pathResolves(claim: string, fromDir?: string): Promise<boolean>
-  /** `yarn X` / `pnpm X` may legitimately run an installed node_modules/.bin binary. */
+  /** A pm-plus-name invocation may legitimately run an installed node_modules/.bin binary. */
   binResolves(name: string): Promise<boolean>
 }
 

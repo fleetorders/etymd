@@ -11,11 +11,11 @@
 # that EXISTS but cannot be read is the other branch — coverage would silently shrink, so it
 # fails, naming the path.
 #
-# The match/error protocol: grep reports "no match" as 1 and a failure as 2 or more, and only
-# the first is a verdict. Letting a failure fall through would pass a broken matcher as "not a
-# shell script" — the exact silent coverage-shrink the fail-closed rules exist to prevent. The
-# status is captured on the grep's own line (`|| st=$?`), so no command added later can come
-# between the grep and the check and silently replace the status being read.
+# The two `[ "$?" -eq 1 ]` guards are the match/error protocol: grep reports "no match" as 1
+# and a failure as 2 or more, and only the first is a verdict. Dropping the guard would let a
+# failing matcher pass as "not a shell script" — the exact silent coverage-shrink the
+# fail-closed rules exist to prevent. The checker does not associate `$?` with the enclosing
+# if-condition, which is why this shape survives the pass it serves; keep it that way.
 work=$1
 shift
 for file do
@@ -31,21 +31,19 @@ for file do
     exit 1
   }
   head -n 1 "$work/head-bytes" > "$work/first-line" || exit 1
-  st=0
-  grep -qE "^#!.*[/ ](ba|da)?sh( |$)" "$work/first-line" || st=$?
-  case $st in
-    (0)
-      printf "./%s\0" "$file" >> "$work/scripts" || exit 1
-      printf . >> "$work/count" || exit 1 ;;
-    (1)
-      st=0
-      grep -qE "^#!.*[/ ]zsh( |$)" "$work/first-line" || st=$?
-      case $st in
-        (0) printf . >> "$work/zsh-count" || exit 1 ;;
-        (1) ;;
-        (*) exit 1 ;;
-      esac ;;
-    (*) exit 1 ;;
-  esac
+  # Trailing whitespace after the interpreter name is still the interpreter: a tab before a
+  # flag (sh<TAB>-e) or a CRLF-committed first line (sh<CR>) must classify, or the script
+  # leaves every bucket — unchecked, unexcluded, undisclosed.
+  if grep -qE "^#!.*[/ ](ba|da)?sh([[:space:]].*)?$" "$work/first-line"; then
+    printf "./%s\0" "$file" >> "$work/scripts" || exit 1
+    printf . >> "$work/count" || exit 1
+  else
+    [ "$?" -eq 1 ] || exit 1
+    if grep -qE "^#!.*[/ ]zsh([[:space:]].*)?$" "$work/first-line"; then
+      printf . >> "$work/zsh-count" || exit 1
+    else
+      [ "$?" -eq 1 ] || exit 1
+    fi
+  fi
 done
-# etymd:generated pack-v16 80660a7c1ece935e
+# etymd:generated pack-v16 bdb8a60087b268a2
