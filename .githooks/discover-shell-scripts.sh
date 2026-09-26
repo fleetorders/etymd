@@ -84,7 +84,9 @@ case ${1-} in
     work=$2
     tree=$3
     shift 3
-    names=" $(tr '\n' ' ' < "$work/source-names") " || exit 1
+    nl='
+'
+    names="$nl$(cat "$work/source-names")$nl" || exit 1
     for record do
       meta=${record%%"$tab"*}
       file=${record#*"$tab"}
@@ -93,7 +95,7 @@ case ${1-} in
         (*) continue ;;
       esac
       case $names in
-        (*" ${file##*/} "*) ;;
+        (*"$nl${file##*/}$nl"*) ;;
         (*) continue ;;
       esac
       [ -e "$tree/$file" ] && continue
@@ -152,4 +154,4 @@ for entry do
     (*) exit 1 ;;
   esac
 done
-# etymd:generated pack-v18 27a1bb71cde4aaca
+# etymd:generated pack-v18 68db33594372f080
