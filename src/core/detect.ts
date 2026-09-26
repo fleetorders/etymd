@@ -587,10 +587,35 @@ export async function detectArtifacts(root: string): Promise<DetectedArtifact[]>
 // the Claude Code pointer contract — ONE definition, used by `fleet add` and the fleet sweep
 // -------------------------------------------------------------------------------------------
 
-/** Root `CLAUDE.md`: a full-line `@AGENTS.md` (or `@./AGENTS.md`) import — Claude Code follows it. */
-const ROOT_POINTER_IMPORT_RE = /^\s*@(\.\/)?AGENTS\.md\s*$/m
+/**
+ * Root `CLAUDE.md`: a full-line `@AGENTS.md` (or `@./AGENTS.md`) import — Claude Code follows it.
+ * Up to three spaces of indent, as markdown allows before a line stops being a paragraph; four
+ * or more is an indented code block, which Claude Code does not read imports from.
+ */
+const ROOT_POINTER_IMPORT_RE = /^ {0,3}@(\.\/)?AGENTS\.md[ \t]*$/m
 /** `.claude/CLAUDE.md`: the same import, one directory up — the other location Claude Code reads. */
-const DOT_CLAUDE_IMPORT_RE = /^\s*@\.\.\/AGENTS\.md\s*$/m
+const DOT_CLAUDE_IMPORT_RE = /^ {0,3}@\.\.\/AGENTS\.md[ \t]*$/m
+
+/**
+ * The text with fenced code blocks removed. Claude Code ignores an `@` import inside one, and a
+ * fence is exactly where a snippet teaching the import gets pasted — so reading one there would
+ * pass a file that imports nothing. An unclosed fence runs to the end of the file, as markdown
+ * renders it.
+ */
+function withoutFencedCode(text: string): string {
+  const kept: string[] = []
+  let fence: string | null = null
+  for (const line of text.split("\n")) {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1]
+    if (fence === null) {
+      if (marker) fence = marker
+      else kept.push(line)
+    } else if (marker && marker[0] === fence[0] && marker.length >= fence.length) {
+      fence = null
+    }
+  }
+  return kept.join("\n")
+}
 
 /** The first Claude Code release that reads `AGENTS.md` when a directory has no `CLAUDE.md`. */
 export const CLAUDE_AGENTS_FALLBACK_VERSION = "2.1.277"
@@ -631,16 +656,22 @@ export function detectClaudeCodeVersion(): Promise<string | null> {
   return claudeVersionMemo
 }
 
-/** `a < b` for dotted numeric versions. */
+/**
+ * `a < b` for `major.minor.patch` versions. A prerelease (`2.1.277-rc1`) sorts before its
+ * release. A version that does not parse counts as older: this answers "may the reader be too
+ * old to see AGENTS.md", and a version nobody can read must not pass that check.
+ */
 function versionBefore(a: string, b: string): boolean {
-  const pa = a.split(".").map(Number)
-  const pb = b.split(".").map(Number)
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const x = pa[i] ?? 0
-    const y = pb[i] ?? 0
+  const parse = (v: string) => /^(\d+)\.(\d+)\.(\d+)(-\S+)?/.exec(v.trim())
+  const pa = parse(a)
+  const pb = parse(b)
+  if (!pa || !pb) return true
+  for (let i = 1; i <= 3; i++) {
+    const x = Number(pa[i])
+    const y = Number(pb[i])
     if (x !== y) return x < y
   }
-  return false
+  return pa[4] !== undefined && pb[4] === undefined
 }
 
 /**
@@ -692,11 +723,11 @@ export async function checkClaudePointer(
   }
 
   const rootClaude = await readText(claudeAbs)
-  if (rootClaude !== null && ROOT_POINTER_IMPORT_RE.test(rootClaude)) {
+  if (rootClaude !== null && ROOT_POINTER_IMPORT_RE.test(withoutFencedCode(rootClaude))) {
     return { ok: true, via: "root-import" }
   }
   const dotClaude = await readText(path.join(root, ".claude", "CLAUDE.md"))
-  if (dotClaude !== null && DOT_CLAUDE_IMPORT_RE.test(dotClaude)) {
+  if (dotClaude !== null && DOT_CLAUDE_IMPORT_RE.test(withoutFencedCode(dotClaude))) {
     return { ok: true, via: "dotclaude-import" }
   }
 

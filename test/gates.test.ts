@@ -509,6 +509,66 @@ describe.skipIf(!existsSync(CLI))(
       },
     )
 
+    it("PINNED: each pushed commit is checked for the scripts it changes, not its whole tree", async () => {
+      // The cost being fixed: every script in every pushed commit, so the step grew with the range
+      // length times the script count. An untouched script carries its parent's bytes,
+      // and the parent was gated when it landed.
+      await baseRepo()
+      await write("tool/old.sh", "#!/bin/sh\necho old\n")
+      await commitAll("chore: an existing script")
+      await write("tool/new.sh", "#!/bin/sh\necho new\n")
+      await commitAll("chore: one new script")
+      await gates()
+      await recordShellcheck()
+      const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+
+      const { stdout } = await runPrePush(
+        env,
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      )
+      expect(stdout).toContain("1 commit(s) in the pushed range")
+      const calls = await recorded()
+      expect(calls.length).toBeGreaterThan(0)
+      for (const args of calls) {
+        expect(args).toContain("./tool/new.sh")
+        expect(args).not.toContain("./tool/old.sh")
+      }
+    })
+
+    it("a commit that changes no shell script says so, never a silent pass", async () => {
+      await baseRepo()
+      await write("tool/old.sh", "#!/bin/sh\necho old\n")
+      await commitAll("chore: an existing script")
+      await write("docs/notes.md", "# Notes\n")
+      await commitAll("docs: notes only")
+      await gates()
+      await recordShellcheck()
+      const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+      const head = await revParse("HEAD")
+
+      const { stdout } = await runPrePush(env, update("main", head, await revParse("HEAD~1")))
+      expect(stdout).toContain(`no shell script changed in ${head.slice(0, 7)}`)
+      expect(existsSync(path.join(dir, "shellcheck.jsonl"))).toBe(false)
+    })
+
+    it("a commit changing a .shellcheckrc is checked whole — the verdict moved for every script", async () => {
+      await baseRepo()
+      await write("tool/old.sh", "#!/bin/sh\necho old\n")
+      await commitAll("chore: an existing script")
+      await write(".shellcheckrc", "disable=SC2034\n")
+      await commitAll("chore: checker config")
+      await gates()
+      await recordShellcheck()
+      const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+
+      const { stdout } = await runPrePush(
+        env,
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      )
+      expect(stdout).toContain("whole tree")
+      for (const args of await recorded()) expect(args).toContain("./tool/old.sh")
+    })
+
     it.skipIf(!hasShellcheck)("a delete-only push has nothing to check and says so", async () => {
       await baseRepo()
       await write("scripts/run", "#!/bin/sh\necho ok\n")

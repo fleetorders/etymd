@@ -477,11 +477,11 @@ export function generateShellDiscoveryScript(): string {
 # that EXISTS but cannot be read is the other branch — coverage would silently shrink, so it
 # fails, naming the path.
 #
-# The two \`[ "$?" -eq 1 ]\` guards are the match/error protocol: grep reports "no match" as 1
-# and a failure as 2 or more, and only the first is a verdict. Dropping the guard would let a
-# failing matcher pass as "not a shell script" — the exact silent coverage-shrink the
-# fail-closed rules exist to prevent. The checker does not associate \`$?\` with the enclosing
-# if-condition, which is why this shape survives the pass it serves; keep it that way.
+# The match/error protocol: grep reports "no match" as 1 and a failure as 2 or more, and only
+# the first is a verdict. Letting a failure fall through would pass a broken matcher as "not a
+# shell script" — the exact silent coverage-shrink the fail-closed rules exist to prevent. The
+# status is captured on the grep's own line (\`|| st=$?\`), so no command added later can come
+# between the grep and the check and silently replace the status being read.
 work=$1
 shift
 for file do
@@ -497,17 +497,22 @@ for file do
     exit 1
   }
   head -n 1 "$work/head-bytes" > "$work/first-line" || exit 1
-  if grep -qE "^#!.*[/ ](ba|da)?sh( |$)" "$work/first-line"; then
-    printf "./%s\\0" "$file" >> "$work/scripts" || exit 1
-    printf . >> "$work/count" || exit 1
-  else
-    [ "$?" -eq 1 ] || exit 1
-    if grep -qE "^#!.*[/ ]zsh( |$)" "$work/first-line"; then
-      printf . >> "$work/zsh-count" || exit 1
-    else
-      [ "$?" -eq 1 ] || exit 1
-    fi
-  fi
+  st=0
+  grep -qE "^#!.*[/ ](ba|da)?sh( |$)" "$work/first-line" || st=$?
+  case $st in
+    (0)
+      printf "./%s\\0" "$file" >> "$work/scripts" || exit 1
+      printf . >> "$work/count" || exit 1 ;;
+    (1)
+      st=0
+      grep -qE "^#!.*[/ ]zsh( |$)" "$work/first-line" || st=$?
+      case $st in
+        (0) printf . >> "$work/zsh-count" || exit 1 ;;
+        (1) ;;
+        (*) exit 1 ;;
+      esac ;;
+    (*) exit 1 ;;
+  esac
 done
 `)
 }
@@ -611,7 +616,13 @@ if command -v shellcheck >/dev/null 2>&1; then
       exit 1
     }
     shas=$(sort -u "$shellcheck_tmp/shas") || exit 1
-    [ -n "$shas" ] || echo "› shellcheck: no commit in the pushed refs (deletes only, or nothing on stdin) — nothing to check"
+    if [ -n "$shas" ]; then
+      # Said up front: a first push from a fresh clone can carry the whole history, and a long
+      # silent hook reads as a hung one.
+      echo "› shellcheck: $(printf '%s\\n' "$shas" | wc -l | tr -d ' ') commit(s) in the pushed range, each checked for the scripts it changes"
+    else
+      echo "› shellcheck: no commit in the pushed refs (deletes only, or nothing on stdin) — nothing to check"
+    fi
     # Resolved once, before any cd: the classifier runs inside each materialised tree, and a
     # relative hook path would no longer point at it from there.
     discover="$(cd "$(dirname "$0")" && pwd)/discover-shell-scripts.sh" || exit 1
@@ -637,10 +648,40 @@ if command -v shellcheck >/dev/null 2>&1; then
         exit 1
       fi
       : > "$shellcheck_tmp/scripts" && : > "$shellcheck_tmp/count" && : > "$shellcheck_tmp/zsh-count" && : > "$shellcheck_tmp/skip-count" || exit 1
-      git ls-tree -r -z --name-only "$sha" > "$shellcheck_tmp/tracked" || {
-        echo "etymd: cannot enumerate the tree of $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha") for shellcheck" >&2
+      # Only the paths this commit adds, copies, modifies, renames or retypes against its first
+      # parent. A script the commit did not touch has its parent's bytes, and that parent was
+      # either gated when it reached the remote or sits in this range and is checked here; a
+      # merge diffed against its first parent brings in everything the other side added. Checking
+      # every script in every commit multiplied the cost by the range length, so a long push of a
+      # script-heavy repo ran long enough to look hung. Two changes alter the verdict on bytes nobody touched — the classifier deciding
+      # what is a script, and a .shellcheckrc deciding what is a finding — so a commit carrying
+      # either is checked whole.
+      short=$(git rev-parse --short "$sha" 2>/dev/null || echo "$sha")
+      if git rev-parse -q --verify "\${sha}^1^{commit}" >/dev/null 2>&1; then
+        git diff-tree -r -z --name-only --no-commit-id --diff-filter=ACMRT "\${sha}^1" "$sha"
+      else
+        git diff-tree -r -z --name-only --no-commit-id --root "$sha"
+      fi > "$shellcheck_tmp/tracked" || {
+        echo "etymd: cannot enumerate the paths $short changes for shellcheck" >&2
         exit 1
       }
+      scope="changed in"
+      # grep: 1 is "no match", a verdict; anything higher is the matcher failing. The status is
+      # taken on the grep's own line so nothing added later can come between them.
+      st=0
+      tr '\\000' '\\n' < "$shellcheck_tmp/tracked" | grep -qE '(^|/)(\\.shellcheckrc|discover-shell-scripts\\.sh)$' || st=$?
+      case $st in
+        (0)
+          scope="in (whole tree: the classifier or a .shellcheckrc changed)"
+          git ls-tree -r -z --name-only "$sha" > "$shellcheck_tmp/tracked" || {
+            echo "etymd: cannot enumerate the tree of $short for shellcheck" >&2
+            exit 1
+          } ;;
+        (1) ;;
+        (*)
+          echo "etymd: shell script discovery failed; cannot tell whether $short changes the classifier or a .shellcheckrc" >&2
+          exit 1 ;;
+      esac
       ( cd "$tree" && xargs -0 "$discover" "$shellcheck_tmp" ) < "$shellcheck_tmp/tracked" || {
         echo "etymd: shell script discovery failed; shellcheck coverage is incomplete" >&2
         exit 1
@@ -654,8 +695,10 @@ if command -v shellcheck >/dev/null 2>&1; then
       if [ "$zsh_count" -gt 0 ]; then
         echo "› shellcheck: $((zsh_count)) zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
       fi
-      if [ "$count" -gt 0 ]; then
-        echo "› shellcheck ($((count)) scripts in $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha"), blocking at severity=warning)"
+      if [ "$count" -eq 0 ]; then
+        echo "› shellcheck: no shell script $scope $short — nothing to check there"
+      else
+        echo "› shellcheck ($((count)) scripts $scope $short, blocking at severity=warning)"
         ( cd "$tree" && xargs -0 shellcheck -S warning -- < "$shellcheck_tmp/scripts" ) || {
           echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
           exit 1
