@@ -826,7 +826,7 @@ if command -v shellcheck >/dev/null 2>&1; then
         # An argument is a double-quoted path, a single-quoted one, or a bare word whose
         # backslash escapes are kept and then undone, so a name with a space stays whole. The pattern travels as an argument: a single-quote
         # alternative cannot sit inside the single-quoted sh -c body.
-        src_pat='(^|[;&|[:space:]])(\\.|source)[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|([^[:space:];&|\\]|\\\\.)+)|source=[^[:space:]]+'
+        src_pat='(^|[;&|[:space:]])(\\.|source)[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|([^[:space:];&|\\]|\\\\.)+)|source=("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]]+)'
         while :; do
           # Each step's status is its own: in a pipeline only the last one counts, and a failed
           # extraction would pass as a short list of names.
