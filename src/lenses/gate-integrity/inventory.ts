@@ -152,12 +152,12 @@ const NPX_SCRIPT_RUNNERS = new Set(["run-s", "run-p", "npm-run-all"])
 
 /**
  * Expand package-manager script references into the referenced script bodies (two levels), so
- * a CI line like `yarn test:lint` is matched by what it actually runs.
+ * a CI line like `yarn typecheck` is matched by what it actually runs.
  *
  * This does NOT try to guess WHERE the script name sits. It cannot: the position depends on
  * each manager's own flag grammar, and there are at least five live shapes —
- *   `pnpm run x` · `pnpm -s x` · `pnpm -r --if-present run x` ·
- *   `pnpm --filter <pkg> x` · `yarn workspace <pkg> x`
+ *   `pnpm run typecheck` · `pnpm -s typecheck` · `pnpm -r --if-present run typecheck` ·
+ *   `pnpm --filter <pkg> typecheck` · `yarn workspace <pkg> typecheck`
  * A positional match handled one of them and silently expanded nothing for the rest, so a
  * hook running `pnpm run typecheck` read as having no typecheck at all.
  *
