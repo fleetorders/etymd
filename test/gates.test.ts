@@ -734,7 +734,8 @@ describe.skipIf(!existsSync(CLI))(
         // checker follows it, and a missing file turns its assignments into false findings.
         await baseRepo()
         await write(".shellcheckrc", "external-sources=true\n")
-        await write("tool/lib.inc", "greeting=hi\n")
+        await write("tool/lib.inc", "# shellcheck source=tool/inner.inc\n. ./tool/inner.inc\n")
+        await write("tool/inner.inc", "greeting=hi\n")
         await write(
           "tool/do.sh",
           '#!/bin/sh\n# shellcheck source=tool/lib.inc\n. ./tool/lib.inc\necho "$greeting"\n',
@@ -748,6 +749,27 @@ describe.skipIf(!existsSync(CLI))(
           update("main", await revParse("HEAD"), await revParse("HEAD~1")),
         )
         expect(stdout).not.toContain("SC1091")
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: with external-sources on, an unrelated file's failing checkout filter does not block",
+      async () => {
+        // Context is staged as raw blobs of what the scripts source — never a checkout, which
+        // would run every tracked file's filters and let an unrelated one refuse the push.
+        await baseRepo()
+        await pExecFile("git", ["config", "filter.boom.clean", "cat"], { cwd: dir })
+        await pExecFile("git", ["config", "filter.boom.smudge", "false"], { cwd: dir })
+        await pExecFile("git", ["config", "filter.boom.required", "true"], { cwd: dir })
+        await write(".gitattributes", "*.bin filter=boom\n")
+        await write("data.bin", "payload\n")
+        await write(".shellcheckrc", "external-sources=true\n")
+        await write("tool/do.sh", "#!/bin/sh\necho ok\n")
+        await commitAll("chore: a filtered file beside a script")
+        await gates()
+        const env = await stubEnv()
+
+        await runPrePush(env, update("main", await revParse("HEAD"), await revParse("HEAD~1")))
       },
     )
 

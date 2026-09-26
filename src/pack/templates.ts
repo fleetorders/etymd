@@ -475,7 +475,9 @@ export function generateShellDiscoveryScript(): string {
 # the candidates \`git grep\` found with a line starting \`#!\`, and classifies each by its FIRST
 # line. Verdicts land in the scratch: scripts (NUL-delimited matches) and one dot per decision
 # into count / zsh-count / skip-count, tallied by the hook after the pipeline. Each script found
-# is written into <tree> at its path, so the checker reads it there.
+# is written into <tree> at its path, so the checker reads it there. With external-sources on,
+#   discover-shell-scripts.sh --context <scratch> <tree> <ls-tree record>...
+# then stages, as raw blobs, the files the staged scripts source.
 #
 # Every byte comes from git's object store as the raw blob — \`git cat-file blob\`, which
 # applies no eol, text or filter attribute. A checkout converts: under \`eol=crlf\` the shebang
@@ -540,10 +542,41 @@ case \${1-} in
       esac
     done
     exit 0 ;;
+  (--context)
+    # Records again, for external sources: a regular entry whose file name is among the names
+    # the staged files source (scratch/source-names, one per line) is written into the tree as
+    # its raw blob, unless the tree has it already. Matching by name over-stages at worst, and
+    # a raw blob runs no checkout filter — an unrelated file's filter can never refuse the push.
+    work=$2
+    tree=$3
+    shift 3
+    names=" $(tr '\\n' ' ' < "$work/source-names") " || exit 1
+    for record do
+      meta=\${record%%"$tab"*}
+      file=\${record#*"$tab"}
+      case \${meta%% *} in
+        (100644|100755) ;;
+        (*) continue ;;
+      esac
+      case $names in
+        (*" \${file##*/} "*) ;;
+        (*) continue ;;
+      esac
+      [ -e "$tree/$file" ] && continue
+      case $file in
+        (*/*) dir=\${file%/*} ;;
+        (*) dir=. ;;
+      esac
+      mkdir -p -- "$tree/$dir" && git cat-file blob "\${meta##* }" > "$tree/$file" || {
+        echo "etymd: cannot read tracked file for shellcheck: $file" >&2
+        exit 1
+      }
+    done
+    exit 0 ;;
   (--commit)
     [ $# -ge 4 ] || exit 1 ;;
   (*)
-    echo "etymd: discover-shell-scripts.sh expects --commit, --skips or --config; the pre-push beside it is older than this classifier — run 'etymd gates'" >&2
+    echo "etymd: discover-shell-scripts.sh expects --commit, --skips, --config or --context; the pre-push beside it is older than this classifier — run 'etymd gates'" >&2
     exit 1 ;;
 esac
 work=$2
@@ -767,29 +800,42 @@ if command -v shellcheck >/dev/null 2>&1; then
         }
       fi
       # The checker's config sits beside the scripts it governs: every .shellcheckrc in the
-      # commit, raw. With external-sources on, the checker also follows what scripts source —
-      # helpers with no shebang, so no script — and a missing one turns its assignments into
-      # false findings. Then the rest of the commit is checked out as context only: the scripts
-      # themselves are written over it as raw blobs below, so a conversion never reaches them.
+      # commit, raw, and a flag when one turns external-sources on (handled after discovery).
       rm -f "$shellcheck_tmp/external-sources" || exit 1
       git ls-tree -r -z "$sha" > "$shellcheck_tmp/entries" \\
         && xargs -0 "$discover" --config "$shellcheck_tmp" "$tree" < "$shellcheck_tmp/entries" || {
         echo "etymd: shell script discovery failed; cannot read the .shellcheckrc files of $short" >&2
         exit 1
       }
-      if [ -e "$shellcheck_tmp/external-sources" ]; then
-        GIT_INDEX_FILE="$shellcheck_tmp/index" git read-tree "$sha" \\
-          && GIT_INDEX_FILE="$shellcheck_tmp/index" GIT_LFS_SKIP_SMUDGE=1 git checkout-index -a -f --prefix="$tree/" \\
-          && xargs -0 "$discover" --config "$shellcheck_tmp" "$tree" < "$shellcheck_tmp/entries" || {
-          echo "etymd: cannot check out $short as context for external sources" >&2
-          exit 1
-        }
-      fi
       xargs -0 "$discover" --skips "$shellcheck_tmp" < "$shellcheck_tmp/records" \\
         && xargs -0 "$discover" --commit "$shellcheck_tmp" "$tree" "$sha" < "$shellcheck_tmp/candidates" || {
         echo "etymd: shell script discovery failed; shellcheck coverage is incomplete" >&2
         exit 1
       }
+      # With external-sources on, the checker follows what scripts source — helpers with no
+      # shebang, so no script — and a missing one turns its assignments into false findings.
+      # The names sourced (a \`.\` or \`source\` argument, or a \`source=\` directive) are read from
+      # the staged files and the matching entries staged as raw blobs, again until nothing new
+      # is sourced, so a helper's own helpers are there too. A name built from a variable cannot
+      # be followed by the checker either, so it is dropped. Never a checkout: that runs every
+      # tracked file's filters, and an unrelated failing one would refuse the push.
+      if [ -e "$shellcheck_tmp/external-sources" ]; then
+        : > "$shellcheck_tmp/source-names" || exit 1
+        while :; do
+          ( cd "$tree" && find . -type f ! -name .shellcheckrc -exec sh -c 'grep -h -o -E "(^|[;&|[:space:]])(\\.|source)[[:space:]]+[^[:space:];&|]+|source=[^[:space:]]+" "$@"; st=$?; [ "$st" -le 1 ]' sh {} + ) > "$shellcheck_tmp/source-lines" \\
+            && sed -E -e 's/^.*source=//' -e 's/^.*[[:space:]]//' -e "s/[\\"']//g" -e 's|.*/||' "$shellcheck_tmp/source-lines" \\
+              | grep -v -e '[$]' -e '^$' | sort -u > "$shellcheck_tmp/source-names.next" || {
+            echo "etymd: cannot read what the scripts of $short source" >&2
+            exit 1
+          }
+          cmp -s "$shellcheck_tmp/source-names.next" "$shellcheck_tmp/source-names" && break
+          mv "$shellcheck_tmp/source-names.next" "$shellcheck_tmp/source-names" \\
+            && xargs -0 "$discover" --context "$shellcheck_tmp" "$tree" < "$shellcheck_tmp/entries" || {
+            echo "etymd: cannot stage what the scripts of $short source" >&2
+            exit 1
+          }
+        done
+      fi
       count=$(wc -c < "$shellcheck_tmp/count") || exit 1
       zsh_count=$(wc -c < "$shellcheck_tmp/zsh-count") || exit 1
       skip_count=$(wc -c < "$shellcheck_tmp/skip-count") || exit 1

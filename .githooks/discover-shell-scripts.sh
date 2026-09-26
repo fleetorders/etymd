@@ -9,7 +9,9 @@
 # the candidates `git grep` found with a line starting `#!`, and classifies each by its FIRST
 # line. Verdicts land in the scratch: scripts (NUL-delimited matches) and one dot per decision
 # into count / zsh-count / skip-count, tallied by the hook after the pipeline. Each script found
-# is written into <tree> at its path, so the checker reads it there.
+# is written into <tree> at its path, so the checker reads it there. With external-sources on,
+#   discover-shell-scripts.sh --context <scratch> <tree> <ls-tree record>...
+# then stages, as raw blobs, the files the staged scripts source.
 #
 # Every byte comes from git's object store as the raw blob — `git cat-file blob`, which
 # applies no eol, text or filter attribute. A checkout converts: under `eol=crlf` the shebang
@@ -74,10 +76,41 @@ case ${1-} in
       esac
     done
     exit 0 ;;
+  (--context)
+    # Records again, for external sources: a regular entry whose file name is among the names
+    # the staged files source (scratch/source-names, one per line) is written into the tree as
+    # its raw blob, unless the tree has it already. Matching by name over-stages at worst, and
+    # a raw blob runs no checkout filter — an unrelated file's filter can never refuse the push.
+    work=$2
+    tree=$3
+    shift 3
+    names=" $(tr '\n' ' ' < "$work/source-names") " || exit 1
+    for record do
+      meta=${record%%"$tab"*}
+      file=${record#*"$tab"}
+      case ${meta%% *} in
+        (100644|100755) ;;
+        (*) continue ;;
+      esac
+      case $names in
+        (*" ${file##*/} "*) ;;
+        (*) continue ;;
+      esac
+      [ -e "$tree/$file" ] && continue
+      case $file in
+        (*/*) dir=${file%/*} ;;
+        (*) dir=. ;;
+      esac
+      mkdir -p -- "$tree/$dir" && git cat-file blob "${meta##* }" > "$tree/$file" || {
+        echo "etymd: cannot read tracked file for shellcheck: $file" >&2
+        exit 1
+      }
+    done
+    exit 0 ;;
   (--commit)
     [ $# -ge 4 ] || exit 1 ;;
   (*)
-    echo "etymd: discover-shell-scripts.sh expects --commit, --skips or --config; the pre-push beside it is older than this classifier — run 'etymd gates'" >&2
+    echo "etymd: discover-shell-scripts.sh expects --commit, --skips, --config or --context; the pre-push beside it is older than this classifier — run 'etymd gates'" >&2
     exit 1 ;;
 esac
 work=$2
@@ -119,4 +152,4 @@ for entry do
     (*) exit 1 ;;
   esac
 done
-# etymd:generated pack-v18 12cbe8b35024cca7
+# etymd:generated pack-v18 27a1bb71cde4aaca
