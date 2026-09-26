@@ -6,10 +6,13 @@
 # The ref list git hands a pre-push hook arrives on stdin; capture it once so EVERY consumer
 # sees it — whichever drains stdin first must not starve the one after it.
 REFS=$(cat)
+# Re-fed with its trailing newline (a line reader drops an unterminated last line), and not at
+# all when empty, so a consumer never reads a blank line as a malformed ref.
+feed_refs() { [ -z "$REFS" ] || printf '%s\n' "$REFS"; }
 
 GUARD=$(command -v public-surface-guard || true)
 if [ -x "$GUARD" ]; then
-  printf '%s' "$REFS" | "$GUARD" --pre-push "$@" || exit 1
+  feed_refs | "$GUARD" --pre-push "$@" || exit 1
 fi
 
 # Machine-local companion checks, when this machine has any. The companion is never tracked and
@@ -26,7 +29,7 @@ if [ -n "$MAIN_ROOT" ]; then
   COMPANION="$MAIN_ROOT/local/hooks/pre-push"
   if [ -e "$COMPANION" ]; then
     if [ -f "$COMPANION" ] && [ -x "$COMPANION" ]; then
-      printf '%s' "$REFS" | "$COMPANION" "$@" || exit 1
+      feed_refs | "$COMPANION" "$@" || exit 1
     else
       echo "pre-push: $COMPANION exists but is not a runnable file — companion skipped." >&2
     fi

@@ -4,6 +4,7 @@ import path from "node:path"
 import { cancel, confirm, intro, isCancel, outro, select, spinner } from "@clack/prompts"
 
 import { applyFiles } from "../core/apply.js"
+import { checkClaudePointer } from "../core/detect.js"
 import { CACHE_DIR, deriveProfile, writeBaseline, writeCachedFacts } from "../core/facts.js"
 import { planWorkflow } from "../core/generate.js"
 import { scanProject } from "../core/scan.js"
@@ -137,6 +138,17 @@ export async function run(opts: InitOptions): Promise<void> {
   section("Onboarded")
   for (const w of result.written) print(`  ${glyph.ok} ${theme.dim("wrote")} ${theme.info(w)}`)
   for (const sk of result.skipped) print(`  ${glyph.bullet} ${theme.dim("kept")} ${theme.dim(sk)}`)
+  // A CLAUDE.md (root or .claude/) that does not import AGENTS.md hides it from Claude Code —
+  // the shape `fleet add` refuses. Said here, whichever files this run wrote, not first at
+  // registration.
+  const pointer = await checkClaudePointer(opts.cwd)
+  if (!pointer.ok && pointer.kind === "no-import") {
+    // The import is relative to the file that carries it.
+    const line = pointer.detail.includes(".claude/CLAUDE.md") ? "@../AGENTS.md" : "@AGENTS.md"
+    print(
+      `  ${glyph.partial} ${theme.warn(pointer.detail)} ${theme.dim(`— Claude Code reads that file instead; add a full-line ${line} import`)}`,
+    )
+  }
   print(
     `  ${glyph.ok} ${theme.dim("baseline approved →")} ${theme.info(".etymd/baseline.json")} ${theme.dim("(commit it — drift is measured against it)")}`,
   )

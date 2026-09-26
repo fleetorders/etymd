@@ -884,6 +884,75 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
       kind: "old-reader",
     },
     {
+      name: "an import pasted inside a code fence is not an import",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.writeFile(
+          path.join(root, "CLAUDE.md"),
+          "# CLAUDE.md\n\nAdd this line:\n\n```md\n@AGENTS.md\n```\n",
+          "utf8",
+        )
+      },
+      kind: "no-import",
+    },
+    {
+      name: "an import inside a tilde fence in .claude/CLAUDE.md is not an import",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.mkdir(path.join(root, ".claude"), { recursive: true })
+        await fs.writeFile(
+          path.join(root, ".claude", "CLAUDE.md"),
+          "~~~\n@../AGENTS.md\n~~~\n",
+          "utf8",
+        )
+      },
+      kind: "no-import",
+    },
+    {
+      name: "a fence line with an info string does not close an open fence",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.writeFile(
+          path.join(root, "CLAUDE.md"),
+          "```\nexample\n```md\n@AGENTS.md\n```\n",
+          "utf8",
+        )
+      },
+      kind: "no-import",
+    },
+    {
+      name: "trailing garbage after the version is unparseable, and fails closed",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+      },
+      version: `${CLAUDE_AGENTS_FALLBACK_VERSION}garbage`,
+      kind: "old-reader",
+    },
+    {
+      name: "an import indented by two spaces still loads",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.writeFile(path.join(root, "CLAUDE.md"), "# CLAUDE.md\n\n  @AGENTS.md\n", "utf8")
+      },
+      via: "root-import",
+    },
+    {
+      name: "a prerelease of the fallback version predates it",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+      },
+      version: `${CLAUDE_AGENTS_FALLBACK_VERSION}-rc1`,
+      kind: "old-reader",
+    },
+    {
+      name: "a version that does not parse fails closed",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+      },
+      version: "nightly",
+      kind: "old-reader",
+    },
+    {
       name: "an inline mention is not an import",
       build: async (root) => {
         await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")

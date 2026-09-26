@@ -422,7 +422,7 @@ export async function add(opts: FleetAddCmdOptions): Promise<void> {
     throw new Error(
       `\`${name}\` has a CLAUDE.md that hides its AGENTS.md from Claude Code ` +
         `(${pointer.detail}). Add a full-line \`@AGENTS.md\` import to it, e.g.:\n\n` +
-        `${generateClaudePointerMd().trimEnd().split("\n").join("\n")}\n\n` +
+        `${generateClaudePointerMd().trimEnd()}\n\n` +
         `— or symlink either file to the other, or delete the CLAUDE.md — then re-run \`etymd fleet add\`.`,
     )
   }
