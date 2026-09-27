@@ -700,6 +700,14 @@ if command -v shellcheck >/dev/null 2>&1; then
       count=$(wc -c < "$shellcheck_tmp/count") || exit 1
       zsh_count=$(wc -c < "$shellcheck_tmp/zsh-count") || exit 1
       skip_count=$(wc -c < "$shellcheck_tmp/skip-count") || exit 1
+      # wc may pad its counts with leading blanks (POSIX permits), and an integer test on a
+      # padded read is implementation-defined — a rejecting [ would turn every gate branch
+      # false and silently skip the step. Each tally is folded through arithmetic once (it
+      # accepts surrounding whitespace), so every consumer below sees a canonical integer.
+      # Not tr in a pipeline: the pipeline would report tr's status and mask a failed wc.
+      count=$((count))
+      zsh_count=$((zsh_count))
+      skip_count=$((skip_count))
       if [ "$skip_count" -gt 0 ]; then
         echo "› shellcheck: $((skip_count)) tracked path(s) with nothing readable behind them (submodule or dangling symlink) — not checked, not failed"
       fi

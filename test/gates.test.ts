@@ -551,6 +551,37 @@ describe.skipIf(!existsSync(CLI))(
       expect(existsSync(path.join(dir, "shellcheck.jsonl"))).toBe(false)
     })
 
+    it("POSIX-padded wc counts still gate — the tallies are read whitespace-safe", async () => {
+      // POSIX permits wc to pad its counts with leading blanks, and an integer test on a padded
+      // read is implementation-defined. The shim pads every count the hook takes — bytes and
+      // lines alike — so both reads prove their tolerance: the tallies fold through arithmetic,
+      // the upfront commit count already strips. A rejecting [ would turn the gate branches
+      // false and silently skip the checker; here it must still run and report one script.
+      await baseRepo()
+      await write("tool/one.sh", "#!/bin/sh\necho one\n")
+      await commitAll("chore: one script")
+      await gates()
+      await recordShellcheck()
+      await stub(
+        "wc",
+        `#!/usr/bin/env node
+// A POSIX-legal hostile wc: every count padded with leading blanks.
+const s = require("node:fs").readFileSync(0, "utf8")
+const n = process.argv.includes("-c") ? Buffer.byteLength(s) : (s.match(/\\n/g) || []).length
+process.stdout.write("      " + n + "\\n")
+`,
+      )
+      const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+
+      const { stdout } = await runPrePush(
+        env,
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      )
+      expect(stdout).toContain("1 commit(s) in the pushed range")
+      expect(stdout).toContain("shellcheck (1 scripts")
+      expect((await recorded()).length).toBeGreaterThan(0)
+    })
+
     it("a commit changing a .shellcheckrc is checked whole — the verdict moved for every script", async () => {
       await baseRepo()
       await write("tool/old.sh", "#!/bin/sh\necho old\n")
