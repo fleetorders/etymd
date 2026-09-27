@@ -470,9 +470,9 @@ export function generateShellDiscoveryScript(): string {
 #   discover-shell-scripts.sh --skips <scratch> <ls-tree record>...
 #   discover-shell-scripts.sh --commit <scratch> <tree> <commit> <commit>:<path>...
 # The first writes the commit's .shellcheckrc files into the tree as raw blobs, so the checker
-# finds its config where it looks, and flags one that turns external-sources on. The second counts the changed paths that are symlinks or
-# submodule entries. The second reads
-# the candidates \`git grep\` found with a line starting \`#!\`, and classifies each by its FIRST
+# finds its config where it looks, and flags one that turns external-sources on. The second
+# counts the changed paths that are symlinks or submodule entries. The third reads the
+# candidates \`git grep\` found with a line starting \`#!\`, and classifies each by its FIRST
 # line. Verdicts land in the scratch: scripts (NUL-delimited matches) and one dot per decision
 # into count / zsh-count / skip-count, tallied by the hook after the pipeline. Each script found
 # is written into <tree> at its path, so the checker reads it there. With external-sources on,
@@ -484,9 +484,9 @@ export function generateShellDiscoveryScript(): string {
 # line ends in a carriage return, the match below fails, and the script leaves the checked set
 # without a word. Only the entries handed in are read, never the whole commit.
 #
-# A symlink or submodule entry has no script bytes of its own — a link's target is a tracked
-# path checked under its own name — so it is a disclosed skip, never a block. A candidate that
-# cannot be read fails, naming the path: coverage would otherwise silently shrink.
+# A symlink or submodule entry has no script bytes of its own — a link's target is itself a
+# tracked path, read only when a push changes it — so it is a disclosed skip, never a block. A
+# candidate that cannot be read fails, naming the path: coverage would otherwise silently shrink.
 #
 # The match/error protocol: grep reports "no match" as 1 and a failure as 2 or more, and only
 # the first is a verdict. Letting a failure fall through would pass a broken matcher as "not a
@@ -694,14 +694,22 @@ if command -v shellcheck >/dev/null 2>&1; then
     # Every commit in each pushed range, never the tip alone: pushing two commits — a bad
     # script, then its fix — passed a tip-only read while the bad commit landed on the remote.
     # An all-zero local sha is a delete (nothing to check). An all-zero REMOTE sha is a new
-    # branch: everything no remote already has is being pushed, so the range is the local sha
-    # minus every remote-tracking ref — commits a remote already received were gated when they
-    # landed there, and the residue is exactly this push's new commits. A remote sha this clone
-    # has never seen (the remote moved on since the last fetch) cannot bound a range, so it takes
-    # the same new-branch rule instead of refusing a push the gate could have read. Enumeration
-    # failure refuses the push: a range the gate could not list is a range it did not read.
+    # branch: what THIS push adds is the local sha minus what the pushed remote already tracks —
+    # commits that remote already has are bytes it holds whatever this branch does. Only the
+    # pushed remote's refs count (pre-push's first argument): "some other remote has it" never
+    # means "a gate read it there", because clones without these hooks push too, and a commit
+    # they shipped to one remote must still be read before this push takes it to another. A push
+    # by URL names no configured remote, so nothing is excluded and everything being pushed is
+    # read. A remote sha this clone has never seen (the remote moved on since the last fetch)
+    # cannot bound a range, so it takes the same new-branch rule instead of refusing a push the
+    # gate could have read. Enumeration failure refuses the push: a range the gate could not
+    # list is a range it did not read.
     # (pattern) with both parens: bash 3.2 (macOS /bin/sh) cannot parse an unbalanced )
     # in a case pattern.
+    not_remote=--remotes
+    case \${1-} in
+      (*[![:space:]]*) not_remote="--remotes=$1" ;;
+    esac
     : > "$shellcheck_tmp/shas" || exit 1
     printf '%s\\n' "$refs" | while read -r _lref lsha _rref rsha; do
       case "$lsha" in
@@ -713,9 +721,9 @@ if command -v shellcheck >/dev/null 2>&1; then
           if git cat-file -e "\${rsha}^{commit}" 2>/dev/null; then
             git rev-list "$rsha..$lsha"
           else
-            git rev-list "$lsha" --not --remotes
+            git rev-list "$lsha" --not "$not_remote"
           fi ;;
-        (*) git rev-list "$lsha" --not --remotes ;;
+        (*) git rev-list "$lsha" --not "$not_remote" ;;
       esac >> "$shellcheck_tmp/shas" || exit 1
     done || {
       echo "etymd: could not enumerate the commits being pushed for shellcheck" >&2
@@ -764,25 +772,32 @@ if command -v shellcheck >/dev/null 2>&1; then
         exit 1
       }
       where="changed in $short"
-      # Through a file, not a pipe: a pipeline reports only grep's status, and a failing tr would
-      # hand grep nothing — a "no match" that silently takes the narrow path.
-      tr '\\000' '\\n' < "$shellcheck_tmp/touched" > "$shellcheck_tmp/touched-lines" || exit 1
-      # grep: 1 is "no match", a verdict; anything higher is the matcher failing. The status is
-      # taken on the grep's own line so nothing added later can come between them.
-      st=0
-      grep -qE '(^|/)(\\.shellcheckrc|discover-shell-scripts\\.sh|pre-push)$' "$shellcheck_tmp/touched-lines" || st=$?
-      case $st in
-        (0)
-          where="in $short (whole tree: the gate, its classifier or a .shellcheckrc changed)"
-          git ls-tree -r -z --name-only "$sha" > "$shellcheck_tmp/tracked" || {
-            echo "etymd: cannot enumerate the tree of $short for shellcheck" >&2
-            exit 1
-          } ;;
-        (1) ;;
-        (*)
-          echo "etymd: shell script discovery failed; cannot tell whether $short changes the gate, its classifier or a .shellcheckrc" >&2
-          exit 1 ;;
-      esac
+      # Gate files decide verdicts on bytes nobody touched, so a commit changing one is checked
+      # whole. The match runs per NUL-delimited path, never over newline-split lines — a tracked
+      # name containing a newline would split into pieces that can forge or hide a match — and
+      # the hook names are anchored to .githooks/, the directory the pack writes them to: a
+      # document named pre-push elsewhere is not this gate and must not buy a whole-tree read.
+      # .shellcheckrc matches at any depth, because the checker reads one per directory and a
+      # nested one genuinely moves the verdicts of the scripts beside it. A match is recorded in
+      # a marker file: xargs folds child exit statuses into its own, so a status could not tell
+      # "searched and found nothing" from "the search itself failed" — presence can.
+      rm -f "$shellcheck_tmp/gate-file" || exit 1
+      xargs -0 sh -c 'for p do
+        case $p in
+          (.shellcheckrc|*/.shellcheckrc|.githooks/pre-push|*/.githooks/pre-push|.githooks/discover-shell-scripts.sh|*/.githooks/discover-shell-scripts.sh)
+            : > "$1/gate-file"; exit 0 ;;
+        esac
+      done' sh "$shellcheck_tmp" < "$shellcheck_tmp/touched" || {
+        echo "etymd: shell script discovery failed; cannot tell whether $short changes the gate, its classifier or a .shellcheckrc" >&2
+        exit 1
+      }
+      if [ -e "$shellcheck_tmp/gate-file" ]; then
+        where="in $short (whole tree: the gate, its classifier or a .shellcheckrc changed)"
+        git ls-tree -r -z --name-only "$sha" > "$shellcheck_tmp/tracked" || {
+          echo "etymd: cannot enumerate the tree of $short for shellcheck" >&2
+          exit 1
+        }
+      fi
       # Only these paths are read, each as its raw blob — never a checkout of the commit, which
       # would apply eol and filter attributes (a CRLF shebang left the checked set silently) and
       # write the whole tree to check a handful of files. Never \`git archive\` either: it honours
@@ -818,25 +833,32 @@ if command -v shellcheck >/dev/null 2>&1; then
       # shebang, so no script — and a missing one turns its assignments into false findings.
       # The names sourced (a \`.\` or \`source\` argument, or a \`source=\` directive) are read from
       # the staged files and the matching entries staged as raw blobs, again until nothing new
-      # is sourced, so a helper's own helpers are there too. A name built from a variable cannot
-      # be followed by the checker either, so it is dropped. Never a checkout: that runs every
-      # tracked file's filters, and an unrelated failing one would refuse the push.
+      # is sourced, so a helper's own helpers are there too. The checker resolves a relative
+      # source against ITS OWN working directory — the tree root, here — so an entry staged at
+      # its tracked path is exactly where it looks; the match is by name, which over-stages at
+      # worst. A name built from a variable cannot be followed by the checker either, so it is
+      # dropped, and so is an absolute path (\`source=/dev/null\` names system state, not repo
+      # content). Never a checkout: that runs every tracked file's filters, and an unrelated
+      # failing one would refuse the push.
       if [ -e "$shellcheck_tmp/external-sources" ]; then
         : > "$shellcheck_tmp/source-names" || exit 1
         # An argument is a double-quoted path, a single-quoted one, or a bare word whose
-        # backslash escapes are kept and then undone, so a name with a space stays whole. The pattern travels as an argument: a single-quote
-        # alternative cannot sit inside the single-quoted sh -c body.
-        src_pat='(^|[;&|[:space:]])(\\.|source)[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|([^[:space:];&|\\]|\\\\.)+)|source=("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]]+)'
+        # backslash escapes are kept and then undone, so a name with a space stays whole. The
+        # directive alternative requires the \`# shellcheck\` prefix: a bare \`source=\` is also a
+        # command-line flag and prose in comments (\`--source=x\`, "the source= field"), and those
+        # stage nothing. The pattern travels as an argument: a single-quote alternative cannot
+        # sit inside the single-quoted sh -c body.
+        src_pat='(^|[;&|[:space:]])(\\.|source)[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|([^[:space:];&|\\]|\\\\.)+)|#[[:space:]]*shellcheck[[:space:]]+source=("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]]+)'
         while :; do
           # Each step's status is its own: in a pipeline only the last one counts, and a failed
           # extraction would pass as a short list of names.
           ( cd "$tree" && find . -type f ! -name .shellcheckrc -exec sh -c 'pat=$1; shift; grep -h -o -E -e "$pat" -- "$@"; st=$?; [ "$st" -le 1 ]' sh "$src_pat" {} + ) > "$shellcheck_tmp/source-lines" \\
-            && sed -E -e 's/^[;&|[:space:]]?(\\.|source)[[:space:]]+//' -e 's/^source=//' -e '/^["'"'"']/!s/\\\\(.)/\\1/g' -e 's/^"(.*)"$/\\1/' -e "s/^'(.*)'\\$/\\\\1/" -e 's|.*/||' "$shellcheck_tmp/source-lines" > "$shellcheck_tmp/source-args" || {
+            && sed -E -e 's/^[;&|[:space:]]?(\\.|source)[[:space:]]+//' -e 's/^#[[:space:]]*shellcheck[[:space:]]+source=//' -e '/^["'"'"']/!s/\\\\(.)/\\1/g' -e 's/^"(.*)"$/\\1/' -e "s/^'(.*)'\\$/\\\\1/" -e 's|.*/||' "$shellcheck_tmp/source-lines" > "$shellcheck_tmp/source-args" || {
             echo "etymd: cannot read what the scripts of $short source" >&2
             exit 1
           }
           st=0
-          grep -v -e '[$]' -e '^$' "$shellcheck_tmp/source-args" > "$shellcheck_tmp/source-kept" || st=$?
+          grep -v -e '[$]' -e '^/' -e '^$' "$shellcheck_tmp/source-args" > "$shellcheck_tmp/source-kept" || st=$?
           [ "$st" -le 1 ] && sort -u "$shellcheck_tmp/source-kept" > "$shellcheck_tmp/source-names.next" || {
             echo "etymd: cannot read what the scripts of $short source" >&2
             exit 1
@@ -853,7 +875,7 @@ if command -v shellcheck >/dev/null 2>&1; then
       zsh_count=$(wc -c < "$shellcheck_tmp/zsh-count") || exit 1
       skip_count=$(wc -c < "$shellcheck_tmp/skip-count") || exit 1
       if [ "$skip_count" -gt 0 ]; then
-        echo "› shellcheck: $((skip_count)) tracked path(s) that are symlinks or submodule entries — no script bytes of their own (a link's target is checked under its own path); not checked, not failed"
+        echo "› shellcheck: $((skip_count)) tracked path(s) that are symlinks or submodule entries — no script bytes of their own (a link's target is itself a tracked path, read only when a push changes it); not checked, not failed"
       fi
       if [ "$zsh_count" -gt 0 ]; then
         echo "› shellcheck: $((zsh_count)) zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
@@ -875,7 +897,10 @@ if command -v shellcheck >/dev/null 2>&1; then
           printf '%s\\n' "$advice" | sed 's/^/    /'
         fi
       fi
-      rm -rf "$tree" || exit 1
+      # Best effort, never a verdict: a check that passed must not be refused by its own
+      # cleanup. The trap at the top still reclaims the scratch root on exit, and the next
+      # commit gets a fresh directory either way.
+      rm -rf "$tree" || echo "› shellcheck: could not remove the scratch tree for $short — the exit trap reclaims it"
     done
   ) || exit 1
 else

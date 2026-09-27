@@ -143,8 +143,9 @@ export async function run(opts: InitOptions): Promise<void> {
   // registration.
   const pointer = await checkClaudePointer(opts.cwd)
   if (!pointer.ok && pointer.kind === "no-import") {
-    // The import is relative to the file that carries it.
-    const line = pointer.detail.includes(".claude/CLAUDE.md") ? "@../AGENTS.md" : "@AGENTS.md"
+    // The import is relative to the file that carries it, read from the result's own field —
+    // never re-derived from the wording of `detail`, which may be reworded at any time.
+    const line = pointer.carrier === ".claude/CLAUDE.md" ? "@../AGENTS.md" : "@AGENTS.md"
     print(
       `  ${glyph.partial} ${theme.warn(pointer.detail)} ${theme.dim(`— Claude Code reads that file instead; add a full-line ${line} import`)}`,
     )

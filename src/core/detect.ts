@@ -590,11 +590,13 @@ export async function detectArtifacts(root: string): Promise<DetectedArtifact[]>
 /**
  * Root `CLAUDE.md`: a full-line `@AGENTS.md` (or `@./AGENTS.md`) import — Claude Code follows it.
  * Up to three spaces of indent, as markdown allows before a line stops being a paragraph; four
- * or more is an indented code block, which Claude Code does not read imports from.
+ * or more is an indented code block, which Claude Code does not read imports from. Trailing
+ * blanks are tabs and spaces plus a carriage return, so a CRLF-committed file still imports —
+ * the bound is on what may FOLLOW the path, not on which line endings count.
  */
-const ROOT_POINTER_IMPORT_RE = /^ {0,3}@(\.\/)?AGENTS\.md[ \t]*$/m
+const ROOT_POINTER_IMPORT_RE = /^ {0,3}@(\.\/)?AGENTS\.md[ \t\r]*$/m
 /** `.claude/CLAUDE.md`: the same import, one directory up — the other location Claude Code reads. */
-const DOT_CLAUDE_IMPORT_RE = /^ {0,3}@\.\.\/AGENTS\.md[ \t]*$/m
+const DOT_CLAUDE_IMPORT_RE = /^ {0,3}@\.\.\/AGENTS\.md[ \t\r]*$/m
 
 /**
  * The text with fenced code blocks removed. Claude Code ignores an `@` import inside one, and a
@@ -638,27 +640,62 @@ export type ClaudePointerResult =
        * Claude Code predates the AGENTS.md fallback.
        */
       kind: "no-import" | "old-reader"
+      /**
+       * For `no-import`: the file that carries the contract but hides it — the field advice is
+       * derived from, so it survives any rewording of `detail`.
+       */
+      carrier?: "CLAUDE.md" | ".claude/CLAUDE.md"
       /** What the repo actually looks like, for the finding's evidence line. */
       detail: string
     }
 
 const pExecFile = promisify(execFile)
-let claudeVersionMemo: Promise<string | null> | undefined
+
+/** What the probe found: no reader at all, a reader with a readable version, or a reader whose
+ *  version output could not be parsed — three states, because the third must fail closed while
+ *  the first passes (a machine without Claude Code has no reader to warn about). */
+export interface ClaudeVersionProbe {
+  present: boolean
+  version: string | null
+}
+
+let claudeVersionMemo: Promise<ClaudeVersionProbe> | undefined
 
 /**
- * The installed Claude Code version, or null when none can be read. `ETYMD_CLAUDE_VERSION`
+ * One version token, or nothing. The lookbehind and lookahead refuse to start or end a match
+ * on an adjacent digit or dot: `2.1.277.1` would otherwise backtrack into matching `1.277.1` —
+ * the last three components, silently the wrong version — and anything glued to the token
+ * (`2.1.277+build`) is not a version this code can compare, so it reads as unreadable.
+ */
+const CLAUDE_VERSION_RE = /(?<![\d.])(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?![\w.])/
+
+/**
+ * The installed Claude Code's version, distinguishing the three states above. `ETYMD_CLAUDE_VERSION`
  * overrides the probe: a version string pins it, `none` means "no Claude Code here". Read once
  * per process, since a fleet sweep asks for every repo.
  */
-export function detectClaudeCodeVersion(): Promise<string | null> {
+export function probeClaudeVersion(): Promise<ClaudeVersionProbe> {
   const override = process.env.ETYMD_CLAUDE_VERSION
   if (override !== undefined) {
-    return Promise.resolve(override === "none" || override === "" ? null : override)
+    if (override === "none" || override === "")
+      return Promise.resolve({ present: false, version: null })
+    return Promise.resolve({ present: true, version: override })
   }
   claudeVersionMemo ??= pExecFile("claude", ["--version"], { timeout: 5000 })
-    .then(({ stdout }) => /(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?=\s|$)/.exec(stdout)?.[1] ?? null)
-    .catch(() => null)
+    .then(({ stdout }) => ({
+      present: true,
+      version: CLAUDE_VERSION_RE.exec(stdout)?.[1] ?? null,
+    }))
+    .catch(() => ({ present: false, version: null }))
   return claudeVersionMemo
+}
+
+/**
+ * The installed Claude Code version, or null when none can be read — including a reader whose
+ * version output cannot be parsed; `probeClaudeVersion` is the call that tells those apart.
+ */
+export async function detectClaudeCodeVersion(): Promise<string | null> {
+  return (await probeClaudeVersion()).version
 }
 
 /**
@@ -694,8 +731,10 @@ function mayPredate(a: string, b: string): boolean {
  * Passes when `AGENTS.md` is absent; either name is a symlink to the other (stat follows
  * links, so same dev:ino covers chains in both directions); the root `CLAUDE.md` carries a
  * full-line `@AGENTS.md` import; `.claude/CLAUDE.md` carries `@../AGENTS.md`; or there is no
- * `CLAUDE.md` in either place and the Claude Code version is at or past the fallback, or cannot
- * be read (a machine without Claude Code has no reader to warn about). A declared
+ * `CLAUDE.md` in either place and the Claude Code version is at or past the fallback, or no
+ * Claude Code is installed at all (a machine without it has no reader to warn about). A reader
+ * whose version output cannot be parsed is NOT in that pass set: it fails closed as an old
+ * reader, because an unreadable version must not silently pass as current. A declared
  * `contract.placement: "none"` does not exempt a repo that HAS an `AGENTS.md` — the declaration
  * covers absent instruction files, not one a whole harness cannot see.
  */
@@ -738,22 +777,36 @@ export async function checkClaudePointer(
   }
 
   if (rootClaude !== null || dotClaude !== null) {
+    const carrier: "CLAUDE.md" | ".claude/CLAUDE.md" =
+      rootClaude !== null ? "CLAUDE.md" : ".claude/CLAUDE.md"
     return {
       ok: false,
       kind: "no-import",
-      detail:
-        rootClaude !== null
-          ? "AGENTS.md and CLAUDE.md both present, but CLAUDE.md does not import it"
-          : "AGENTS.md and .claude/CLAUDE.md both present, but .claude/CLAUDE.md does not import it",
+      carrier,
+      detail: `AGENTS.md and ${carrier} both present, but ${carrier} does not import it`,
     }
   }
 
-  const version = claudeVersion === undefined ? await detectClaudeCodeVersion() : claudeVersion
-  if (version !== null && mayPredate(version, CLAUDE_AGENTS_FALLBACK_VERSION)) {
+  // Three states, not two: no reader at all passes (nothing to warn about), a reader with a
+  // readable old version fails with the version named, and a reader whose version output cannot
+  // be parsed fails too — an unreadable version must not silently pass as current.
+  const probe =
+    claudeVersion === undefined
+      ? await probeClaudeVersion()
+      : claudeVersion === null
+        ? { present: false, version: null }
+        : { present: true, version: claudeVersion }
+  if (
+    probe.present &&
+    (probe.version === null || mayPredate(probe.version, CLAUDE_AGENTS_FALLBACK_VERSION))
+  ) {
     return {
       ok: false,
       kind: "old-reader",
-      detail: `AGENTS.md present, no CLAUDE.md, and Claude Code ${version} predates the AGENTS.md fallback (${CLAUDE_AGENTS_FALLBACK_VERSION})`,
+      detail:
+        probe.version === null
+          ? "AGENTS.md present, no CLAUDE.md, and the installed Claude Code's version could not be read"
+          : `AGENTS.md present, no CLAUDE.md, and Claude Code ${probe.version} predates the AGENTS.md fallback (${CLAUDE_AGENTS_FALLBACK_VERSION})`,
     }
   }
   return { ok: true, via: "native-fallback" }
