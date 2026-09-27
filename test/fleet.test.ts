@@ -964,6 +964,18 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
       },
       kind: "no-import",
     },
+    {
+      name: "a CRLF-committed CLAUDE.md import still counts",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.writeFile(
+          path.join(root, "CLAUDE.md"),
+          "# CLAUDE.md\r\n\r\n@AGENTS.md\r\n",
+          "utf8",
+        )
+      },
+      via: "root-import",
+    },
   ]
 
   it("classifies every pass/fail row of the contract", async () => {
@@ -975,6 +987,79 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
       if (row.via) expect(result, row.name).toEqual({ ok: true, via: row.via })
       else expect(result, row.name).toMatchObject({ ok: false, kind: row.kind })
     }
+  })
+
+  it("a no-import result names its carrier as a field, not prose to be sniffed", async () => {
+    // `init` derives the import line to suggest (`@AGENTS.md` vs `@../AGENTS.md`) from this
+    // field; rewording the evidence line must never change the advice.
+    const root = await fixture("carrier-dotclaude")
+    await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+    await fs.mkdir(path.join(root, ".claude"), { recursive: true })
+    await fs.writeFile(path.join(root, ".claude", "CLAUDE.md"), "# own content\n", "utf8")
+    const dotClaude = await checkClaudePointer(root, CLAUDE_AGENTS_FALLBACK_VERSION)
+    expect(dotClaude).toMatchObject({
+      ok: false,
+      kind: "no-import",
+      carrier: ".claude/CLAUDE.md",
+    })
+
+    const root2 = await fixture("carrier-root")
+    await fs.writeFile(path.join(root2, "AGENTS.md"), AGENTS, "utf8")
+    await fs.writeFile(path.join(root2, "CLAUDE.md"), "# own content\n", "utf8")
+    const atRoot = await checkClaudePointer(root2, CLAUDE_AGENTS_FALLBACK_VERSION)
+    expect(atRoot).toMatchObject({ ok: false, kind: "no-import", carrier: "CLAUDE.md" })
+  })
+
+  // The probe path (`claude --version` on PATH, parsed) — the argument path above hands the
+  // version in ready-parsed, so parsing itself is only exercised here. Each case stubs the
+  // binary, points PATH at it, and re-imports the module fresh: the probe memoises per
+  // instance, and the shared static import must keep its memo for the tests above.
+  async function probeWithVersionOutput(output: string) {
+    const stubBin = path.join(dir, ".stub-bin")
+    await fs.mkdir(stubBin, { recursive: true })
+    await fs.writeFile(path.join(stubBin, "claude"), `#!/bin/sh\nprintf '%s\\n' '${output}'\n`)
+    await fs.chmod(path.join(stubBin, "claude"), 0o755)
+    const root = await fixture(`probe-${output.replace(/[^0-9a-z]/gi, "-")}`)
+    await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+    const realPath = process.env.PATH
+    const realOverride = process.env.ETYMD_CLAUDE_VERSION
+    delete process.env.ETYMD_CLAUDE_VERSION
+    process.env.PATH = `${stubBin}${path.delimiter}${realPath}`
+    try {
+      vi.resetModules()
+      const { checkClaudePointer: fresh } = await import("../src/core/detect.js")
+      return await fresh(root)
+    } finally {
+      process.env.PATH = realPath
+      if (realOverride !== undefined) process.env.ETYMD_CLAUDE_VERSION = realOverride
+      else delete process.env.ETYMD_CLAUDE_VERSION
+    }
+  }
+
+  it("a readable current version passes through the probe", async () => {
+    const result = await probeWithVersionOutput("2.1.278 (Claude Code)")
+    expect(result).toEqual({ ok: true, via: "native-fallback" })
+  })
+
+  it("build metadata after the version does not move its precedence", async () => {
+    // `2.1.278+build.7` is 2.1.278 for ordering purposes; the build tag is neither glued to
+    // the number (that glued form is the garbage the probe rejects) nor a prerelease.
+    const result = await probeWithVersionOutput("2.1.278+build.7 (Claude Code)")
+    expect(result).toEqual({ ok: true, via: "native-fallback" })
+  })
+
+  it("PINNED: a reader whose version cannot be parsed fails closed, never passes silently", async () => {
+    // No version token at all: the reader EXISTS, so it cannot pass as "no Claude Code here"
+    // — it reads as an old reader.
+    const result = await probeWithVersionOutput("claude code (channel: internal, no version)")
+    expect(result).toMatchObject({ ok: false, kind: "old-reader" })
+  })
+
+  it("PINNED: a four-part version never backtracks into matching its last three components", async () => {
+    // `2.1.277.9.9` would yield `277.9.9` to an unguarded match — newer than the fallback by
+    // the wrong numbers — and pass a genuinely old reader through.
+    const result = await probeWithVersionOutput("2.1.277.9.9 (Claude Code)")
+    expect(result).toMatchObject({ ok: false, kind: "old-reader" })
   })
 
   it("the sweep's wall reports a CLAUDE.md that never imports AGENTS.md as a risk", async () => {
