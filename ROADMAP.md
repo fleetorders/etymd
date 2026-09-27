@@ -127,6 +127,13 @@ does not ship. Decision record: [`docs/decisions/003-truth-guard-pivot.md`](docs
 
 ## Known limitations (accepted trade-offs, not bugs)
 
+- **The pre-push hook stages only `.shellcheckrc`, and reads only an unquoted
+  `external-sources=true`.** shellcheck also reads a config named `shellcheckrc` (no dot), and
+  accepts quoted values such as `external-sources="true"` (its man page, RC FILES). A repo using
+  either form gets the checker's default settings in the hook, or unfollowed helpers, where a
+  checkout would have applied them. Recorded rather than fixed until a user needs it; both are
+  pinned as known gaps in the checkout-parity table in `test/gates.test.ts`, which turns red
+  the day they are fixed.
 - **Extensionless file references go unchecked.** `lib/barcode-scan` (no extension, no trailing
   slash) is treated as prose — the rule that killed the extensionless-prose-path
   false-positive class. A dir claim needs a trailing `/`; a file claim needs a _recognized_

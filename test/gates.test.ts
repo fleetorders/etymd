@@ -712,109 +712,6 @@ describe.skipIf(!existsSync(CLI))(
     )
 
     it.skipIf(!hasShellcheck)(
-      "PINNED: a .shellcheckrc in the pushed commit still governs the check",
-      async () => {
-        // Only scripts are read into the scratch tree; the checker finds its config by walking
-        // up from each script, so a repo's .shellcheckrc must be read in beside them.
-        await baseRepo()
-        await write(".shellcheckrc", "disable=SC2034\n")
-        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
-        await commitAll("chore: script with a disabled check")
-        await gates()
-        const env = await stubEnv()
-
-        await runPrePush(env, update("main", await revParse("HEAD"), await revParse("HEAD~1")))
-      },
-    )
-
-    it.skipIf(!hasShellcheck)(
-      "PINNED: with external-sources on, a sourced file without a shebang is there to follow",
-      async () => {
-        // A sourced helper has no shebang, so it is no script — but under external-sources the
-        // checker follows it, and a missing file turns its assignments into false findings.
-        await baseRepo()
-        await write(".shellcheckrc", "external-sources=true\n")
-        await write("tool/lib.inc", "# shellcheck source=tool/inner.inc\n. ./tool/inner.inc\n")
-        await write("tool/inner.inc", "greeting=hi\n")
-        await write(
-          "tool/do.sh",
-          '#!/bin/sh\n# shellcheck source=tool/lib.inc\n. ./tool/lib.inc\necho "$greeting"\n',
-        )
-        await commitAll("chore: script sourcing a helper")
-        await gates()
-        const env = await stubEnv()
-
-        const { stdout } = await runPrePush(
-          env,
-          update("main", await revParse("HEAD"), await revParse("HEAD~1")),
-        )
-        expect(stdout).not.toContain("SC1091")
-      },
-    )
-
-    it.skipIf(!hasShellcheck)(
-      "PINNED: with external-sources on, a quoted helper path with a space is staged whole",
-      async () => {
-        // Split at the space, the name read would be "my" and the helper never staged.
-        await baseRepo()
-        await write(".shellcheckrc", "external-sources=true\n")
-        await write("tool/my helper.inc", "greeting=hi\n")
-        await write("tool/do.sh", '#!/bin/sh\n. "./tool/my helper.inc"\necho "$greeting"\n')
-        await commitAll("chore: script sourcing a helper with a space in its name")
-        await gates()
-        const env = await stubEnv()
-
-        const { stdout } = await runPrePush(
-          env,
-          update("main", await revParse("HEAD"), await revParse("HEAD~1")),
-        )
-        expect(stdout).not.toContain("SC1091")
-      },
-    )
-
-    it.skipIf(!hasShellcheck)(
-      "PINNED: with external-sources on, a backslash-escaped helper path is staged whole",
-      async () => {
-        await baseRepo()
-        await write(".shellcheckrc", "external-sources=true\n")
-        await write("tool/my helper.inc", "greeting=hi\n")
-        await write("tool/do.sh", '#!/bin/sh\n. ./tool/my\\ helper.inc\necho "$greeting"\n')
-        await commitAll("chore: script sourcing an escaped helper path")
-        await gates()
-        const env = await stubEnv()
-
-        const { stdout } = await runPrePush(
-          env,
-          update("main", await revParse("HEAD"), await revParse("HEAD~1")),
-        )
-        expect(stdout).not.toContain("SC1091")
-      },
-    )
-
-    it.skipIf(!hasShellcheck)(
-      "PINNED: with external-sources on, a quoted source= directive names its helper whole",
-      async () => {
-        // The directive is the only way the checker can follow a source built from a variable.
-        await baseRepo()
-        await write(".shellcheckrc", "external-sources=true\n")
-        await write("tool/my helper.inc", "greeting=hi\n")
-        await write(
-          "tool/do.sh",
-          '#!/bin/sh\n# shellcheck source="tool/my helper.inc"\n. "$HELPER"\necho "$greeting"\n',
-        )
-        await commitAll("chore: script sourcing through a quoted directive")
-        await gates()
-        const env = await stubEnv()
-
-        const { stdout } = await runPrePush(
-          env,
-          update("main", await revParse("HEAD"), await revParse("HEAD~1")),
-        )
-        expect(stdout).not.toContain("SC1091")
-      },
-    )
-
-    it.skipIf(!hasShellcheck)(
       "PINNED: with external-sources on, an unrelated file's failing checkout filter does not block",
       async () => {
         // Context is staged as raw blobs of what the scripts source — never a checkout, which
@@ -1120,5 +1017,156 @@ describe.skipIf(!existsSync(CLI))(
       expect(result.out).toBe("")
       expect(result.ok).toBe(true)
     })
+  },
+)
+
+/**
+ * The staged tree against a full checkout, case by case from shellcheck's own documentation
+ * (the man page's RC FILES and DIRECTIVES sections): every input the checker reads from the
+ * repository must reach it in the hook's scratch tree just as it would in a checkout. Unit
+ * cases pin the bugs someone found; this table pins the inputs the checker documents, so a
+ * change to how the hook reads a commit cannot drop one without a row going red.
+ *
+ * The reference is shellcheck itself, run at the blocking bar on a real checkout of the same
+ * commit. HOME and XDG_CONFIG_HOME point at an empty directory in both runs, so a personal
+ * config can never make two different reads agree. A row marked `gap` is a known difference,
+ * recorded in ROADMAP.md: it runs as an expected failure, and turns red the day it is fixed.
+ */
+describe.skipIf(!existsSync(CLI) || !hasShellcheck)(
+  "etymd gates — the staged tree reads like a checkout, for every input shellcheck documents",
+  () => {
+    type Row = { name: string; files: Record<string, string>; scripts: string[]; gap?: string }
+    const unused = "#!/bin/sh\nnever_used=1\necho ok\n"
+    const uses = (line: string) => `#!/bin/sh\n${line}\necho "$greeting"\n`
+    const rows: Row[] = [
+      {
+        name: "a root .shellcheckrc governs every script",
+        files: { ".shellcheckrc": "disable=SC2034\n", "tool/do.sh": unused },
+        scripts: ["tool/do.sh"],
+      },
+      {
+        name: "a root shellcheckrc (no dot) governs every script",
+        files: { shellcheckrc: "disable=SC2034\n", "tool/do.sh": unused },
+        scripts: ["tool/do.sh"],
+        gap: "ROADMAP.md: the pre-push hook stages only .shellcheckrc",
+      },
+      {
+        name: "a nested .shellcheckrc governs only its own subtree",
+        files: { "sub/.shellcheckrc": "disable=SC2034\n", "sub/a.sh": unused, "b.sh": unused },
+        scripts: ["sub/a.sh", "b.sh"],
+      },
+      {
+        name: "external-sources=true follows a sourced helper with no shebang",
+        files: {
+          ".shellcheckrc": "external-sources=true\n",
+          "tool/lib.inc": "greeting=hi\n",
+          "tool/do.sh": uses(". ./tool/lib.inc"),
+        },
+        scripts: ["tool/do.sh"],
+      },
+      {
+        name: 'a quoted external-sources="true" follows a sourced helper',
+        files: {
+          ".shellcheckrc": 'external-sources="true"\n',
+          "tool/lib.inc": "greeting=hi\n",
+          "tool/do.sh": uses(". ./tool/lib.inc"),
+        },
+        scripts: ["tool/do.sh"],
+        gap: "ROADMAP.md: the pre-push hook reads only an unquoted external-sources=true",
+      },
+      {
+        name: "a helper's own helper is followed",
+        files: {
+          ".shellcheckrc": "external-sources=true\n",
+          "tool/lib.inc": "# shellcheck source=tool/inner.inc\n. ./tool/inner.inc\n",
+          "tool/inner.inc": "greeting=hi\n",
+          "tool/do.sh": uses("# shellcheck source=tool/lib.inc\n. ./tool/lib.inc"),
+        },
+        scripts: ["tool/do.sh"],
+      },
+      {
+        name: "a double-quoted helper path with a space is followed",
+        files: {
+          ".shellcheckrc": "external-sources=true\n",
+          "tool/my helper.inc": "greeting=hi\n",
+          "tool/do.sh": uses('. "./tool/my helper.inc"'),
+        },
+        scripts: ["tool/do.sh"],
+      },
+      {
+        name: "a backslash-escaped helper path is followed",
+        files: {
+          ".shellcheckrc": "external-sources=true\n",
+          "tool/my helper.inc": "greeting=hi\n",
+          "tool/do.sh": uses(". ./tool/my\\ helper.inc"),
+        },
+        scripts: ["tool/do.sh"],
+      },
+      {
+        name: "a quoted source= directive names a dynamically sourced helper",
+        files: {
+          ".shellcheckrc": "external-sources=true\n",
+          "tool/my helper.inc": "greeting=hi\n",
+          "tool/do.sh": uses('# shellcheck source="tool/my helper.inc"\n. "$HELPER"'),
+        },
+        scripts: ["tool/do.sh"],
+      },
+      {
+        name: "source-path=SCRIPTDIR resolves a helper beside the script",
+        files: {
+          ".shellcheckrc": "external-sources=true\nsource-path=SCRIPTDIR\n",
+          "tool/lib.inc": "greeting=hi\n",
+          "tool/do.sh": uses(". lib.inc"),
+        },
+        scripts: ["tool/do.sh"],
+      },
+      {
+        name: "without external-sources, a sourced helper is not followed in either read",
+        files: { "tool/lib.inc": "greeting=hi\n", "tool/do.sh": uses(". ./tool/lib.inc") },
+        scripts: ["tool/do.sh"],
+      },
+    ]
+
+    /** The blocking verdict as a reader sees it: exit status, and each finding with its place. */
+    function verdict(code: number, stdout: string) {
+      const lines = stdout.split("\n").filter((l) => /^In \.\/.* line \d+:$|SC\d{4} \(/.test(l))
+      return { failed: code !== 0, findings: lines.map((l) => l.trim()).sort() }
+    }
+
+    for (const row of rows) {
+      const test = row.gap ? it.fails : it
+      test(`${row.name}${row.gap ? ` — known gap, ${row.gap}` : ""}`, async () => {
+        await baseRepo()
+        for (const [rel, body] of Object.entries(row.files)) await write(rel, body)
+        await commitAll("chore: the row's files")
+        await gates()
+        const home = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-parity-home-"))
+        const env = await stubEnv({ HOME: home, XDG_CONFIG_HOME: home })
+
+        const hook = await runPrePush(
+          env,
+          update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+        ).then(
+          (r) => verdict(0, r.stdout),
+          (e) => verdict(e.code ?? 1, e.stdout ?? ""),
+        )
+
+        const checkout = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-parity-checkout-"))
+        await pExecFile("git", ["worktree", "add", "-q", "--detach", checkout, "HEAD"], {
+          cwd: dir,
+        })
+        const reference = await pExecFile(
+          "shellcheck",
+          ["-S", "warning", "--", ...row.scripts.map((s) => `./${s}`)],
+          { cwd: checkout, env },
+        ).then(
+          (r) => verdict(0, r.stdout),
+          (e) => verdict(e.code ?? 1, e.stdout ?? ""),
+        )
+        await pExecFile("git", ["worktree", "remove", "--force", checkout], { cwd: dir })
+
+        expect(hook).toEqual(reference)
+      })
+    }
   },
 )
