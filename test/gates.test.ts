@@ -96,11 +96,17 @@ async function stubEnv(extra: Record<string, string> = {}): Promise<NodeJS.Proce
 }
 
 /** A recording checker stand-in. The hook runs it inside the materialised tree, so the log
- * path travels by environment, never by relative filename. */
-async function recordShellcheck() {
+ * path travels by environment, never by relative filename. `--version` answers like the real
+ * checker (optionally a chosen one) and is never recorded: the hook probes it once per push
+ * for the re-baseline stamp, not as a check. */
+async function recordShellcheck(version = "") {
   await stub(
     "shellcheck",
     `#!/usr/bin/env node
+if (process.argv.includes("--version")) {
+  process.stdout.write("version: ${version}\\n")
+  process.exit(0)
+}
 require("node:fs").appendFileSync(process.env.ETYMD_RECORD, JSON.stringify(process.argv.slice(2)) + "\\n")
 `,
   )
@@ -620,6 +626,61 @@ process.stdout.write("      " + n + "\\n")
       for (const args of await recorded()) expect(args).toContain("./tool/old.sh")
     })
 
+    it.skipIf(!hasShellcheck)(
+      "a .shellcheckrc-only change is honoured without touching scripts",
+      async () => {
+        // The commit's whole tree is materialised (checkout-index writes every tracked blob,
+        // config included), so the whole-tree check after a config-only change runs under the
+        // repo's own checker config: the disabled finding stays disabled. Without the config
+        // being read, shellcheck blocks this push on SC2034 — that it passes is the pin.
+        await baseRepo()
+        await write("tool/legacy.sh", "#!/bin/sh\nunused=1\n")
+        await commitAll("chore: a script the checker would flag")
+        await write(".shellcheckrc", "disable=SC2034\n")
+        await commitAll("chore: silence it in the checker config")
+        await gates()
+        const env = await stubEnv()
+
+        const { stdout } = await runPrePush(
+          env,
+          update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+        )
+        expect(stdout).toContain("whole tree")
+        expect(stdout).toContain("1 scripts")
+      },
+    )
+
+    it("a shellcheck upgrade re-checks the whole shell surface once", async () => {
+      // A checker release can flag bytes nobody touched; the per-commit read would leave the
+      // finding waiting for each script's next edit. The hook stamps the checker's version
+      // in the git dir and re-checks whole on the first push after it moves — and only that
+      // push: the stamp is rewritten before the checks run, so nothing re-triggers.
+      await baseRepo()
+      await write("tool/old.sh", "#!/bin/sh\necho old\n")
+      await commitAll("chore: an existing script")
+      await write("tool/new.sh", "#!/bin/sh\necho new\n")
+      await commitAll("chore: one new script")
+      await gates()
+      await recordShellcheck("1.0.0")
+      let env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+      await runPrePush(env, update("main", await revParse("HEAD"), await revParse("HEAD~1")))
+      for (const args of await recorded()) {
+        expect(args).toContain("./tool/new.sh")
+        expect(args).not.toContain("./tool/old.sh")
+      }
+
+      await write("docs/notes.md", "# Notes\n")
+      await commitAll("docs: no script touched")
+      await recordShellcheck("2.0.0")
+      env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+      const { stdout } = await runPrePush(
+        env,
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      )
+      expect(stdout).toContain("the checker changed (1.0.0 → 2.0.0)")
+      expect(stdout).toContain("whole tree")
+      expect((await recorded()).some((args) => args.includes("./tool/old.sh"))).toBe(true)
+    })
     it("PINNED: a merge is diffed against its first parent, so the merged side's scripts are read", async () => {
       await baseRepo()
       await pExecFile("git", ["checkout", "-q", "-b", "side"], { cwd: dir })

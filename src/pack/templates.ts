@@ -629,6 +629,28 @@ if command -v shellcheck >/dev/null 2>&1; then
     # Resolved once, before any cd: the classifier runs inside each materialised tree, and a
     # relative hook path would no longer point at it from there.
     discover="$(cd "$(dirname "$0")" && pwd)/discover-shell-scripts.sh" || exit 1
+    # A checker upgrade can flag bytes nobody touched: a new shellcheck release adds checks
+    # that fire on scripts already sitting on the remote, and the per-commit read below only
+    # re-reads what a commit touches — those findings would wait for each script's next edit.
+    # The checker's own version is stamped inside the git dir (never the working tree, so no
+    # repo grows an untracked file for bookkeeping); when it moves, every commit of this push
+    # is checked whole — once, after the change, not on every push as the old gate did. A
+    # missing stamp is a first adoption, not a change (the adopting push is covered by the
+    # gate-install trigger below); a stamp that cannot be read is doubt, and doubt points at
+    # more checking. The stamp is rewritten before the checks run, so a push cut short cannot
+    # re-trigger the re-baseline, and a stamp that cannot be written only means the next push
+    # re-checks whole again — never less coverage.
+    checker_stamp="$(git rev-parse --git-dir 2>/dev/null)/etymd-shellcheck-version"
+    checker_ver=$(shellcheck --version 2>/dev/null | sed -n 's/^version: //p' | head -n 1)
+    force_whole=0
+    if [ -f "$checker_stamp" ]; then
+      checker_old=$(cat "$checker_stamp" 2>/dev/null) || force_whole=1
+      if [ "$checker_old" != "$checker_ver" ]; then
+        force_whole=1
+        echo "› shellcheck: the checker changed (\${checker_old:-unknown} → \${checker_ver:-unknown}) — re-checking the whole shell surface this push"
+      fi
+    fi
+    printf '%s\\n' "$checker_ver" > "$checker_stamp" 2>/dev/null || true
     for sha in $shas; do
       # A fresh directory per commit, removed once that commit is checked so a long push does
       # not pile up one full tree per commit; the subshell trap above still cleans the root on
@@ -679,20 +701,27 @@ if command -v shellcheck >/dev/null 2>&1; then
       tr '\\000' '\\n' < "$shellcheck_tmp/touched" > "$shellcheck_tmp/touched-lines" || exit 1
       # grep: 1 is "no match", a verdict; anything higher is the matcher failing. The status is
       # taken on the grep's own line so nothing added later can come between them.
-      st=0
-      grep -qE '(^|/)(\\.shellcheckrc|discover-shell-scripts\\.sh|pre-push)$' "$shellcheck_tmp/touched-lines" || st=$?
-      case $st in
-        (0)
-          where="in $short (whole tree: the gate, its classifier or a .shellcheckrc changed)"
-          git ls-tree -r -z --name-only "$sha" > "$shellcheck_tmp/tracked" || {
-            echo "etymd: cannot enumerate the tree of $short for shellcheck" >&2
-            exit 1
-          } ;;
-        (1) ;;
-        (*)
-          echo "etymd: shell script discovery failed; cannot tell whether $short changes the gate, its classifier or a .shellcheckrc" >&2
-          exit 1 ;;
-      esac
+      whole_reason=""
+      if [ "$force_whole" -eq 1 ]; then
+        whole_reason="the checker changed"
+      else
+        st=0
+        grep -qE '(^|/)(\\.shellcheckrc|discover-shell-scripts\\.sh|pre-push)$' "$shellcheck_tmp/touched-lines" || st=$?
+        case $st in
+          (0) whole_reason="the gate, its classifier or a .shellcheckrc changed" ;;
+          (1) ;;
+          (*)
+            echo "etymd: shell script discovery failed; cannot tell whether $short changes the gate, its classifier or a .shellcheckrc" >&2
+            exit 1 ;;
+        esac
+      fi
+      if [ -n "$whole_reason" ]; then
+        where="in $short (whole tree: $whole_reason)"
+        git ls-tree -r -z --name-only "$sha" > "$shellcheck_tmp/tracked" || {
+          echo "etymd: cannot enumerate the tree of $short for shellcheck" >&2
+          exit 1
+        }
+      fi
       ( cd "$tree" && xargs -0 "$discover" "$shellcheck_tmp" ) < "$shellcheck_tmp/tracked" || {
         echo "etymd: shell script discovery failed; shellcheck coverage is incomplete" >&2
         exit 1
