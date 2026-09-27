@@ -4,9 +4,9 @@
 #   discover-shell-scripts.sh --skips <scratch> <ls-tree record>...
 #   discover-shell-scripts.sh --commit <scratch> <tree> <commit> <commit>:<path>...
 # The first writes the commit's .shellcheckrc files into the tree as raw blobs, so the checker
-# finds its config where it looks, and flags one that turns external-sources on. The second counts the changed paths that are symlinks or
-# submodule entries. The second reads
-# the candidates `git grep` found with a line starting `#!`, and classifies each by its FIRST
+# finds its config where it looks, and flags one that turns external-sources on. The second
+# counts the changed paths that are symlinks or submodule entries. The third reads the
+# candidates `git grep` found with a line starting `#!`, and classifies each by its FIRST
 # line. Verdicts land in the scratch: scripts (NUL-delimited matches) and one dot per decision
 # into count / zsh-count / skip-count, tallied by the hook after the pipeline. Each script found
 # is written into <tree> at its path, so the checker reads it there. With external-sources on,
@@ -18,9 +18,9 @@
 # line ends in a carriage return, the match below fails, and the script leaves the checked set
 # without a word. Only the entries handed in are read, never the whole commit.
 #
-# A symlink or submodule entry has no script bytes of its own — a link's target is a tracked
-# path checked under its own name — so it is a disclosed skip, never a block. A candidate that
-# cannot be read fails, naming the path: coverage would otherwise silently shrink.
+# A symlink or submodule entry has no script bytes of its own — a link's target is itself a
+# tracked path, read only when a push changes it — so it is a disclosed skip, never a block. A
+# candidate that cannot be read fails, naming the path: coverage would otherwise silently shrink.
 #
 # The match/error protocol: grep reports "no match" as 1 and a failure as 2 or more, and only
 # the first is a verdict. Letting a failure fall through would pass a broken matcher as "not a
@@ -154,4 +154,4 @@ for entry do
     (*) exit 1 ;;
   esac
 done
-# etymd:generated pack-v18 68db33594372f080
+# etymd:generated pack-v19 f29a67e0552110b7

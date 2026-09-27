@@ -72,6 +72,17 @@ async function runPrePush(env: NodeJS.ProcessEnv, ...refLines: string[]) {
   return pExecFile("sh", ["-c", '".githooks/pre-push" < "$1"', "sh", refsFile], { cwd: dir, env })
 }
 
+/** The same, as git invokes it for a NAMED remote: `pre-push <remote> <url>` — the remote the
+ * new-branch range is scoped to. */
+async function runPrePushTo(env: NodeJS.ProcessEnv, remote: string, ...refLines: string[]) {
+  const refsFile = path.join(dir, ".pushed-refs")
+  await fs.writeFile(refsFile, refLines.join("\n") + (refLines.length ? "\n" : ""), "utf8")
+  return pExecFile("sh", ["-c", '".githooks/pre-push" "$1" < "$2"', "sh", remote, refsFile], {
+    cwd: dir,
+    env,
+  })
+}
+
 /** The base every fixture builds on: a manifest, an instruction file, one commit for HEAD. */
 async function baseRepo() {
   await write("package.json", JSON.stringify({ name: "demo", private: true }) + "\n")
@@ -520,6 +531,44 @@ describe.skipIf(!existsSync(CLI))(
       },
     )
 
+    it.skipIf(!hasShellcheck)(
+      "PINNED: a new branch to one remote still reads commits another remote already has",
+      async () => {
+        // The failure being fixed: "reached a remote" was read as "a gate read it there", so a
+        // commit an ungated clone shipped to remote A was skipped by this gate's first push of
+        // a new branch to remote B. The exclusion is scoped to the pushed remote's own refs:
+        // what another remote holds is not thereby gated here.
+        await baseRepo()
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: bad script")
+        // A second remote whose tracking refs hold the bad commit: fetched, never gated here.
+        const bare = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-remote-a-"))
+        await fs.rmdir(bare) // git clone wants a target that does not exist
+        try {
+          await pExecFile("git", ["clone", "-q", "--bare", dir, bare])
+          await pExecFile("git", ["remote", "add", "a", bare], { cwd: dir })
+          await pExecFile("git", ["fetch", "-q", "a"], { cwd: dir })
+          await gates()
+          const env = await stubEnv()
+          const head = await revParse("HEAD")
+
+          await expect(
+            runPrePushTo(env, "b", `refs/heads/topic ${head} refs/heads/topic ${ZERO}`),
+          ).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining("SC2034") })
+          // The same push to the remote that already holds everything passes: its bytes are
+          // there whatever this branch does, so the push adds nothing the gate must read.
+          const { stdout } = await runPrePushTo(
+            env,
+            "a",
+            `refs/heads/topic ${head} refs/heads/topic ${ZERO}`,
+          )
+          expect(stdout).toContain("no commit in the pushed refs")
+        } finally {
+          await fs.rm(bare, { recursive: true, force: true })
+        }
+      },
+    )
+
     it("PINNED: each pushed commit is checked for the scripts it changes, not its whole tree", async () => {
       // The cost being fixed: every script in every pushed commit, so the step grew with the range
       // length times the script count. An untouched script carries its parent's bytes,
@@ -599,6 +648,52 @@ describe.skipIf(!existsSync(CLI))(
       expect(stdout).toContain("whole tree")
       for (const args of await recorded()) expect(args).toContain("./tool/old.sh")
     })
+
+    it.skipIf(!hasShellcheck)(
+      "a tracked path containing a newline neither forges nor hides a gate-file match",
+      async () => {
+        // The failure being fixed: the changed paths were newline-split for the gate-file
+        // match, so a name like "notes\npre-push" split into a bare `pre-push` line and bought
+        // a whole-tree check — and a crafted name could hide the reverse. The match now runs
+        // per NUL-delimited path.
+        await baseRepo()
+        await write("docs/notes\npre-push", "release notes, not a hook\n")
+        await write("tool/do.sh", "#!/bin/sh\necho ok\n")
+        await commitAll("chore: a note with a newline in its name")
+        await gates()
+        const env = await stubEnv()
+
+        const { stdout } = await runPrePush(
+          env,
+          update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+        )
+        expect(stdout).toContain("changed in")
+        expect(stdout).not.toContain("whole tree")
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "a document named pre-push outside .githooks does not force the whole-tree check",
+      async () => {
+        // The failure being fixed: the gate-file pattern matched `pre-push` at any depth, so a
+        // doc named docs/pre-push bought the whole-tree read on every push that touched it.
+        // The hook names are anchored to .githooks/, the directory the pack writes them to;
+        // .shellcheckrc stays matchable at any depth, as its own tests above pin.
+        await baseRepo()
+        await write("docs/pre-push", "how this repo's push gate works\n")
+        await write("tool/do.sh", "#!/bin/sh\necho ok\n")
+        await commitAll("docs: describe the push gate")
+        await gates()
+        const env = await stubEnv()
+
+        const { stdout } = await runPrePush(
+          env,
+          update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+        )
+        expect(stdout).toContain("changed in")
+        expect(stdout).not.toContain("whole tree")
+      },
+    )
 
     it("PINNED: a merge is diffed against its first parent, so the merged side's scripts are read", async () => {
       await baseRepo()
@@ -813,6 +908,55 @@ describe.skipIf(!existsSync(CLI))(
         expect(stdout).not.toContain("SC1091")
       },
     )
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: a cleanup failure after a passing check does not refuse the push",
+      async () => {
+        // The failure being fixed: the per-commit scratch tree was removed with `|| exit 1`,
+        // so a push whose checks had already passed could be refused by its own cleanup. The
+        // trap at the top reclaims the scratch root regardless; cleanup is advisory, never a
+        // verdict.
+        await baseRepo()
+        await write("tool/do.sh", "#!/bin/sh\necho ok\n")
+        await commitAll("chore: a clean script")
+        await gates()
+        // A checker that passes, then breaks its scratch tree's removability: mode 555 bars
+        // unlinking the entries inside, so the hook's cleanup fails — after the check passed.
+        const treeLog = path.join(dir, "tree.log")
+        await stub(
+          "shellcheck",
+          '#!/bin/sh\nprintf "%s\\n" "$PWD" > "$ETYMD_TREE"\nchmod 555 "$PWD"\nexit 0\n',
+        )
+        const env = await stubEnv({ ETYMD_TREE: treeLog })
+
+        try {
+          const { stdout } = await runPrePush(
+            env,
+            update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+          )
+          expect(stdout).toContain("could not remove the scratch tree")
+        } finally {
+          const tree = (await fs.readFile(treeLog, "utf8")).trim()
+          await fs.chmod(tree, 0o755).catch(() => {})
+          await fs.rm(path.dirname(tree), { recursive: true, force: true })
+        }
+      },
+    )
+
+    it("the source= extraction matches only shellcheck directives, never a bare source=", async () => {
+      // A bare `source=` is also a command-line flag and prose ("--source=x", "the source=
+      // field"); reading names from those fed junk into every fixed-point staging round. The
+      // directive alternative now carries the `# shellcheck` prefix, and an absolute argument
+      // (source=/dev/null) is dropped: it names system state, not repo content.
+      await baseRepo()
+      await write("tool/run.sh", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: a script, so the shell step exists")
+      await gates()
+      const hook = await prePush()
+      expect(hook).toContain("#[[:space:]]*shellcheck[[:space:]]+source=")
+      expect(hook).not.toMatch(/\|source=/)
+      expect(hook).toContain("-e '^/'")
+    })
 
     it.skipIf(!hasShellcheck)(
       "PINNED: with external-sources on, an unrelated file's failing checkout filter does not block",
