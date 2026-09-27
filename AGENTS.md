@@ -105,7 +105,7 @@ over repo-wide scans.
   pivot — the current identity · 004 fleet mode · 005 declared rules, design only · 006 local gate
   provenance · 007 declared entry fields · 008 derived gate tier · 009 state-doc truth · 010
   premise — the task is an instruction · 011 milestones & the fleet board · 012 propose —
-  rubric-scored proposals)
+  rubric-scored proposals · 013 the shell gate stays generated, changes replayed first)
 - `ROADMAP.md` — now/next/later, accepted heuristic trade-offs (release mechanics are a
   machine-local runbook, deliberately untracked: operating detail attracts account and
   environment specifics a public repo must not carry)
