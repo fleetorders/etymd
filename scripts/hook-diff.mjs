@@ -126,6 +126,8 @@ function run(pack, repo, sha, parent) {
 
 let differences = 0
 let compared = 0
+// What "identical" rests on: two runs that both read nothing, or both failed, also agree.
+const basis = { withScripts: 0, files: 0, exits: {} }
 const time = { old: 0, new: 0 }
 for (const repo of opts.repos) {
   const git = (...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8" }).trim()
@@ -146,6 +148,10 @@ for (const repo of opts.repos) {
     }
     const [a, b] = packs.map((p) => run(p, repo, sha, parent))
     compared++
+    if (b.read.length) basis.withScripts++
+    basis.files += b.read.length
+    const key = `${a.status}/${b.status}`
+    basis.exits[key] = (basis.exits[key] ?? 0) + 1
     time.old += a.ms
     time.new += b.ms
     const short = sha.slice(0, 8)
@@ -169,6 +175,13 @@ for (const repo of opts.repos) {
 console.log(
   `\nhook-diff: ${compared} commit(s) compared, ${differences} difference(s); ` +
     `time ${(time.old / 1000).toFixed(1)} s old, ${(time.new / 1000).toFixed(1)} s new`,
+)
+console.log(
+  `hook-diff: scripts were checked in ${basis.withScripts} of ${compared} commit(s), ` +
+    `${basis.files} file-check(s) in all; exit status old/new: ` +
+    Object.entries(basis.exits)
+      .map(([k, n]) => `${k} ×${n}`)
+      .join(", "),
 )
 // Nothing compared is not "identical": a run that read no commit proved nothing.
 if (compared === 0) usage("no commit was compared — check the repo paths")
