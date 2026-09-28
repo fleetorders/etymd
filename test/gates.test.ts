@@ -1022,22 +1022,30 @@ describe.skipIf(!existsSync(CLI))(
 
 /**
  * The staged tree against a full checkout, case by case from shellcheck's own documentation
- * (the man page's RC FILES and DIRECTIVES sections): every input the checker reads from the
- * repository must reach it in the hook's scratch tree just as it would in a checkout. Unit
- * cases pin the bugs someone found; this table pins the inputs the checker documents, so a
- * change to how the hook reads a commit cannot drop one without a row going red.
+ * (the man page's RC FILES and DIRECTIVES sections). The table is CURATED from those sections,
+ * not exhaustive over them: it carries the shapes the hook's staging has been seen to get
+ * wrong, so a change to how the hook reads a commit cannot drop one without a row going red.
+ * Unit cases pin the bugs someone found; this table pins the documented input shapes.
  *
  * The reference is shellcheck itself, run at the blocking bar on a real checkout of the same
  * commit. HOME and XDG_CONFIG_HOME point at an empty directory in both runs, so a personal
  * config can never make two different reads agree. A row marked `gap` is a known difference,
- * recorded in ROADMAP.md: it runs as an expected failure, and turns red the day it is fixed.
+ * recorded in ROADMAP.md — asserted as the exact asymmetry it is (the checkout read clean,
+ * the hook read failing with the finding the gap predicts), never as "this row may fail for
+ * any reason": a timeout, a harness error or a checker release that changes the premise
+ * turns the row red with the assertion that broke, and so does the gap being fixed.
  */
 describe.skipIf(!existsSync(CLI) || !hasShellcheck)(
-  "etymd gates — the staged tree reads like a checkout, for every input shellcheck documents",
+  "etymd gates — the staged tree reads like a checkout, row by row over shellcheck's documented rc and directive shapes",
   () => {
-    type Row = { name: string; files: Record<string, string>; scripts: string[]; gap?: string }
+    type Gap = { note: string; hookOnly: RegExp[] }
+    type Row = { name: string; files: Record<string, string>; scripts: string[]; gap?: Gap }
     const unused = "#!/bin/sh\nnever_used=1\necho ok\n"
     const uses = (line: string) => `#!/bin/sh\n${line}\necho "$greeting"\n`
+    // The finding each shebang shape carries: a row whose script the hook's classifier missed
+    // reads clean on the hook side and dirty on the reference side — a red row, not a hole.
+    const envShebang = (body: string) => body.replace("#!/bin/sh", "#!/usr/bin/env sh")
+    const spacedShebang = (body: string) => body.replace("#!/bin/sh", "#! /bin/sh")
     const rows: Row[] = [
       {
         name: "a root .shellcheckrc governs every script",
@@ -1048,12 +1056,21 @@ describe.skipIf(!existsSync(CLI) || !hasShellcheck)(
         name: "a root shellcheckrc (no dot) governs every script",
         files: { shellcheckrc: "disable=SC2034\n", "tool/do.sh": unused },
         scripts: ["tool/do.sh"],
-        gap: "ROADMAP.md: the pre-push hook stages only .shellcheckrc",
       },
       {
         name: "a nested .shellcheckrc governs only its own subtree",
         files: { "sub/.shellcheckrc": "disable=SC2034\n", "sub/a.sh": unused, "b.sh": unused },
         scripts: ["sub/a.sh", "b.sh"],
+      },
+      {
+        name: "an env-shebang script (#!/usr/bin/env sh) is discovered and checked",
+        files: { "tool/env.sh": envShebang(unused) },
+        scripts: ["tool/env.sh"],
+      },
+      {
+        name: "a spaced shebang (#! /bin/sh) is discovered and checked",
+        files: { "tool/spaced.sh": spacedShebang(unused) },
+        scripts: ["tool/spaced.sh"],
       },
       {
         name: "external-sources=true follows a sourced helper with no shebang",
@@ -1072,7 +1089,12 @@ describe.skipIf(!existsSync(CLI) || !hasShellcheck)(
           "tool/do.sh": uses(". ./tool/lib.inc"),
         },
         scripts: ["tool/do.sh"],
-        gap: "ROADMAP.md: the pre-push hook reads only an unquoted external-sources=true",
+        gap: {
+          note: "ROADMAP.md: the pre-push hook reads only an unquoted external-sources=true",
+          // The helper is never staged, so its assignment never happens: SC2154 is the
+          // finding the gap predicts on the hook side alone.
+          hookOnly: [/SC2154/],
+        },
       },
       {
         name: "a helper's own helper is followed",
@@ -1129,44 +1151,101 @@ describe.skipIf(!existsSync(CLI) || !hasShellcheck)(
 
     /** The blocking verdict as a reader sees it: exit status, and each finding with its place. */
     function verdict(code: number, stdout: string) {
-      const lines = stdout.split("\n").filter((l) => /^In \.\/.* line \d+:$|SC\d{4} \(/.test(l))
+      const lines = stdout
+        .split("\n")
+        // A location line carries the path as the side that ran the checker spelled it (the
+        // reference prefixes ./, the hook passes paths as its classifier wrote them), and the
+        // path is not what is compared: each is folded to the same placeholder, keeping the
+        // line number — the pattern allows a path with spaces. A location line matching the
+        // shape survives normalised; a line matching neither shape is kept as it stands, so
+        // an unexpected path form fails the comparison visibly instead of vanishing.
+        .map((l) => l.replace(/^In .* line (\d+):$/, "In <script> line $1:"))
+        .filter((l) => /^In <script> line \d+:$|SC\d{4} \(/.test(l))
       return { failed: code !== 0, findings: lines.map((l) => l.trim()).sort() }
     }
 
     for (const row of rows) {
-      const test = row.gap ? it.fails : it
-      test(`${row.name}${row.gap ? ` — known gap, ${row.gap}` : ""}`, async () => {
+      it(`${row.name}${row.gap ? ` (known gap: ${row.gap.note})` : ""}`, async () => {
         await baseRepo()
         for (const [rel, body] of Object.entries(row.files)) await write(rel, body)
         await commitAll("chore: the row's files")
         await gates()
         const home = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-parity-home-"))
-        const env = await stubEnv({ HOME: home, XDG_CONFIG_HOME: home })
-
-        const hook = await runPrePush(
-          env,
-          update("main", await revParse("HEAD"), await revParse("HEAD~1")),
-        ).then(
-          (r) => verdict(0, r.stdout),
-          (e) => verdict(e.code ?? 1, e.stdout ?? ""),
-        )
-
         const checkout = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-parity-checkout-"))
-        await pExecFile("git", ["worktree", "add", "-q", "--detach", checkout, "HEAD"], {
-          cwd: dir,
-        })
-        const reference = await pExecFile(
-          "shellcheck",
-          ["-S", "warning", "--", ...row.scripts.map((s) => `./${s}`)],
-          { cwd: checkout, env },
-        ).then(
-          (r) => verdict(0, r.stdout),
-          (e) => verdict(e.code ?? 1, e.stdout ?? ""),
-        )
-        await pExecFile("git", ["worktree", "remove", "--force", checkout], { cwd: dir })
+        try {
+          const env = await stubEnv({ HOME: home, XDG_CONFIG_HOME: home })
 
-        expect(hook).toEqual(reference)
+          const hook = await runPrePush(
+            env,
+            update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+          ).then(
+            (r) => verdict(0, r.stdout),
+            (e) => verdict(e.code ?? 1, e.stdout ?? ""),
+          )
+
+          await pExecFile("git", ["worktree", "add", "-q", "--detach", checkout, "HEAD"], {
+            cwd: dir,
+          })
+          const reference = await pExecFile(
+            "shellcheck",
+            ["-S", "warning", "--", ...row.scripts.map((s) => `./${s}`)],
+            { cwd: checkout, env },
+          ).then(
+            (r) => verdict(0, r.stdout),
+            (e) => verdict(e.code ?? 1, e.stdout ?? ""),
+          )
+
+          if (row.gap) {
+            // The gap asserted, never "expected to fail": the checkout read must be clean —
+            // the premise the gap rests on — and the hook read must fail carrying the finding
+            // the gap predicts. Anything else fails the row with the assertion that broke: a
+            // timeout, a worktree error, a checker release that changes the premise, or the
+            // gap being fixed.
+            expect(
+              reference.failed,
+              "the checkout read must be clean for the difference to be the hook's",
+            ).toBe(false)
+            expect(
+              reference.findings,
+              "the checkout read must be clean for the difference to be the hook's",
+            ).toEqual([])
+            expect(hook.failed).toBe(true)
+            for (const re of row.gap.hookOnly)
+              expect(hook.findings.join("\n"), `the hook read must carry ${re}`).toMatch(re)
+            return
+          }
+          expect(hook).toEqual(reference)
+        } finally {
+          // A crash between worktree add and remove would leak both the registration and the
+          // directory; --force tolerates a worktree already gone, and rm's force a directory
+          // already gone. The isolated HOME goes the same way.
+          await pExecFile("git", ["worktree", "remove", "--force", checkout], { cwd: dir }).catch(
+            () => {},
+          )
+          await fs.rm(checkout, { recursive: true, force: true })
+          await fs.rm(home, { recursive: true, force: true })
+        }
       })
     }
+
+    it("PINNED: a .shellcheckrc that disables a check keeps the hook green — not merely equal to a checkout", async () => {
+      // Parity is blind to a checker that changes its own mind: a release that stopped
+      // honouring disable= would fail both reads identically and every row above would
+      // stay green while the hook blocked every push. This absolute pin holds the hook
+      // itself to the green verdict, with no reference to agree with it.
+      await baseRepo()
+      await write(".shellcheckrc", "disable=SC2034\n")
+      await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+      await commitAll("chore: script with a disabled check")
+      await gates()
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-parity-home-"))
+      try {
+        const env = await stubEnv({ HOME: home, XDG_CONFIG_HOME: home })
+        // Resolves only if the push is allowed through: runPrePush rejects on a blocked push.
+        await runPrePush(env, update("main", await revParse("HEAD"), await revParse("HEAD~1")))
+      } finally {
+        await fs.rm(home, { recursive: true, force: true })
+      }
+    })
   },
 )
