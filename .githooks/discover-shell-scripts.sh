@@ -5,11 +5,14 @@
 # dot per decision into count / zsh-count / skip-count, tallied by the hook after the pipeline.
 #
 # The hook runs it from inside a commit materialised from git's object store, so paths resolve
-# against that tree, never the working tree. A path with nothing readable behind it — a
-# submodule entry, a dangling symlink — cannot lie about its contents, so it is a disclosed
-# skip, never a block. A regular file
-# that EXISTS but cannot be read is the other branch — coverage would silently shrink, so it
-# fails, naming the path.
+# against that tree, never the working tree. A symlink that resolves is read THROUGH: the bytes
+# classified are its target's as of THIS commit, under the link's own name — a push that
+# repoints a link at an unchanged script still classifies the bytes the link now ships, because
+# the tree the link resolves in is the commit being pushed, whether or not the target's path is
+# in the changed set. A path with nothing readable behind it — a submodule entry, a dangling
+# symlink — cannot lie about its contents, so it is a disclosed skip, never a block. A regular
+# file that EXISTS but cannot be read is the other branch — coverage would silently shrink, so
+# it fails, naming the path.
 #
 # The match/error protocol: grep reports "no match" as 1 and a failure as 2 or more, and only
 # the first is a verdict. Letting a failure fall through would pass a broken matcher as "not a
@@ -51,4 +54,4 @@ for file do
     (*) exit 1 ;;
   esac
 done
-# etymd:generated pack-v18 fa90378d39163ddc
+# etymd:generated pack-v19 b948808e19732a40

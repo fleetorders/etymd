@@ -221,13 +221,19 @@ if command -v shellcheck >/dev/null 2>&1; then
         echo "› shellcheck: no shell script $where — nothing to check there"
       else
         echo "› shellcheck ($((count)) scripts $where, blocking at severity=warning)"
-        ( cd "$tree" && xargs -0 shellcheck -S warning -- < "$shellcheck_tmp/scripts" ) || {
+        # Sources are followed by the checker, from inside this materialised tree — never by
+        # this hook re-parsing `source` lines to stage helpers by name. A sibling resolves
+        # through SCRIPTDIR, a root-relative path through the cwd, which is the tree; a path
+        # that resolves to nothing is a note (a script may rightly source what a checkout does
+        # not carry), while a helper that fails to parse is SC1094, a warning — a broken
+        # helper ships with the script that dots it.
+        ( cd "$tree" && xargs -0 shellcheck -x --source-path=SCRIPTDIR -S warning -- < "$shellcheck_tmp/scripts" ) || {
           echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
           exit 1
         }
         # Everything below the blocking bar, shown once the push is already cleared. Never affects
         # the exit code — advice that can fail a push is not advice.
-        advice=$( ( cd "$tree" && xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/scripts" 2>/dev/null ) \
+        advice=$( ( cd "$tree" && xargs -0 shellcheck -x --source-path=SCRIPTDIR -S style -f gcc -- < "$shellcheck_tmp/scripts" 2>/dev/null ) \
           | grep -v ': warning:\|: error:' || true)
         if [ -n "$advice" ]; then
           echo "  · style/info (not blocking):"
@@ -260,4 +266,4 @@ if [ -x "$GATE" ]; then
 fi
 
 exit 0
-# etymd:generated pack-v18 4b50269df05af5e7
+# etymd:generated pack-v19 31a40279401cc435

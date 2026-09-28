@@ -471,11 +471,14 @@ export function generateShellDiscoveryScript(): string {
 # dot per decision into count / zsh-count / skip-count, tallied by the hook after the pipeline.
 #
 # The hook runs it from inside a commit materialised from git's object store, so paths resolve
-# against that tree, never the working tree. A path with nothing readable behind it — a
-# submodule entry, a dangling symlink — cannot lie about its contents, so it is a disclosed
-# skip, never a block. A regular file
-# that EXISTS but cannot be read is the other branch — coverage would silently shrink, so it
-# fails, naming the path.
+# against that tree, never the working tree. A symlink that resolves is read THROUGH: the bytes
+# classified are its target's as of THIS commit, under the link's own name — a push that
+# repoints a link at an unchanged script still classifies the bytes the link now ships, because
+# the tree the link resolves in is the commit being pushed, whether or not the target's path is
+# in the changed set. A path with nothing readable behind it — a submodule entry, a dangling
+# symlink — cannot lie about its contents, so it is a disclosed skip, never a block. A regular
+# file that EXISTS but cannot be read is the other branch — coverage would silently shrink, so
+# it fails, naming the path.
 #
 # The match/error protocol: grep reports "no match" as 1 and a failure as 2 or more, and only
 # the first is a verdict. Letting a failure fall through would pass a broken matcher as "not a
@@ -530,6 +533,19 @@ done
  * adds a script, and the failure is silent: the new file is simply never checked. The classifier
  * doing that discovery is itself a tracked, shebanged file (see `generateShellDiscoveryScript`),
  * so the scan finds it too once the gates are committed — the gate covers its own classifier.
+ *
+ * Sourced helpers are followed by the CHECKER, never by the hook: `source` lines are shell code
+ * (three quoting styles, backslash escapes, \`source=\` directives), and a hook that re-parses
+ * them to stage helpers by name was the most defect-dense code this pack ever shipped — five
+ * fixes in five commits, every one a quoting or directive shape the hand parser mishandled, and
+ * basename matching staged every same-named file in the commit. The checker resolves paths
+ * itself, inside the materialised commit (\`-x\` + \`--source-path=SCRIPTDIR\`): a sibling helper
+ * resolves through SCRIPTDIR, a root-relative one through the cwd, which is the tree. A path
+ * that resolves to nothing is a NOTE — a script may rightly source files a checkout does not
+ * carry — and a helper that fails to PARSE is SC1094, a warning: a broken helper ships with the
+ * script that dots it. A followed helper's own findings surface when the helper is itself a
+ * classified input (a shebanged one is); one without a shebang is followed for context, not
+ * reported — the disclosure that keeps that boundary honest.
  *
  * The check reads the commits BEING PUSHED, each materialised from git's object store — never
  * the working tree (a fixed tree let an unfixed commit ship while the gate read the
@@ -747,13 +763,19 @@ if command -v shellcheck >/dev/null 2>&1; then
         echo "› shellcheck: no shell script $where — nothing to check there"
       else
         echo "› shellcheck ($((count)) scripts $where, blocking at severity=warning)"
-        ( cd "$tree" && xargs -0 shellcheck -S warning -- < "$shellcheck_tmp/scripts" ) || {
+        # Sources are followed by the checker, from inside this materialised tree — never by
+        # this hook re-parsing \`source\` lines to stage helpers by name. A sibling resolves
+        # through SCRIPTDIR, a root-relative path through the cwd, which is the tree; a path
+        # that resolves to nothing is a note (a script may rightly source what a checkout does
+        # not carry), while a helper that fails to parse is SC1094, a warning — a broken
+        # helper ships with the script that dots it.
+        ( cd "$tree" && xargs -0 shellcheck -x --source-path=SCRIPTDIR -S warning -- < "$shellcheck_tmp/scripts" ) || {
           echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
           exit 1
         }
         # Everything below the blocking bar, shown once the push is already cleared. Never affects
         # the exit code — advice that can fail a push is not advice.
-        advice=$( ( cd "$tree" && xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/scripts" 2>/dev/null ) \\
+        advice=$( ( cd "$tree" && xargs -0 shellcheck -x --source-path=SCRIPTDIR -S style -f gcc -- < "$shellcheck_tmp/scripts" 2>/dev/null ) \\
           | grep -v ': warning:\\|: error:' || true)
         if [ -n "$advice" ]; then
           echo "  · style/info (not blocking):"
