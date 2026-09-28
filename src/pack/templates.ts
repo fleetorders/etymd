@@ -320,8 +320,16 @@ function localHookCall(hook: string, feedRefs = false): string {
   const refsCapture = feedRefs
     ? `# git hands the pushed refs to pre-push ONCE, on stdin — one line per ref:
 # "<local ref> <local sha> <remote ref> <remote sha>". The shell gate below reads them too, so
-# they are captured here and fed to each.
-refs=$(cat)
+# they are captured here and fed to each. stdin is read only when it is NOT a terminal: git
+# always pipes the refs, but a hand run of this hook from a terminal would leave the read
+# waiting on a keyboard that never sends EOF — a long silent hang. A terminal run reads no
+# refs and says so; the steps below then report nothing to check.
+if [ -t 0 ]; then
+  refs=""
+  echo "› no pushed refs — terminal stdin (a manual run?); git feeds the refs only on a real push"
+else
+  refs=$(cat)
+fi
 `
     : ""
   const call = feedRefs
@@ -607,14 +615,25 @@ if command -v shellcheck >/dev/null 2>&1; then
     # Every commit in each pushed range, never the tip alone: pushing two commits — a bad
     # script, then its fix — passed a tip-only read while the bad commit landed on the remote.
     # An all-zero local sha is a delete (nothing to check). An all-zero REMOTE sha is a new
-    # branch: everything no remote already has is being pushed, so the range is the local sha
-    # minus every remote-tracking ref — commits a remote already received were gated when they
-    # landed there, and the residue is exactly this push's new commits. A remote sha this clone
-    # has never seen (the remote moved on since the last fetch) cannot bound a range, so it takes
-    # the same new-branch rule instead of refusing a push the gate could have read. Enumeration
-    # failure refuses the push: a range the gate could not list is a range it did not read.
+    # branch: everything the pushed-to remote does not already have is being pushed, so the
+    # range is the local sha minus THAT remote's tracking refs — commits it received were gated
+    # when they landed there. Commits only OTHER remotes hold were gated by nobody (a fetch
+    # runs no hooks), so they stay in the range and are read here. $1 carries the pushed-to
+    # remote's name, but a push can name a URL instead (git push <url>), and --remotes=<url>
+    # matches no refs — it would negate nothing and check a fresh clone's entire history, the
+    # exact cost blowup this range design exists to avoid — so the narrow bound applies only
+    # where $1 names a remote this clone has configured; a URL push keeps the wide bound and
+    # its old residue. A remote sha this clone has never seen (the remote moved on since the
+    # last fetch) cannot bound a range, so it takes the same new-branch rule instead of
+    # refusing a push the gate could have read. Enumeration failure refuses the push: a range
+    # the gate could not list is a range it did not read.
     # (pattern) with both parens: bash 3.2 (macOS /bin/sh) cannot parse an unbalanced )
     # in a case pattern.
+    # Resolved once, before the loop, from the same $1 git passed this hook.
+    bound="--remotes"
+    if git remote get-url "$1" >/dev/null 2>&1; then
+      bound="--remotes=$1"
+    fi
     : > "$shellcheck_tmp/shas" || exit 1
     printf '%s\\n' "$refs" | while read -r _lref lsha _rref rsha; do
       case "$lsha" in
@@ -626,9 +645,9 @@ if command -v shellcheck >/dev/null 2>&1; then
           if git cat-file -e "\${rsha}^{commit}" 2>/dev/null; then
             git rev-list "$rsha..$lsha"
           else
-            git rev-list "$lsha" --not --remotes
+            git rev-list "$lsha" --not "$bound"
           fi ;;
-        (*) git rev-list "$lsha" --not --remotes ;;
+        (*) git rev-list "$lsha" --not "$bound" ;;
       esac >> "$shellcheck_tmp/shas" || exit 1
     done || {
       echo "etymd: could not enumerate the commits being pushed for shellcheck" >&2
@@ -684,7 +703,11 @@ if command -v shellcheck >/dev/null 2>&1; then
         echo "✗ shellcheck: could not materialise $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha") — refusing the push rather than certifying bytes this gate did not read" >&2
         exit 1
       fi
-      if [ -n "$(git ls-tree -r --name-only "$sha")" ] && [ -z "$(ls -A "$tree")" ]; then
+      # The emptiness probe lists the ROOT, never recursively: the answer is identical (git
+      # keeps no empty subtrees, so a tree is empty exactly when its root listing is), and a
+      # recursive listing made every commit pay for the whole tree the narrow path had just
+      # avoided enumerating.
+      if [ -n "$(git ls-tree "$sha")" ] && [ -z "$(ls -A "$tree")" ]; then
         echo "✗ shellcheck: $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha") extracted to an empty tree — refusing the push" >&2
         exit 1
       fi
@@ -770,6 +793,17 @@ if command -v shellcheck >/dev/null 2>&1; then
         # not carry), while a helper that fails to parse is SC1094, a warning — a broken
         # helper ships with the script that dots it.
         ( cd "$tree" && xargs -0 shellcheck -x --source-path=SCRIPTDIR -S warning -- < "$shellcheck_tmp/scripts" ) || {
+          # The sub-warning findings name what the blocking ones cannot: an unassigned helper
+          # variable (SC2154 on a source that never loaded) gets its "not following: <path>"
+          # note printed here, so the refusal says which file the script reached for that the
+          # tree did not carry. Informational only — the push is already refused; one extra
+          # read on a failing push costs nothing the verdict cares about.
+          notes=$( ( cd "$tree" && xargs -0 shellcheck -x --source-path=SCRIPTDIR -S style -f gcc -- < "$shellcheck_tmp/scripts" 2>/dev/null ) \\
+            | grep -v ': warning:\\|: error:' || true)
+          if [ -n "$notes" ]; then
+            echo "  · context (not blocking):"
+            printf '%s\\n' "$notes" | sed 's/^/    /'
+          fi
           echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
           exit 1
         }

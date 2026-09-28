@@ -1,4 +1,4 @@
-import { execFile, execSync } from "node:child_process"
+import { execFile, execSync, spawnSync } from "node:child_process"
 import { existsSync, promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -70,6 +70,17 @@ async function runPrePush(env: NodeJS.ProcessEnv, ...refLines: string[]) {
   const refsFile = path.join(dir, ".pushed-refs")
   await fs.writeFile(refsFile, refLines.join("\n") + (refLines.length ? "\n" : ""), "utf8")
   return pExecFile("sh", ["-c", '".githooks/pre-push" < "$1"', "sh", refsFile], { cwd: dir, env })
+}
+
+/** The same run, with the remote git would pass as $1 — a name for a configured remote, a
+ * URL for an anonymous push. The range bound is chosen from this argument. */
+async function runPrePushRemote(env: NodeJS.ProcessEnv, remote: string, ...refLines: string[]) {
+  const refsFile = path.join(dir, ".pushed-refs")
+  await fs.writeFile(refsFile, refLines.join("\n") + (refLines.length ? "\n" : ""), "utf8")
+  return pExecFile("sh", ["-c", '".githooks/pre-push" "$1" < "$2"', "sh", remote, refsFile], {
+    cwd: dir,
+    env,
+  })
 }
 
 /** The base every fixture builds on: a manifest, an instruction file, one commit for HEAD. */
@@ -572,6 +583,34 @@ describe.skipIf(!existsSync(CLI))(
   "etymd gates — the range being pushed, not the tree or the tip",
   () => {
     it.skipIf(!hasShellcheck)(
+      "PINNED: a refusal over an unresolved source names the source, not just the symptom",
+      async () => {
+        // The failure being fixed: a script sourcing a name no tracked file answers blocked on
+        // SC2154 with nothing naming the path — the variable was named, the file reached for
+        // was not. Sources are followed by the checker from inside the materialised tree, and
+        // its "not following: <path>" note prints beside the refusal, so the person fixing is
+        // told which file the checkout did not carry.
+        await baseRepo()
+        await write("tool/main.sh", '#!/bin/sh\n. ./lib/missing.sh\necho "$helper"\n')
+        await commitAll("chore: source a name nothing answers")
+        await gates()
+        const env = await stubEnv()
+        const head = await revParse("HEAD")
+
+        const pushed = runPrePush(env, `refs/heads/topic ${head} refs/heads/topic ${ZERO}`)
+        await expect(pushed).rejects.toMatchObject({
+          code: 1,
+          stdout: expect.stringContaining("SC2154"),
+        })
+        // and the same stdout names the unresolved path — checked separately so a regression
+        // to the unnamed block cannot hide behind the finding assertion above.
+        const failure = await pushed.catch((error) => error as { stdout: string })
+        expect(failure.stdout).toContain("Not following")
+        expect(failure.stdout).toContain("missing.sh")
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
       "PINNED: a bad middle commit under a clean tip refuses the push",
       async () => {
         // The failure being fixed: a tip-only read passed exactly this push — bad script
@@ -613,6 +652,71 @@ describe.skipIf(!existsSync(CLI))(
       },
     )
 
+    it.skipIf(!hasShellcheck)(
+      "PINNED: a commit another remote already has is gated when pushed elsewhere — fetched is not gated",
+      async () => {
+        // The failure being fixed: the new-branch rule negated EVERY remote's tracking refs,
+        // so a commit merely fetched from a second remote (git fetch coworker, then push here)
+        // counted as already gated although no gate ever read it — it shipped unchecked. The
+        // bound is the remote being pushed TO, so the fetched commit stays in the range.
+        await baseRepo()
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: bad script")
+        const bad = await revParse("HEAD")
+        await write("docs/notes.md", "# Notes\n")
+        await commitAll("docs: clean tip")
+        await gates()
+        const env = await stubEnv()
+        // origin is configured but holds nothing; a second remote's tracking ref already
+        // carries the bad commit, exactly as a fetch would have left it.
+        await pExecFile("git", ["remote", "add", "origin", path.join(dir, "origin.git")], {
+          cwd: dir,
+        })
+        await pExecFile("git", ["update-ref", "refs/remotes/other/main", bad], { cwd: dir })
+        const head = await revParse("HEAD")
+
+        // origin negates nothing of this history, so the whole of it is the push: 3 commits,
+        // bad one included, and its script refuses the push.
+        await expect(
+          runPrePushRemote(env, "origin", update("main", head, ZERO)),
+        ).rejects.toMatchObject({
+          code: 1,
+          stdout: expect.stringContaining("3 commit(s) in the pushed range"),
+        })
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "a URL-targeted push keeps the wide bound — no configured remote to narrow by",
+      async () => {
+        // $1 as a URL matches no configured remote, and --remotes=<url> would negate nothing —
+        // a fresh clone's entire history checked on its first push. The hook falls back to
+        // every remote-tracking ref, so the fetched commit stays excluded exactly as before
+        // the bound was narrowed.
+        await baseRepo()
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: bad script")
+        const bad = await revParse("HEAD")
+        await write("docs/notes.md", "# Notes\n")
+        await commitAll("docs: clean tip")
+        await gates()
+        const env = await stubEnv()
+        await pExecFile("git", ["remote", "add", "origin", path.join(dir, "origin.git")], {
+          cwd: dir,
+        })
+        await pExecFile("git", ["update-ref", "refs/remotes/other/main", bad], { cwd: dir })
+        const head = await revParse("HEAD")
+
+        const { stdout } = await runPrePushRemote(
+          env,
+          path.join(dir, "origin.git"),
+          update("main", head, ZERO),
+        )
+        expect(stdout).toContain("1 commit(s) in the pushed range")
+        expect(stdout).not.toContain("SC2034")
+      },
+    )
+
     it("PINNED: each pushed commit is checked for the scripts it changes, not its whole tree", async () => {
       // The cost being fixed: every script in every pushed commit, so the step grew with the range
       // length times the script count. An untouched script carries its parent's bytes,
@@ -637,6 +741,40 @@ describe.skipIf(!existsSync(CLI))(
         expect(args).toContain("./tool/new.sh")
         expect(args).not.toContain("./tool/old.sh")
       }
+    })
+
+    it("PINNED: the narrow path probes the tree root, never a whole-tree listing", async () => {
+      // The cost being fixed: the empty-extraction guard ran `git ls-tree -r` once per commit —
+      // a full recursive listing on the very path built to avoid whole-tree work, so the cost
+      // the narrow path removed came back through a guard nobody reads as enumeration. A git
+      // shim logs every argv the hook passes; the emptiness question (does this commit's tree
+      // exist at all?) is answered by the root listing, and nothing here may list deeper.
+      await baseRepo()
+      await write("tool/one.sh", "#!/bin/sh\necho one\n")
+      await commitAll("chore: one script")
+      await gates()
+      await recordShellcheck()
+      const realGit = execSync("command -v git").toString().trim()
+      await stub(
+        "git",
+        '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$ETYMD_GIT_LOG"\nexec "$ETYMD_REAL_GIT" "$@"\n',
+      )
+      const env = await stubEnv({
+        ETYMD_RECORD: path.join(dir, "shellcheck.jsonl"),
+        ETYMD_GIT_LOG: path.join(dir, "git.log"),
+        ETYMD_REAL_GIT: realGit,
+      })
+
+      const { stdout } = await runPrePush(
+        env,
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      )
+      expect(stdout).toContain("1 commit(s) in the pushed range")
+      const lines = (await fs.readFile(path.join(dir, "git.log"), "utf8")).trim().split("\n")
+      // The probe itself must run (otherwise the pin is vacuous) — at the root only.
+      const lsTree = lines.filter((line) => line.startsWith("ls-tree "))
+      expect(lsTree.length).toBeGreaterThan(0)
+      for (const line of lsTree) expect(line).not.toContain("-r")
     })
 
     it("a commit that changes no shell script says so, never a silent pass", async () => {
@@ -888,6 +1026,48 @@ process.stdout.write("      " + n + "\\n")
         })
       },
     )
+  },
+)
+
+// `script` gives the hook a pty on stdin — the exact condition a hand run from a terminal
+// creates. BSD script (macOS) takes the command as trailing arguments; util-linux (Linux)
+// wants -c. Elsewhere there is no portable pty, so the behaviour is untested there.
+const bsdScript = process.platform === "darwin"
+describe.skipIf(!existsSync(CLI) || !(bsdScript || process.platform === "linux"))(
+  "etymd gates — a hand run of the push gate",
+  () => {
+    it("PINNED: a terminal stdin reads no refs and says so — it never waits on the keyboard", async () => {
+      // The failure being fixed: `refs=$(cat)` on a terminal stdin blocks forever with no
+      // prompt — a long silent hook reads as a hung one. The capture reads only when stdin
+      // is NOT a terminal; a manual run is told why it sees no refs, and the gate completes.
+      await baseRepo()
+      await write("scripts/run", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: script")
+      await gates()
+      // A checker on PATH (the recording stub) so the shell step exists and its nothing-to-
+      // check line can prove the empty-refs path completed; the real checker is never run.
+      await recordShellcheck()
+      const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+      const hook = path.join(dir, ".githooks", "pre-push")
+      const args = bsdScript
+        ? ["-q", "/dev/null", "sh", hook, "origin", "url"]
+        : ["-q", "-c", `sh '${hook}' origin url`, "/dev/null"]
+      // Before the guard, the run blocks on the pty and is killed here by the timeout.
+      // script's own stdin is /dev/null: it allocates the child's pty itself, and probing a
+      // socket stdin (the harness) makes BSD script abort before the hook ever runs.
+      const res = spawnSync("script", args, {
+        cwd: dir,
+        env,
+        timeout: 10000,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      })
+      expect(res.error).toBeUndefined()
+      expect(res.status).toBe(0)
+      const out = `${res.stdout ?? ""}${res.stderr ?? ""}`.replaceAll("\r\n", "\n")
+      expect(out).toContain("no pushed refs")
+      expect(out).toContain("nothing to check")
+    })
   },
 )
 
