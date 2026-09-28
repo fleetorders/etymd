@@ -48,6 +48,9 @@ run_gate npm run test || exit 1
 # the checker cannot parse it (SC1071 is a parser-level error no inline directive can silence),
 # so checking it would fail every push on the parser, not on the script. Excluded — and said so
 # at run time below, because a coverage hole that is silent is indistinguishable from coverage.
+# Any other interpreter (ksh, ash) is the same shape: counted in its own bucket and said so
+# below, never silently unread. Only a first line with no shebang at all lands nowhere — data,
+# not a script.
 # The same honesty splits the unreadable: a regular file that exists but cannot be read blocks
 # the push (coverage would otherwise silently shrink), while a tracked path with nothing readable
 # behind it — a submodule entry, a dangling symlink — is counted and said so below as skipped,
@@ -169,7 +172,9 @@ if command -v shellcheck >/dev/null 2>&1; then
         echo "✗ shellcheck: $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha") extracted to an empty tree — refusing the push" >&2
         exit 1
       fi
-      : > "$shellcheck_tmp/scripts" && : > "$shellcheck_tmp/count" && : > "$shellcheck_tmp/zsh-count" && : > "$shellcheck_tmp/skip-count" || exit 1
+      : > "$shellcheck_tmp/scripts" && : > "$shellcheck_tmp/count" \
+        && : > "$shellcheck_tmp/zsh-count" && : > "$shellcheck_tmp/other-count" \
+        && : > "$shellcheck_tmp/skip-count" || exit 1
       # Only the paths this commit adds, copies, modifies, renames or retypes against its first
       # parent. A script the commit did not touch has its parent's bytes, and that parent was
       # either gated when it reached the remote or sits in this range and is checked here; a
@@ -225,6 +230,7 @@ if command -v shellcheck >/dev/null 2>&1; then
       }
       count=$(wc -c < "$shellcheck_tmp/count") || exit 1
       zsh_count=$(wc -c < "$shellcheck_tmp/zsh-count") || exit 1
+      other_count=$(wc -c < "$shellcheck_tmp/other-count") || exit 1
       skip_count=$(wc -c < "$shellcheck_tmp/skip-count") || exit 1
       # wc may pad its counts with leading blanks (POSIX permits), and an integer test on a
       # padded read is implementation-defined — a rejecting [ would turn every gate branch
@@ -233,12 +239,16 @@ if command -v shellcheck >/dev/null 2>&1; then
       # Not tr in a pipeline: the pipeline would report tr's status and mask a failed wc.
       count=$((count))
       zsh_count=$((zsh_count))
+      other_count=$((other_count))
       skip_count=$((skip_count))
       if [ "$skip_count" -gt 0 ]; then
         echo "› shellcheck: $((skip_count)) tracked path(s) with nothing readable behind them (submodule or dangling symlink) — not checked, not failed"
       fi
       if [ "$zsh_count" -gt 0 ]; then
         echo "› shellcheck: $((zsh_count)) zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
+      fi
+      if [ "$other_count" -gt 0 ]; then
+        echo "› shellcheck: $((other_count)) script(s) under another interpreter (ksh, ash, …) — outside the sh dialects; not checked, not failed"
       fi
       if [ "$count" -eq 0 ]; then
         echo "› shellcheck: no shell script $where — nothing to check there"
@@ -251,6 +261,17 @@ if command -v shellcheck >/dev/null 2>&1; then
         # not carry), while a helper that fails to parse is SC1094, a warning — a broken
         # helper ships with the script that dots it.
         ( cd "$tree" && xargs -0 shellcheck -x --source-path=SCRIPTDIR -S warning -- < "$shellcheck_tmp/scripts" ) || {
+          # The sub-warning findings name what the blocking ones cannot: an unassigned helper
+          # variable (SC2154 on a source that never loaded) gets its "not following: <path>"
+          # note printed here, so the refusal says which file the script reached for that the
+          # tree did not carry. Informational only — the push is already refused; one extra
+          # read on a failing push costs nothing the verdict cares about.
+          notes=$( ( cd "$tree" && xargs -0 shellcheck -x --source-path=SCRIPTDIR -S style -f gcc -- < "$shellcheck_tmp/scripts" 2>/dev/null ) \
+            | grep -v ': warning:\|: error:' || true)
+          if [ -n "$notes" ]; then
+            echo "  · context (not blocking):"
+            printf '%s\n' "$notes" | sed 's/^/    /'
+          fi
           echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
           exit 1
         }
@@ -263,7 +284,12 @@ if command -v shellcheck >/dev/null 2>&1; then
           printf '%s\n' "$advice" | sed 's/^/    /'
         fi
       fi
-      rm -rf "$tree" || exit 1
+      rm -rf "$tree" || {
+        # The checks passed; only the removal failed. A bare nonzero exit here read as a gate
+        # failure with no diagnosis — name the tree so the residue can be found and removed.
+        echo "✗ shellcheck: could not remove the checked tree $tree — cleanup failed after the checks ran; refusing the push" >&2
+        exit 1
+      }
     done
   ) || exit 1
 else
@@ -289,4 +315,4 @@ if [ -x "$GATE" ]; then
 fi
 
 exit 0
-# etymd:generated pack-v20 080ef47dddff295d
+# etymd:generated pack-v21 2988bdd9fdb48285

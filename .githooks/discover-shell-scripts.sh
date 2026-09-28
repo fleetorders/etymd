@@ -2,7 +2,8 @@
 # etymd: shell script discovery for the pre-push shellcheck step. Arguments: the scratch
 # directory the hook created, then the tracked paths to classify (NUL-delimited on the hook's
 # side, positional here). Verdicts land in the scratch: scripts (NUL-delimited matches) and one
-# dot per decision into count / zsh-count / skip-count, tallied by the hook after the pipeline.
+# dot per decision into count / zsh-count / other-count / skip-count, tallied by the hook
+# after the pipeline.
 #
 # The hook runs it from inside a commit materialised from git's object store, so paths resolve
 # against that tree, never the working tree. A symlink that resolves is read THROUGH: the bytes
@@ -48,10 +49,21 @@ for file do
       grep -qE "^#!.*[/ ]zsh([[:space:]].*)?$" "$work/first-line" || st=$?
       case $st in
         (0) printf . >> "$work/zsh-count" || exit 1 ;;
-        (1) ;;
+        (1)
+          # Any other shebang (ksh, ash) is a script this gate cannot check; it gets its own
+          # bucket, announced by the hook like the zsh exclusion — a coverage hole that is
+          # silent is indistinguishable from coverage. A first line with no shebang at all is
+          # data, not a script, and lands in no bucket by design.
+          st=0
+          grep -qE "^#!" "$work/first-line" || st=$?
+          case $st in
+            (0) printf . >> "$work/other-count" || exit 1 ;;
+            (1) ;;
+            (*) exit 1 ;;
+          esac ;;
         (*) exit 1 ;;
       esac ;;
     (*) exit 1 ;;
   esac
 done
-# etymd:generated pack-v20 b948808e19732a40
+# etymd:generated pack-v21 98b838b2965b3238

@@ -476,7 +476,8 @@ export function generateShellDiscoveryScript(): string {
 # etymd: shell script discovery for the pre-push shellcheck step. Arguments: the scratch
 # directory the hook created, then the tracked paths to classify (NUL-delimited on the hook's
 # side, positional here). Verdicts land in the scratch: scripts (NUL-delimited matches) and one
-# dot per decision into count / zsh-count / skip-count, tallied by the hook after the pipeline.
+# dot per decision into count / zsh-count / other-count / skip-count, tallied by the hook
+# after the pipeline.
 #
 # The hook runs it from inside a commit materialised from git's object store, so paths resolve
 # against that tree, never the working tree. A symlink that resolves is read THROUGH: the bytes
@@ -522,7 +523,18 @@ for file do
       grep -qE "^#!.*[/ ]zsh([[:space:]].*)?$" "$work/first-line" || st=$?
       case $st in
         (0) printf . >> "$work/zsh-count" || exit 1 ;;
-        (1) ;;
+        (1)
+          # Any other shebang (ksh, ash) is a script this gate cannot check; it gets its own
+          # bucket, announced by the hook like the zsh exclusion — a coverage hole that is
+          # silent is indistinguishable from coverage. A first line with no shebang at all is
+          # data, not a script, and lands in no bucket by design.
+          st=0
+          grep -qE "^#!" "$work/first-line" || st=$?
+          case $st in
+            (0) printf . >> "$work/other-count" || exit 1 ;;
+            (1) ;;
+            (*) exit 1 ;;
+          esac ;;
         (*) exit 1 ;;
       esac ;;
     (*) exit 1 ;;
@@ -590,6 +602,9 @@ function shellcheckStep(): string {
 # the checker cannot parse it (SC1071 is a parser-level error no inline directive can silence),
 # so checking it would fail every push on the parser, not on the script. Excluded — and said so
 # at run time below, because a coverage hole that is silent is indistinguishable from coverage.
+# Any other interpreter (ksh, ash) is the same shape: counted in its own bucket and said so
+# below, never silently unread. Only a first line with no shebang at all lands nowhere — data,
+# not a script.
 # The same honesty splits the unreadable: a regular file that exists but cannot be read blocks
 # the push (coverage would otherwise silently shrink), while a tracked path with nothing readable
 # behind it — a submodule entry, a dangling symlink — is counted and said so below as skipped,
@@ -711,7 +726,9 @@ if command -v shellcheck >/dev/null 2>&1; then
         echo "✗ shellcheck: $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha") extracted to an empty tree — refusing the push" >&2
         exit 1
       fi
-      : > "$shellcheck_tmp/scripts" && : > "$shellcheck_tmp/count" && : > "$shellcheck_tmp/zsh-count" && : > "$shellcheck_tmp/skip-count" || exit 1
+      : > "$shellcheck_tmp/scripts" && : > "$shellcheck_tmp/count" \\
+        && : > "$shellcheck_tmp/zsh-count" && : > "$shellcheck_tmp/other-count" \\
+        && : > "$shellcheck_tmp/skip-count" || exit 1
       # Only the paths this commit adds, copies, modifies, renames or retypes against its first
       # parent. A script the commit did not touch has its parent's bytes, and that parent was
       # either gated when it reached the remote or sits in this range and is checked here; a
@@ -767,6 +784,7 @@ if command -v shellcheck >/dev/null 2>&1; then
       }
       count=$(wc -c < "$shellcheck_tmp/count") || exit 1
       zsh_count=$(wc -c < "$shellcheck_tmp/zsh-count") || exit 1
+      other_count=$(wc -c < "$shellcheck_tmp/other-count") || exit 1
       skip_count=$(wc -c < "$shellcheck_tmp/skip-count") || exit 1
       # wc may pad its counts with leading blanks (POSIX permits), and an integer test on a
       # padded read is implementation-defined — a rejecting [ would turn every gate branch
@@ -775,12 +793,16 @@ if command -v shellcheck >/dev/null 2>&1; then
       # Not tr in a pipeline: the pipeline would report tr's status and mask a failed wc.
       count=$((count))
       zsh_count=$((zsh_count))
+      other_count=$((other_count))
       skip_count=$((skip_count))
       if [ "$skip_count" -gt 0 ]; then
         echo "› shellcheck: $((skip_count)) tracked path(s) with nothing readable behind them (submodule or dangling symlink) — not checked, not failed"
       fi
       if [ "$zsh_count" -gt 0 ]; then
         echo "› shellcheck: $((zsh_count)) zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
+      fi
+      if [ "$other_count" -gt 0 ]; then
+        echo "› shellcheck: $((other_count)) script(s) under another interpreter (ksh, ash, …) — outside the sh dialects; not checked, not failed"
       fi
       if [ "$count" -eq 0 ]; then
         echo "› shellcheck: no shell script $where — nothing to check there"
@@ -816,7 +838,12 @@ if command -v shellcheck >/dev/null 2>&1; then
           printf '%s\\n' "$advice" | sed 's/^/    /'
         fi
       fi
-      rm -rf "$tree" || exit 1
+      rm -rf "$tree" || {
+        # The checks passed; only the removal failed. A bare nonzero exit here read as a gate
+        # failure with no diagnosis — name the tree so the residue can be found and removed.
+        echo "✗ shellcheck: could not remove the checked tree $tree — cleanup failed after the checks ran; refusing the push" >&2
+        exit 1
+      }
     done
   ) || exit 1
 else

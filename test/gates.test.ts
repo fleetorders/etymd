@@ -1128,6 +1128,37 @@ describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's r
     expect(stdout).toContain("1 zsh script(s) excluded")
   })
 
+  it("PINNED: a ksh script is counted and announced, never silently unread", async () => {
+    // The classifier had two arms — sh-family and zsh; every other shebang (ksh, ash) matched
+    // neither: no bucket, no check, no disclosure. The third bucket counts it and the hook
+    // says so at run time, the same honesty as the zsh exclusion.
+    await baseRepo()
+    await write("tool/run.ksh", "#!/bin/ksh\necho hi\n")
+    await write("tool/do.sh", "#!/bin/sh\necho ok\n")
+    await commitAll("chore: ksh and sh tools")
+    await gates()
+    await recordShellcheck()
+    const log = path.join(dir, "shellcheck.jsonl")
+    const env = await stubEnv({ ETYMD_RECORD: log })
+    const base = await revParse("HEAD~1")
+    const head = await revParse("HEAD")
+
+    const { stdout } = await runPrePush(env, update("main", head, base))
+    const calls = (await fs.readFile(log, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[])
+    // The blocking pass and the style/advice pass each see only the sh script — the ksh one
+    // is never handed to the checker.
+    expect(calls).toHaveLength(2)
+    for (const args of calls) {
+      expect(args.filter((arg) => arg.startsWith("./"))).toEqual(["./tool/do.sh"])
+    }
+    // …and the exclusion is disclosed at run time, not silent.
+    expect(stdout).toContain("1 script(s) under another interpreter")
+    expect(stdout).toContain("not checked, not failed")
+  })
+
   it.skipIf(!hasShellcheck)(
     "PINNED: a shebang with a tab before its flag pushes clean through real shellcheck",
     async () => {
