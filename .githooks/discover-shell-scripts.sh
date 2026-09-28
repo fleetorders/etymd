@@ -3,8 +3,9 @@
 #   discover-shell-scripts.sh --config <scratch> <tree> <ls-tree record>...
 #   discover-shell-scripts.sh --skips <scratch> <ls-tree record>...
 #   discover-shell-scripts.sh --commit <scratch> <tree> <commit> <commit>:<path>...
-# The first writes the commit's .shellcheckrc files into the tree as raw blobs, so the checker
-# finds its config where it looks, and flags one that turns external-sources on. The second counts the changed paths that are symlinks or
+# The first writes the commit's rc files (either name the checker reads, .shellcheckrc and the
+# dotless shellcheckrc) into the tree as raw blobs, so the checker finds its config where it
+# looks, and flags one that turns external-sources on. The second counts the changed paths that are symlinks or
 # submodule entries. The second reads
 # the candidates `git grep` found with a line starting `#!`, and classifies each by its FIRST
 # line. Verdicts land in the scratch: scripts (NUL-delimited matches) and one dot per decision
@@ -42,9 +43,10 @@ case ${1-} in
     done
     exit 0 ;;
   (--config)
-    # Every entry of the commit, of which only .shellcheckrc files are kept — builtins decide,
-    # so the whole listing costs no process per path. Each is written into the tree as its raw
-    # blob, where the checker looks for it, and one turning external-sources on is flagged.
+    # Every entry of the commit, of which only the checker's rc files are kept — both names it
+    # reads, .shellcheckrc and the dotless shellcheckrc — builtins decide, so the whole listing
+    # costs no process per path. Each is written into the tree as its raw blob, where the
+    # checker looks for it, and one turning external-sources on is flagged.
     work=$2
     tree=$3
     shift 3
@@ -52,7 +54,7 @@ case ${1-} in
       meta=${record%%"$tab"*}
       file=${record#*"$tab"}
       case $file in
-        (.shellcheckrc|*/.shellcheckrc) ;;
+        (.shellcheckrc|shellcheckrc|*/.shellcheckrc|*/shellcheckrc) ;;
         (*) continue ;;
       esac
       case ${meta%% *} in
@@ -154,4 +156,4 @@ for entry do
     (*) exit 1 ;;
   esac
 done
-# etymd:generated pack-v18 68db33594372f080
+# etymd:generated pack-v19 49fb2f7a7cacd4d6

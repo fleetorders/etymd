@@ -127,6 +127,14 @@ does not ship. Decision record: [`docs/decisions/003-truth-guard-pivot.md`](docs
 
 ## Known limitations (accepted trade-offs, not bugs)
 
+- **The pre-push hook reads only an unquoted `external-sources=true`.** shellcheck accepts a
+  quoted value such as `external-sources="true"` (its man page, RC FILES); the hook's own scan
+  for the flag misses it, so the files the scripts source are never staged and their
+  assignments surface as findings a checkout would not have produced — a push blocked over
+  scripts that pass locally, the costly direction for a gap. Pinned as a known gap in the
+  checkout-parity table in `test/gates.test.ts`: the row asserts the exact asymmetry (the
+  checkout read clean, the hook read carrying the predicted finding), so a checker or hook
+  change that alters it turns the row red with the assertion that broke.
 - **Extensionless file references go unchecked.** `lib/barcode-scan` (no extension, no trailing
   slash) is treated as prose — the rule that killed the extensionless-prose-path
   false-positive class. A dir claim needs a trailing `/`; a file claim needs a _recognized_
@@ -156,8 +164,9 @@ does not ship. Decision record: [`docs/decisions/003-truth-guard-pivot.md`](docs
 - **Sonar/server-side thresholds** cannot be read from the repo; findings say exactly that.
 - **A script a pushed commit did not touch is not re-checked.** The pre-push shellcheck step reads
   only what each commit changes; an untouched script carries bytes a previous push already
-  checked. The commit that installs or changes the gate, its classifier, or a `.shellcheckrc` is
-  checked whole, so a repo's existing scripts are read once at adoption. The cost: a commit
+  checked. The commit that installs or changes the gate, its classifier, or a shellcheck rc
+  file (either name the checker reads) is checked whole, so a repo's existing scripts are read
+  once at adoption. The cost: a commit
   pushed with `--no-verify` is never re-read by a later push; a periodic whole-tree
   `shellcheck` run closes that gap.
 - **A hook generated before the generation stamp existed cannot be proven untouched.** It has no

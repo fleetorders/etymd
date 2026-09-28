@@ -116,9 +116,10 @@ if command -v shellcheck >/dev/null 2>&1; then
       # merge diffed against its first parent brings in everything the other side added.
       # Checking every script in every commit multiplied the cost by the range length, so a long
       # push of a script-heavy repo ran long enough to look hung. Two changes alter the verdict
-      # on bytes nobody touched — the classifier deciding what is a script, and a .shellcheckrc
-      # deciding what is a finding — so a commit that touches either, deletion included (a
-      # removed .shellcheckrc re-enables every check it disabled), is checked whole. So is a
+      # on bytes nobody touched — the classifier deciding what is a script, and an rc file
+      # (either name the checker reads) deciding what is a finding — so a commit that touches
+      # either, deletion included (a removed rc re-enables every check it disabled), is checked
+      # whole. So is a
       # commit that adds or changes this hook: a repo adopting the gate after the fact has
       # scripts no gate ever read, and the commit installing it is where they get read once.
       short=$(git rev-parse --short "$sha" 2>/dev/null || echo "$sha")
@@ -139,17 +140,17 @@ if command -v shellcheck >/dev/null 2>&1; then
       # grep: 1 is "no match", a verdict; anything higher is the matcher failing. The status is
       # taken on the grep's own line so nothing added later can come between them.
       st=0
-      grep -qE '(^|/)(\.shellcheckrc|discover-shell-scripts\.sh|pre-push)$' "$shellcheck_tmp/touched-lines" || st=$?
+      grep -qE '(^|/)(\.shellcheckrc|shellcheckrc|discover-shell-scripts\.sh|pre-push)$' "$shellcheck_tmp/touched-lines" || st=$?
       case $st in
         (0)
-          where="in $short (whole tree: the gate, its classifier or a .shellcheckrc changed)"
+          where="in $short (whole tree: the gate, its classifier or a shellcheck rc file changed)"
           git ls-tree -r -z --name-only "$sha" > "$shellcheck_tmp/tracked" || {
             echo "etymd: cannot enumerate the tree of $short for shellcheck" >&2
             exit 1
           } ;;
         (1) ;;
         (*)
-          echo "etymd: shell script discovery failed; cannot tell whether $short changes the gate, its classifier or a .shellcheckrc" >&2
+          echo "etymd: shell script discovery failed; cannot tell whether $short changes the gate, its classifier or a shellcheck rc file" >&2
           exit 1 ;;
       esac
       # Only these paths are read, each as its raw blob — never a checkout of the commit, which
@@ -170,12 +171,13 @@ if command -v shellcheck >/dev/null 2>&1; then
           exit 1
         }
       fi
-      # The checker's config sits beside the scripts it governs: every .shellcheckrc in the
-      # commit, raw, and a flag when one turns external-sources on (handled after discovery).
+      # The checker's config sits beside the scripts it governs: every rc file it reads
+      # (.shellcheckrc or the dotless shellcheckrc) in the commit, raw, and a flag when one
+      # turns external-sources on (handled after discovery).
       rm -f "$shellcheck_tmp/external-sources" || exit 1
       git ls-tree -r -z "$sha" > "$shellcheck_tmp/entries" \
         && xargs -0 "$discover" --config "$shellcheck_tmp" "$tree" < "$shellcheck_tmp/entries" || {
-        echo "etymd: shell script discovery failed; cannot read the .shellcheckrc files of $short" >&2
+        echo "etymd: shell script discovery failed; cannot read the shellcheck rc files of $short" >&2
         exit 1
       }
       xargs -0 "$discover" --skips "$shellcheck_tmp" < "$shellcheck_tmp/records" \
@@ -199,7 +201,7 @@ if command -v shellcheck >/dev/null 2>&1; then
         while :; do
           # Each step's status is its own: in a pipeline only the last one counts, and a failed
           # extraction would pass as a short list of names.
-          ( cd "$tree" && find . -type f ! -name .shellcheckrc -exec sh -c 'pat=$1; shift; grep -h -o -E -e "$pat" -- "$@"; st=$?; [ "$st" -le 1 ]' sh "$src_pat" {} + ) > "$shellcheck_tmp/source-lines" \
+          ( cd "$tree" && find . -type f ! -name .shellcheckrc ! -name shellcheckrc -exec sh -c 'pat=$1; shift; grep -h -o -E -e "$pat" -- "$@"; st=$?; [ "$st" -le 1 ]' sh "$src_pat" {} + ) > "$shellcheck_tmp/source-lines" \
             && sed -E -e 's/^[;&|[:space:]]?(\.|source)[[:space:]]+//' -e 's/^source=//' -e '/^["'"'"']/!s/\\(.)/\1/g' -e 's/^"(.*)"$/\1/' -e "s/^'(.*)'\$/\\1/" -e 's|.*/||' "$shellcheck_tmp/source-lines" > "$shellcheck_tmp/source-args" || {
             echo "etymd: cannot read what the scripts of $short source" >&2
             exit 1
@@ -270,4 +272,4 @@ if [ -x "$GATE" ]; then
 fi
 
 exit 0
-# etymd:generated pack-v18 abcb4d6d5a88ac23
+# etymd:generated pack-v19 52b7cc35f7e7e732
