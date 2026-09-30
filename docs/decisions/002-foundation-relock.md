@@ -20,7 +20,7 @@ proven on real repos**: idempotent merge-not-clobber setup, a committed baseline
 measured against, ranked evidence-cited findings with a persistent memory, and corpus-validated
 detectors. Everything in this re-lock serves that.
 
-## Owner decisions (locked)
+## Decisions (locked)
 
 1. **Advisor = one engine, one command.** A shared findings engine (one `Finding` schema, a `Lens`
    interface, a committed ledger); `clothaid audit` runs all lenses; `doctor` is the alias for the

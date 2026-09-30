@@ -262,12 +262,12 @@ function isPlaceholderClaim(token: string): boolean {
     .some((seg) => PLACEHOLDER_PREFIX_RE.test(seg) || PLACEHOLDER_SEGMENTS.has(seg.toLowerCase()))
 }
 
-// A namespace prefix (`pc:`, `lk:`, a repo shorthand) directly before a path mention labels it
-// as ANOTHER repo's tree — a legend token in a multi-repo prompt, not a reference into this
-// repo. Such a mention is skipped and counted, never resolved against the cwd — on the task
-// surface only, where quoting foreign trees is routine. Prose introducers that merely happen to
-// precede a path ("note:", "facts:") are not namespaces; the stop-list is grown from corpus
-// finds, and an unlisted one costs a disclosed skip, never a false accusation.
+// A namespace prefix (`app:`, `lib:`, a short name for another repo) directly before a path
+// mention labels it as ANOTHER repo's tree — a legend token in a multi-repo prompt, not a
+// reference into this repo. Such a mention is skipped and counted, never resolved against the
+// cwd — on the task surface only, where quoting foreign trees is routine. Prose introducers that
+// merely happen to precede a path ("note:", "facts:") are not namespaces; the stop-list is grown
+// from real prompts, and an unlisted one costs a disclosed skip, never a false accusation.
 export const NAMESPACE_IDENT = "[A-Za-z][A-Za-z0-9-]{0,15}"
 export const NAMESPACE_STOP = new Set(
   (
@@ -319,7 +319,7 @@ export interface PathClaims {
    * files, unverifiable here. Skipped, counted, disclosed.
    */
   fetched: string[]
-  /** Claims whose every mention sits behind a namespace prefix (`pc:`) — another repo's tree. */
+  /** Claims whose every mention sits behind a namespace prefix (`app:`) — another repo's tree. */
   namespaced: string[]
   /** Naming stand-ins (`my-custom-skill`) — never real claims. */
   placeholder: string[]
@@ -327,7 +327,7 @@ export interface PathClaims {
 
 export interface PathClaimOptions {
   /**
-   * Read namespace-prefixed mentions (`pc: `src/x.ts``) as another repo's tree — the task
+   * Read namespace-prefixed mentions (`app: `src/x.ts``) as another repo's tree — the task
    * surface, where prompts quote foreign repos behind a legend. Instruction files keep every
    * backticked span as a claim of this repo.
    */
@@ -391,7 +391,7 @@ export function extractPathClaims(text: string, opts: PathClaimOptions = {}): Pa
     const fetched = FETCH_CONTEXT_RE.test(context) && EXTERNAL_URL_RE.test(context)
     fetchedOnly.set(claim, (fetchedOnly.get(claim) ?? true) && fetched)
     if (opts.namespaces) {
-      // A namespace prefix ends the text right before this mention (`pc: `, `lk:`) — the span
+      // A namespace prefix ends the text right before this mention (`app: `, `lib:`) — the span
       // points into another repo's tree.
       const nsLead = new RegExp(`(${NAMESPACE_IDENT}):[ \\t]*$`).exec(text.slice(0, m.index ?? 0))
       const prefixed = isNamespace(nsLead?.[1])

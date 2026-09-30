@@ -14,8 +14,8 @@ const GOOD = `# Milestones
 
 One line about the project.
 
-${HEADER}| M1 | Board renders nightly | 2 | active | seed the file fleet-wide | M | — |
-| M2 | Rank drives the drain | 2 | planned | read the rank in the drain | L | M1 |
+${HEADER}| M1 | Board renders daily | 2 | active | seed the file in every repo | M | — |
+| M2 | Rank drives the work order | 2 | planned | read the rank when picking work | L | M1 |
 
 ## Notes
 
@@ -150,7 +150,7 @@ describe("renderBoard — one page, every state named", () => {
     expect(md).toContain("| 1 | I1 | The scheduler | 2 | active | board first | L | core | — |")
     expect(md).toContain("### core (tool) — planned 1 · active 1 · blocked 0 · done 0")
     expect(md).toContain(
-      "| M2 | Rank drives the drain | 2 | planned | read the rank in the drain | L | M1 |",
+      "| M2 | Rank drives the work order | 2 | planned | read the rank when picking work | L | M1 |",
     )
     expect(md).toContain("### quiet — not declared (no `milestones` contract key)")
     expect(md).toContain("### mirror — none, by declaration")

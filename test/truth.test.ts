@@ -71,7 +71,7 @@ describe("claim extraction", () => {
         "Routes live at `/admin/batches` and `~/home` and `@scope/pkg`.",
         "Globs like `src/**/*.ts` and urls `https://x.dev/a/b` and `$VAR/x` are skipped.",
         "Route params `p/$slug` are skipped.",
-        // Dotted prose is not a file claim: dotted hook notation from corpus prose.
+        // Dotted prose is not a file claim: dotted hook notation from real prose.
         "Hooks fire on `create/update.after` once an address is proven.",
         "Unrecognized extensions like `pkg/mod.xyz9` stay prose.",
       ].join("\n"),
@@ -119,9 +119,10 @@ describe("claim extraction", () => {
   })
 
   it("keeps every backticked span as a claim for instruction files — a prose introducer is not a namespace", () => {
-    // Corpus find: `facts: `docs/seo-strategy.md`` in a committed skill file — the label reads
+    // Real-repo find: `facts: `docs/seo-strategy.md`` in a committed skill file — the label reads
     // as prose, and only the task surface (opts.namespaces) reads prefixes at all.
-    const text = "Two facts: `docs/seo-strategy.md` locks the cadence; see pc: `docs/other.md` too."
+    const text =
+      "Two facts: `docs/seo-strategy.md` locks the cadence; see app: `docs/other.md` too."
     const plain = extractPathClaims(text)
     expect(plain.paths).toEqual(["docs/seo-strategy.md", "docs/other.md"])
     expect(plain.namespaced).toEqual([])
@@ -284,7 +285,7 @@ describe("instruction-truth lens (the lying-AGENTS.md fixture)", () => {
     await git(dir, ["init"])
     const report = await runTruth()
     const ids = report.findings.map((f) => f.id)
-    // The corpus case: a skill honestly says a gitignored file is "present on this machine" —
+    // A real case: a skill honestly says a gitignored file is "present on this machine" —
     // its absence in a fresh checkout is not a lie.
     expect(ids).not.toContain("instruction-truth/stale-path:AGENTS.md:apps/api/.env")
     expect(ids).toContain("instruction-truth/stale-path:AGENTS.md:apps/api/gone.ts")

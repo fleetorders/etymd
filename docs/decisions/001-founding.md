@@ -126,7 +126,7 @@ One shared engine; mode is the **starting-maturity lens**, not a hard branch. Al
 **maturity scorecard** (graded against the §3a rubric: contract? nav map? state doc? session
 protocol? gate tiers? failure register? comment discipline? leash?).
 
-- **Fresh** — no agentic workflow → install from scratch (owner already validated this path
+- **Fresh** — no agentic workflow → install from scratch (this path was already validated
   manually). Easiest; the scorecard starts near-empty.
 - **Migration** — existing _other_ workflow → **diff against our standard**, communicate the
   deltas, let the user **pick/reconcile** feature-by-feature, then apply (merge-not-clobber).

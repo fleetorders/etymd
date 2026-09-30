@@ -46,8 +46,8 @@ export function isFleetTrust(value: unknown): value is FleetTrust {
  * Fleet-wide orientation: the one entry every other entry is guided by.
  *
  * Declared ONCE at the manifest level rather than as a per-entry link, because the relationship
- * is constant — a per-entry field carries no information and can be forgotten, which is exactly
- * how three entries came to be silently unlinked. Hoisting it makes the orphan state
+ * is constant — a per-entry field carries no information and can be forgotten, which is how
+ * entries end up silently unlinked. Hoisting it makes the orphan state
  * unrepresentable instead of merely detectable. A fleet with no orientation root simply omits
  * the block; etymd never assumes one exists.
  */

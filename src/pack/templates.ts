@@ -636,7 +636,7 @@ done
  *
  * The check reads the commits BEING PUSHED, each script read as its raw blob from git's object store — never
  * the working tree (a fixed tree let an unfixed commit ship while the gate read the
- * tree, and a dirty tree shared by several sessions blocked an unrelated push), and never the
+ * tree, and uncommitted edits in the tree blocked an unrelated push), and never the
  * tip alone (a bad commit under its own fix shipped while the gate read only the tip). A
  * commit or blob that cannot be read refuses the push: certifying bytes the gate did not read
  * is the one thing this gate must never do.
@@ -662,7 +662,7 @@ function shellcheckStep(): string {
 # script added later is covered without regenerating this hook. The commits BEING PUSHED are
 # the bytes that ship, so each script is read as its raw blob from git's object store —
 # never the working tree (wrong in both directions: a fixed tree let an unfixed commit ship, and
-# a dirty tree shared by several sessions blocked an unrelated push) and never the tip alone (a
+# uncommitted edits in the tree blocked an unrelated push) and never the tip alone (a
 # bad commit under a clean tip shipped while the gate read only the tip's fix). The classifier
 # is discover-shell-scripts.sh beside this hook — tracked and shebanged like what it classifies,
 # so the scan it implements finds and checks it too. zsh is NOT in the checked set:

@@ -405,7 +405,7 @@ export function screenText(
 
 /**
  * Every blob object-id at the tips of the upstream remote's refs. A fork copies upstream files
- * verbatim — sometimes to a DIFFERENT path (an adapter lifted from `upstream/channels` into an
+ * verbatim — sometimes to a DIFFERENT path (an adapter lifted from an upstream directory into an
  * `add-*` skill) — so ownership is decided by CONTENT identity (the blob sha) across ALL upstream
  * refs, not by path: a byte-identical copy shares the blob wherever it sits. Returns null when no
  * upstream refs can be read, so the caller exempts nothing and says so — a fork whose upstream
@@ -590,7 +590,7 @@ export async function run(opts: ScreenOptions): Promise<void> {
   // A fork opts into the exemption with `--upstream <remote>` or, persistently,
   // `git config etymd.upstream <remote>`. The config is the better signal: it survives a rebuild
   // that drops the remote, so the fork still KNOWS it is a fork and reports the missing ref rather
-  // than silently skipping the exemption — the exact "vanished for a week, nobody noticed" gap.
+  // than silently skipping the exemption — a gap that otherwise goes unnoticed.
   const upstreamRemote =
     hasVocab && (opts.scope === "staged" || opts.scope === "tree")
       ? (opts.upstream ?? (await git(opts.cwd, ["config", "--get", "etymd.upstream"])) ?? undefined)

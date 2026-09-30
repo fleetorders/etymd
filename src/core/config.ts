@@ -4,7 +4,7 @@ import { ETYMD_DIR } from "./facts.js"
 import { pathExists, readText } from "./util.js"
 
 // Optional, COMMITTED configuration — the third file in .etymd/ alongside the baseline (committed)
-// and the cache (gitignored). A file, not a package.json key: the corpus already contains repos
+// and the cache (gitignored). A file, not a package.json key: real repos exist
 // with no manifest at all, and a fork that must not touch upstream's manifest.
 //
 // Scoping is the reason this exists (a fork auditing its own instruction layer, not the ~60

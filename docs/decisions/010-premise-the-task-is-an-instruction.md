@@ -52,7 +52,7 @@ brief.
   exists here; a script needs the `run` form (or `npm test` / `npm start`) — a bare `pnpm X` in
   a sentence is a phrase as often as an invocation; a first segment shaped like a host name is a
   URL. Everything backticked is read exactly as an instruction file would be — with one
-  task-surface exception: a mention behind a namespace prefix (`pc:`, `lk:`, a repo shorthand)
+  task-surface exception: a mention behind a namespace prefix (`app:`, `lib:`, a short name for another repo)
   points into another repo's tree, not this one. Every class left as
   prose is counted and disclosed, never silently dropped — the same skip-class discipline as the
   file lens. And a missing path is only accused when it is plausibly repo-relative at all: its
