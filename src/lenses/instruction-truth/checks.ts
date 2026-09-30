@@ -107,7 +107,7 @@ export interface ClaimCounters {
   qualifiedRefsSkipped: number
   /** Decision references with no `## D-NNN` ledger to resolve against. */
   unresolvableRefs: number
-  /** Path claims whose every mention sits behind a namespace prefix (`pc:`) — another repo's. */
+  /** Path claims whose every mention sits behind a namespace prefix (`app:`) — another repo's. */
   namespacedSkipped: number
   /** Missing paths starting at no directory of this repo — quoted from elsewhere (task only). */
   outsideRepoSkipped: number
@@ -172,7 +172,7 @@ export interface TextClaimsOptions {
    */
   rootedFirstSegments?: ReadonlySet<string>
   /**
-   * Read namespace-prefixed path mentions (`pc: `src/x.ts``) as another repo's tree — the task
+   * Read namespace-prefixed path mentions (`app: `src/x.ts``) as another repo's tree — the task
    * surface only; instruction files keep every backticked span as a claim of this repo.
    */
   treatNamespacedPrefixes?: boolean

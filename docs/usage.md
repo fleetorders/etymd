@@ -104,8 +104,8 @@ would be. A bare `pnpm X` in a sentence, a scheme-less URL (`github.com/…`), a
 disclosed, never flagged; backtick one to have it checked.
 
 A task routinely quotes other people's trees, so for the task surface a path is only accused of
-missing when it is plausibly repo-relative: the mention carries no namespace prefix (`pc:`,
-`lk:`, a repo shorthand — another repo's tree, skipped and disclosed), and the path's first
+missing when it is plausibly repo-relative: the mention carries no namespace prefix (`app:`,
+`lib:`, a short name for another repo — another repo's tree, skipped and disclosed), and the path's first
 segment starts where a directory of this repo does. A path that starts elsewhere is outside this
 repo — reported as unverifiable, never as a missing file here.
 

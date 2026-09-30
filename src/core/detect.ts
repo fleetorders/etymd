@@ -208,7 +208,7 @@ const isMeta = (value: string) => /npm-run-all|run-s\b|run-p\b|concurrently|&&/.
 
 // Per-role priority ladders, most specific first. Checked against ALL scripts per rung, so a
 // bare meta `test` declared first can no longer shadow the real `test:unit(:local)` — the
-// corpus failure that motivated this shape.
+// real-repo failure that motivated this shape.
 const ROLE_LADDERS: { role: CommandRole; exclude?: RegExp; ladder: Pattern[] }[] = [
   {
     role: "formatCheck",
