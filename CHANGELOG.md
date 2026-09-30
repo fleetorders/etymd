@@ -1,5 +1,12 @@
 # etymd
 
+## 0.19.5
+
+### Patch Changes
+
+- 43ca987: The generated pre-push hook and the premise disclosures use neutral wording: the namespace-prefix examples read `app:` and `lib:`, and the hook comment no longer describes one machine's setup.
+- 9473bfd: `etymd gates --ci` is removed. The option only printed that an AI-review CI job would ship in a later release; nothing else changed with it. The roadmap, decision records and contributor notes are rewritten in plainer terms.
+
 ## 0.19.4
 
 ### Patch Changes
