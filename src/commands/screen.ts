@@ -130,8 +130,8 @@ const ALLOW_MARKER = "allow-published-string"
  * it exempts).
  */
 const ALLOW_FILE = ".etymd-screen-allow"
-/** The previous tool's filename, still honoured so a migrated repo keeps its exceptions. */
-const LEGACY_ALLOW_FILE = ".artifact-check-allow"
+/** An older name for the allow file. It is no longer read; its presence only prints a rename hint. */
+const OLD_ALLOW_FILE = ".artifact-check-allow"
 
 export interface ScreenHit {
   file: string
@@ -515,12 +515,10 @@ export async function run(opts: ScreenOptions): Promise<void> {
   }
 
   // Repo-level exceptions, read from the repo being screened.
-  const usingLegacy =
+  const oldFileOnly =
     !(await pathExists(path.join(opts.cwd, ALLOW_FILE))) &&
-    (await pathExists(path.join(opts.cwd, LEGACY_ALLOW_FILE)))
-  const allowRaw = usingLegacy
-    ? await readText(path.join(opts.cwd, LEGACY_ALLOW_FILE))
-    : await readText(path.join(opts.cwd, ALLOW_FILE))
+    (await pathExists(path.join(opts.cwd, OLD_ALLOW_FILE)))
+  const allowRaw = await readText(path.join(opts.cwd, ALLOW_FILE))
   const allowFile = allowRaw ? compileAllow(allowRaw) : { lines: [], generated: [] }
 
   // Validate provenance and self-name exemptions
@@ -597,10 +595,9 @@ export async function run(opts: ScreenOptions): Promise<void> {
     return !!sha && upstreamBlobs.has(sha)
   }
 
-  // Warn about legacy allow file usage
-  if (usingLegacy) {
+  if (oldFileOnly) {
     print(
-      `  ${glyph.partial} ${theme.warn(`Using legacy ${LEGACY_ALLOW_FILE} file — rename to ${ALLOW_FILE} and add provenance`)}`,
+      `  ${glyph.partial} ${theme.warn(`${OLD_ALLOW_FILE} is no longer read — rename it to ${ALLOW_FILE} and add provenance`)}`,
     )
     print(
       `    ${theme.dim("New format: a `pattern` line, then `reason`, `date`, `author` lines per entry")}`,
@@ -655,7 +652,7 @@ export async function run(opts: ScreenOptions): Promise<void> {
     for (const rel of files) {
       // The allowlist necessarily contains every string it exempts, so screening it would flag
       // each entry against itself — the same reason a scanner is exempt from its own patterns.
-      if (rel === ALLOW_FILE || rel === LEGACY_ALLOW_FILE) continue
+      if (rel === ALLOW_FILE) continue
       const abs = path.join(opts.cwd, rel)
       if (!(await pathExists(abs))) continue
       const raw = await readScreenable(abs)

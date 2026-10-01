@@ -114,7 +114,7 @@ export interface ManifestProblem {
 }
 
 export interface FleetManifest {
-  shape: "registry" | "corpus"
+  shape: "registry" | "sources"
   /** Absolute path of the tracked manifest file. */
   manifestPath: string
   /** Its directory — guarded persistence roots and the sweep delta file live beside it. */
@@ -307,7 +307,7 @@ function loadRegistryEntries(
   }
 }
 
-function loadCorpusEntries(
+function loadSourcesEntries(
   sources: unknown[],
   manifest: FleetManifest,
   manifestFile: string,
@@ -430,12 +430,12 @@ export async function loadFleetManifest(manifestPath: string): Promise<FleetMani
     }
     loadRegistryEntries(parsed.projects, manifest, manifestFile)
   } else if (Array.isArray(parsed.sources)) {
-    manifest.shape = "corpus"
+    manifest.shape = "sources"
     manifest.localPath = path.join(dir, "sources.local.json")
     const local = await readLocal(manifest.localPath, manifest.problems)
     manifest.localPresent = local.present
     manifest.localDirs = asStringMap(local.data.dirs)
-    loadCorpusEntries(parsed.sources, manifest, manifestFile)
+    loadSourcesEntries(parsed.sources, manifest, manifestFile)
   } else {
     manifest.problems.push({
       kind: "bad-shape",
