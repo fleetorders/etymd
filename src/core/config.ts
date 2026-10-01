@@ -7,7 +7,7 @@ import { pathExists, readText } from "./util.js"
 // and the cache (gitignored). A file, not a package.json key: real repos exist
 // with no manifest at all, and a fork that must not touch upstream's manifest.
 //
-// Scoping is the reason this exists (a fork auditing its own instruction layer, not the ~60
+// Scoping is the reason this exists (a fork auditing its own instruction layer, not the
 // inherited upstream skills it will never fix). Because scoping can HIDE findings, every exclusion
 // is counted and disclosed by the lens — a narrowed audit must never be able to look clean quietly.
 
@@ -30,7 +30,7 @@ export interface ContextBudgets {
 export interface StateBudgets {
   /** Days of commit traffic a state doc may trail the repo by before it counts as stale. */
   staleAfterDays: number
-  /** Chars in a state doc past which the file is a finding (session hooks truncate ~10k). */
+  /** Chars in a state doc past which the file is a finding (some agent harnesses truncate a loaded file near 10k chars). */
   maxChars: number
 }
 
@@ -53,7 +53,7 @@ export interface GateConfig {
    * Check the commit subject against Conventional Commits. **Unset = off.** Every other check
    * the pack generates is either derived from what the repo already does or inert without a
    * checker the user installed themselves; this one is a convention, and a convention is an
-   * opinion. Etymd ships the door and never decides that a repo wants it: `true` here is the
+   * opinion. Etymd ships the check and never decides that a repo wants it: `true` here is the
    * repo asking, and nothing else turns it on.
    */
   commitFormat?: boolean

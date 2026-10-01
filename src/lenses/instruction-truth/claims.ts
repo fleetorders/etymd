@@ -222,8 +222,8 @@ export const PATH_TOKEN_RE = /^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.$-]+)+\/?$/
 // failure this tool exists to catch.
 export const HOSTNAME_RE = /^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.([a-z]{2,})$/i
 
-// A file claim needs a RECOGNIZED extension, not just a dot suffix: Better-Auth hook notation
-// (`create/update.after`) reads as slash-joined prose with a dotted stage, and any bare
+// A file claim needs a RECOGNIZED extension, not just a dot suffix: dotted hook notation such
+// as `create/update.after` reads as slash-joined prose with a dotted stage, and any bare
 // "ends in .xyz" rule accuses it. Unknown extensions fall back to prose — precision over recall.
 export const KNOWN_EXTENSIONS = new Set([
   ...(
@@ -236,9 +236,8 @@ export const KNOWN_EXTENSIONS = new Set([
 ])
 
 // A path the surrounding prose tells the agent to CREATE is not a stale reference — it is a
-// forward-looking instruction, and the repo is right to lack it. Seen in real audits
-// (migration quarantine dirs, generated outputs), the second new skip class after
-// Better-Auth dotted notation.
+// forward-looking instruction, and the repo is right to lack it (migration quarantine
+// directories, generated outputs).
 const CREATION_CONTEXT_RE =
   /\b(?:creat(?:e|es|ed|ing)|generat(?:e|es|ed|ing)|scaffold(?:s|ed|ing)?|quarantin(?:e|es|ed|ing)|(?:writ(?:e|es|ten|ing)|output(?:s|ted)?|emit(?:s|ted|ting)?|sav(?:e|es|ed|ing)|mov(?:e|es|ed|ing)|copy|copi(?:es|ed))\s+(?:it\s+|them\s+)?(?:to|into)|new\s+(?:file|directory|folder)|will\s+(?:be\s+)?(?:created|generated|written)|add(?:s|ed|ing)?\s+(?:a|the)\s+new)\b/i
 
@@ -246,7 +245,7 @@ const CREATION_CONTEXT_RE =
 // into another tree: the reference may be real, but not in this repo — the same principle the
 // task surface applies to quoted foreign paths. A fetch verb alone is not enough; the URL must
 // sit on the same context line, or an innocent mention beside an unrelated link would be
-// skipped. Grow the verb list from corpus finds — an unlisted verb costs a false accusation,
+// skipped. The verb list grows from observed prose — an unlisted verb costs a false accusation,
 // never a false skip.
 const FETCH_CONTEXT_RE =
   /\b(?:fetch(?:es|ed|ing)?|pull(?:s|ed|ing)?|clone(?:s|d)?|download(?:s|ed|ing)?)\b/i
@@ -263,7 +262,7 @@ function isPlaceholderClaim(token: string): boolean {
 }
 
 // A namespace prefix (`app:`, `lib:`, a short name for another repo) directly before a path
-// mention labels it as ANOTHER repo's tree — a legend token in a multi-repo prompt, not a
+// mention labels it as ANOTHER repo's tree — a namespace prefix in a multi-repo prompt, not a
 // reference into this repo. Such a mention is skipped and counted, never resolved against the
 // cwd — on the task surface only, where quoting foreign trees is routine. Prose introducers that
 // merely happen to precede a path ("note:", "facts:") are not namespaces; the stop-list is grown
@@ -328,7 +327,7 @@ export interface PathClaims {
 export interface PathClaimOptions {
   /**
    * Read namespace-prefixed mentions (`app: `src/x.ts``) as another repo's tree — the task
-   * surface, where prompts quote foreign repos behind a legend. Instruction files keep every
+   * surface, where prompts quote foreign repos behind a namespace prefix. Instruction files keep every
    * backticked span as a claim of this repo.
    */
   namespaces?: boolean
@@ -336,7 +335,7 @@ export interface PathClaimOptions {
 
 /**
  * Repo-relative path claims from single-token inline spans, conservatively filtered. The
- * load-bearing precision rule (learned from real corpus prose): an extensionless bare token
+ * load-bearing precision rule: an extensionless bare token
  * (`research/trust`, `milestone/mNN`) is prose — a dir claim must end with `/`, a file claim
  * must carry an extension. With `namespaces`, a span whose every mention sits behind a
  * namespace prefix names another repo's tree, not this one.

@@ -14,7 +14,7 @@ import { glyph, theme } from "../ui/theme.js"
  * else and a leak for whoever wrote it. The user supplies a pattern file; without one this
  * command is inert and says so.
  *
- * Four doors, because a leak walks through whichever is unguarded:
+ * Four hooks, because a leak walks through whichever is unguarded:
  *
  *   --staged   what a commit is about to add       (pre-commit)
  *   --message  the commit message itself           (commit-msg — the staged scan cannot see it)
@@ -55,7 +55,7 @@ export interface ScreenOptions {
   /** Message file (commit-msg hook `$1`) or the directory to walk, per scope. */
   target?: string
   patterns?: string
-  /** Report without failing — the pre-push door is advisory by default. */
+  /** Report without failing — the pre-push hook is advisory by default. */
   advisory?: boolean
   /**
    * The name of this repo's upstream remote (a fork). When set, a staged/tree file whose content
@@ -190,7 +190,7 @@ function compileLooseRegex(source: string): RegExp {
  * An orphan provenance line (no open record) is dropped without a warning, deliberately: it
  * exempts nothing, and the dangerous direction for an allow file is over-exemption, not
  * under-exemption — a pattern nobody wrote simply never matches, and the hit it would have
- * covered is still reported at the door that sees it.
+ * covered is still reported at the hook that sees it.
  */
 export function compileAllow(raw: string): AllowFile {
   const lines: AllowEntry[] = []
@@ -234,16 +234,6 @@ export function compileAllow(raw: string): AllowFile {
   return { lines, generated }
 }
 
-/** Compile one pattern line, matching malformed input literally rather than dropping it. */
-function compileOnePattern(l: string): RegExp {
-  try {
-    return new RegExp(l, "i")
-  } catch {
-    // A malformed pattern must never be silently dropped — match it literally instead.
-    return new RegExp(l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")
-  }
-}
-
 /**
  * Compile pattern file (not allow-file) into classed patterns. Exported for tests.
  *
@@ -263,7 +253,7 @@ export function compilePatterns(raw: string): ScreenPattern[] {
       continue
     }
     if (l.startsWith("#")) continue
-    out.push({ re: compileOnePattern(l), cls })
+    out.push({ re: compileLooseRegex(l), cls })
   }
   return out
 }
@@ -535,16 +525,11 @@ export async function run(opts: ScreenOptions): Promise<void> {
 
   // Validate provenance and self-name exemptions
   const selves = await selfIdentities(opts.cwd)
-  const validatedEntries = allowFile.lines.filter((entry) => {
-    if (entry.isSelfName) return true // Self-name marked during compilation check
-
-    // Check if this is a self-name exemption
+  const allow = allowFile.lines.filter((entry) => {
     if (isSelfName(entry.pattern, selves)) {
       entry.isSelfName = true
       return true
     }
-
-    // Non-self-name entries require provenance
     if (!entry.reason || !entry.date || !entry.author) {
       print(
         `  ${glyph.partial} ${theme.warn(`Missing provenance for exemption pattern`)} ${theme.dim(String(entry.pattern))}`,
@@ -557,8 +542,6 @@ export async function run(opts: ScreenOptions): Promise<void> {
 
     return true
   })
-
-  const allow = validatedEntries
 
   // Generated-data paths carry no self-name shorthand — exempting a PATH is never a repo naming
   // itself — so provenance is unconditional, and a record missing it is reported and does not

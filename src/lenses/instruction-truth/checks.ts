@@ -166,7 +166,7 @@ export interface TextClaimsOptions {
   /**
    * Directories a missing path may start from and still be plausibly repo-relative — the root,
    * workspace packages, and their src/ scripts/. Supplied by the task surface (`etymd premise`)
-   * only: a task quoting a path from ANOTHER repository (a clone in a scratchpad) starts where
+   * only: a task quoting a path from ANOTHER repository (a clone elsewhere on the machine) starts where
    * no directory of this repo does, and its absence here proves nothing. Instruction files keep
    * the stricter reading — their references are written against this repo.
    */

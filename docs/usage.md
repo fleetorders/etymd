@@ -11,12 +11,12 @@ briefing `brief` emits, and the brief `premise` writes where `.etymd/` already e
 
 ## The `.etymd` directory — two lifecycles
 
-| Path                   | Lifecycle                            | Role                                                                              |
-| ---------------------- | ------------------------------------ | --------------------------------------------------------------------------------- |
-| `.etymd/cache/`        | **gitignored** (init adds the entry) | transient scan cache, re-derivable                                                |
-| `.etymd/baseline.json` | **committed**                        | the approved reckoning drift is measured against                                  |
-| `.etymd/ledger.json`   | **committed**                        | the findings memory: statuses, diffs, dismissals                                  |
-| `.etymd/config.json`   | **committed**, optional              | audit scope (include/exclude) + context budgets — see the README's config section |
+| Path                   | Lifecycle                            | Role                                                                       |
+| ---------------------- | ------------------------------------ | -------------------------------------------------------------------------- |
+| `.etymd/cache/`        | **gitignored** (init adds the entry) | transient scan cache, re-derivable                                         |
+| `.etymd/baseline.json` | **committed**                        | the approved reckoning drift is measured against                           |
+| `.etymd/ledger.json`   | **committed**                        | the findings memory: statuses, diffs, dismissals                           |
+| `.etymd/config.json`   | **committed**, optional              | audit scope (include/exclude) + context budgets, see docs/configuration.md |
 
 ## `etymd audit` — the command
 
@@ -65,7 +65,7 @@ committer dates only, never mtime:
 - **Relative staleness**: a state doc is flagged only when the repo moved past it
   (`staleAfterDays`, default 30; 3x escalates to risk) — a dormant repo's old state is current,
   and a tracked file with uncommitted edits is treated fresh-now with a disclosure.
-- **Char budget**: state docs over 9,500 chars (session-injection hooks truncate ~10,000).
+- **Char budget**: state docs over 9,500 chars (some agent harnesses truncate a loaded file near 10,000 characters).
   Override both under `state` in `.etymd/config.json`.
 - **Decisions format checks** (`Scope:` presence, past `Revisit:` dates): opt in by adding the
   literal marker `<!-- decisions-format: 1 -->` anywhere in the decisions file — forward-only,
@@ -152,12 +152,13 @@ the result to account.
 - **`etymd accept <id>`** — acknowledge a finding as accepted reality (e.g. a known trade-off);
   visible in the ledger, out of the report.
 
-## `etymd fleet` — the truth guard across your repositories (EXPERIMENTAL through 0.2.x)
+## `etymd fleet` — the truth guard across your repositories
 
-One manifest, `registry.json`, registers every repo you work in (format in the README's
-"fleet manifest" section; decision record in `docs/decisions/004-fleet-truth-guard.md`). The sweep
-runs a read-only audit per resolved entry and checks the manifest itself plus the placement
-wall between personal and guarded entries.
+One manifest, `registry.json`, registers every repo you work in (format in
+[the fleet manifest](https://github.com/fleetorders/etymd/blob/main/docs/fleet.md); design in
+[the design record](https://github.com/fleetorders/etymd/blob/main/docs/decisions.md), D-004).
+The registry and fleet `--json` schemas may still change before 1.0. The sweep runs a read-only
+audit per resolved entry and checks the manifest itself plus its own entries.
 
 ```bash
 cd ~/projects/my-fleet-hub            # the dir holding registry.json …
@@ -192,14 +193,14 @@ Walkthrough of the pieces:
   only (`HEAD --not --remotes=origin`) — merged upstream traffic cannot make the fork's state
   look stale, and a pure mirror reads as dormant. A missing remote falls back to the full clock
   with a disclosure.
-- **Wall findings** (lens id `fleet-manifest`, all risk-tier): guarded contract files inside a guarded
+- **Findings on the manifest's own entries** (lens id `fleet-manifest`, all risk-tier): guarded contract files inside a guarded
   worktree; unregistered guarded-remote checkouts under the fleet root; tracked `/Users/` paths in
-  the manifest's own repo; private needles in `trust: "public-repo"` entries; guarded-host commit
+  the manifest's own repo; private identifiers in `trust: "public-repo"` entries; guarded-host commit
   emails on personal entries; and repos whose `AGENTS.md` Claude Code cannot see (`claude-pointer-missing`: a risk when
   a `CLAUDE.md` exists without importing `@AGENTS.md`, since Claude Code then reads only that file
   and `etymd fleet add` refuses the repo; a gap when there is no `CLAUDE.md` and the installed
   Claude Code predates the 2.1.277 `AGENTS.md` fallback; `ETYMD_CLAUDE_VERSION` pins the version
-  checked, `none` for a machine without Claude Code). These are not ledger-quietable in 0.2 — the only honest resolution
+  checked, `none` for a machine without Claude Code). These are not ledger-quietable; the only honest resolution
   is fixing them. Every check that cannot run says so.
 
 ## CI recipe

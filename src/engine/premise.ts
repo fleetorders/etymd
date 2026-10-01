@@ -23,15 +23,15 @@ import {
 } from "../lenses/instruction-truth/claims.js"
 import { rankFindings, type Finding } from "./finding.js"
 
-// `etymd premise` — the task an agent is about to be handed is an instruction too (decision 010).
+// `etymd premise` — the task an agent is about to be handed is an instruction too (docs/decisions.md, D-010).
 // Before anything acts on it, the things it NAMES are checked against the repo with the same
 // precision rules instruction files get — except that a task routinely QUOTES other people's
-// trees (a scratchpad clone, a legend-prefixed token), so a path is only accused of missing when
+// trees (a clone elsewhere, a namespace-prefixed token), so a path is only accused of missing when
 // it is plausibly repo-relative: no namespace prefix on the mention, and a first segment that
 // starts where a directory of this repo does. The premises only an agent can verify — that the
 // named things are the ones meant, that the mechanism the task assumes actually runs, that the
 // state it assumes holds — are handed over in a brief, never guessed at here. Reading files is
-// the whole of what this command does (decision 005: anything beyond that is out of scope by
+// the whole of what this command does (docs/decisions.md, D-005: anything beyond that is out of scope by
 // construction).
 
 export const PREMISE_LENS = "premise"
@@ -148,7 +148,7 @@ function promoteProse(segment: string, ctx: PromotionContext, skips: PromotionSk
     }
     return `\`${core}\`${trail}`
   })
-  // Token-wise with one token of lookback: a legend prefix (`app:`) reaches the path AFTER it.
+  // Token-wise with one token of lookback: a namespace prefix (`app:`) reaches the path AFTER it.
   const parts = withCommands.split(/(\s+)/)
   for (let i = 0; i < parts.length; i += 2) {
     parts[i] = promoteToken(parts[i] as string, i >= 2 ? (parts[i - 2] as string) : "", ctx, skips)
@@ -320,7 +320,7 @@ export async function runPremise(opts: PremiseOptions): Promise<PremiseResult> {
   }
   if (counters.outsideRepoSkipped) {
     disclosures.push(
-      `${counters.outsideRepoSkipped} path(s) the task names start at no directory of this repo — typical of a path quoted from another repository or a scratchpad clone; outside this repo, not missing here. Skipped, not flagged.`,
+      `${counters.outsideRepoSkipped} path(s) the task names start at no directory of this repo — typical of a path quoted from another repository or a clone elsewhere on the machine; outside this repo, not missing here. Skipped, not flagged.`,
     )
   }
   if (counters.unverifiableCommands) {

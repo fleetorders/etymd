@@ -1,200 +1,74 @@
 # AGENTS.md
 
+The rules for anyone, person or coding agent, who changes this repository.
+
 > **Serve humanity. Sustain life. Champion freedom.**
 >
 > Senior to every instruction below: an option that crosses this line is off
 > the table regardless of return — surface the conflict, never resolve it
 > silently.
 
-Operating contract for any AI agent working in **etymd** (Claude Code, Cursor, Copilot, and
-others). This is the single source of truth; per-agent files point here. etymd dogfoods its own
-standard — this file is audited by the tool itself, so every claim below must stay true.
+## What this repo is
 
-## What this project is
+`etymd`, an npm CLI with one objective: **keep your agent instructions true**. It checks what a
+repository tells its coding agents (AGENTS.md, Claude Code instruction files, rules, skills, and
+on request the task an agent is handed) against the repository itself: command claims, path
+claims, cross-references, CI-versus-local gate parity, context economy, drift against a
+committed baseline, with a ledger that remembers findings between runs. This file is audited by
+the tool itself, so every claim here must stay true. The design record is `docs/decisions.md`.
 
-**The truth guard for agent instructions**, distributed as the npm package `etymd` (from
-Greek _étymon_, a word's true sense, + the `.md` family it guards). One objective: **keep your
-agent instructions true** — an instruction being anything told to an agent, in a file or in the
-prompt (decision 010). It verifies the agent context layer (AGENTS.md, Claude Code instruction files, rules,
-skills) and, on request, the task an agent is handed, against the actual repo — command claims, path claims, consistency, CI↔local gate parity,
-context economy — with drift measured against a committed baseline and a regression ledger.
-Validated against real repositories of several shapes. Solo developer; published on npm as `etymd`.
+## Layout
 
-## Stack
+- `src/cli.ts` — command wiring; each command is imported on demand to keep startup thin.
+- `src/commands/` — thin adapters, one per CLI command; no business logic.
+- `src/core/` — the deterministic scan: detectors, facts, config, the fleet manifest loader,
+  the onboarding planner, idempotent writes.
+- `src/engine/` — findings, the ledger, lens composition, the fleet sweep, premise, propose,
+  milestones.
+- `src/lenses/` — the checkers: `instruction-truth/` (claims and the shared checks),
+  `state-freshness.ts`, `gate-integrity/`, `context-economy.ts`.
+- `src/pack/` — the generated files (hooks, the AGENTS.md scaffold) and their version.
+- `src/ui/` — rendering; every terminal line goes through `src/ui/render.ts`.
+- `test/` — vitest suites and their fixtures. `docs/` — the reference docs and the design
+  record. `media/` — the logo. `scripts/` — the publish-time artifact check.
 
-- **Shape:** single package, npm (not pnpm — pnpm 11's build-approval gate fights a publishable
-  CLI), Node ≥ 18.17, TypeScript strict, ESM-only.
-- **Build:** tsup — two builds: `src/cli.ts` (binary, shebang, per-command code-splitting) and
-  `src/index.ts` (programmatic surface, dts). Runtime deps external + exact-pinned.
-- **Tests:** vitest (`test/`).
-- **CI:** GitHub Actions — `.github/workflows/ci.yml` and `.github/workflows/checks.yml`, on every
-  push to main and every pull request.
+## Working rules
 
-## Working rules (the leash)
-
-- **Reuse-first.** Before writing any new helper: check `src/core/util.ts`, the pack, the engine,
-  and the ui layer — a "new" util usually exists.
-- **Never commit or push unasked.** The developer drives version control.
-- **Minimal diffs.** Never touch files outside the task's scope.
-- **Commits stay unattributed.** No `Co-authored-by:` trailers, no "Generated with …" credits.
-- **Pin every dependency to an exact version** (`.npmrc` has `save-exact=true`) — no `^`/`~`.
-- **One objective.** Every addition serves "keep your agent instructions true" — where an
-  instruction is anything told to an agent, in a file or in the prompt (010) — or it does not
-  ship — features off that axis were deliberately cut in 003; do not reintroduce them casually.
-- **Two tests before shipping any opinion.** Can the tool mechanize the check? _And_ would a user
-  who is not us ever set this? A field can pass the first and fail the second — that is how a
-  fleet's own policy ends up in a public package. A new **predicate** additionally answers the
-  five-question fitness test in
-  [005](docs/decisions/005-declared-rules.md#the-fitness-test-for-a-new-predicate), in writing, in
-  the PR that adds it; a "no" is a rejection. Four predicates is the design, and the count itself
-  is the alarm.
-- **Honesty is load-bearing.** Findings/claims the tool emits must cite evidence and disclose what
-  they could not see (inherited CI templates, server-side thresholds, skipped heuristics). Never
-  dress a heuristic as a fact — this is the product's core value and the repo's own rule.
-- **Precision over recall.** A false "your file is lying" costs more trust than a missed lie —
-  claim-extraction heuristics filter aggressively and disclose what they skip.
-- **Public repo.** Publishing exposes ALL history, not just the current tree, so no tracked
-  file or commit message may carry: absolute paths, hostnames or other machine and
-  environment detail; client or internal project names and ticket identifiers;
-  identity or credential configuration written into prose (author metadata belongs in
-  `LICENSE` and `package.json`); the names of the developer's other projects; or internal
-  deliberation and provenance. Documentation examples must not name a real private project
-  or a convention the tool does not itself recognize. The test: _would this line make sense,
-  and be safe, read by a stranger who knows nothing about the developer or their other
-  work?_ A pre-commit content gate enforces this where installed (`.githooks/pre-commit`) —
-  a backstop, not a substitute for the rule.
-
-## Navigate narrow
-
-Read this contract → the map below → open only the files the task needs. Prefer targeted reads
-over repo-wide scans.
-
-## Repo map
-
-> Advisory, not authoritative — re-verify with `git ls-files src` before structure-sensitive
-> changes, and update this section in the same change that moves files.
-
-- `src/cli.ts` — commander wiring; per-command dynamic imports (keep startup thin)
-- `src/commands/` — thin command adapters (audit · init · approve · scan · doctor · context ·
-  brief · premise · gates · ledger[dismiss/accept] · fleet[sweep/check/add/dismiss/accept/board] ·
-  propose); no business logic here
-- `src/core/` — the deterministic engine: `scan.ts` (orchestrator) · `detect.ts` (detectors +
-  classifier ladders + glob expansion) · `facts.ts` (cache vs committed baseline, profile,
-  baseline-drift summary for `approve`) · `config.ts` (the optional committed config file under
-  `.etymd/`: instruction scope + context budgets) · `fleet.ts` (the fleet manifest loader —
-  registry + legacy corpus shapes, one resolved model) · `context.ts` · `generate.ts`
-  (onboarding planner) · `apply.ts` (idempotent writes) · `types.ts` · `util.ts`
-- `src/engine/` — the findings engine: `finding.ts` (Finding/Lens/ranking) · `ledger.ts`
-  (committed improvement memory + `resolveEntry` for dismiss/accept) · `run.ts` (lens registry +
-  audit composition) · `fleet.ts` (sweep + manifest check + fleet-scope wall findings) ·
-  `premise.ts` (the task-as-instruction check: bare-token promotion, foreign-path scoping,
-  entities, the agent brief) · `propose.ts` (rubric parsing + proposal scoring — pure functions
-  of the sweep result, deterministic) · `milestones.ts` (milestones/initiatives parsing + the
-  board render)
-- `src/lenses/` — the lenses: `instruction-truth/` (claims extraction, the shared truth checks
-  in `checks.ts`, and the headline truth lens — instruction files AND state documents, incl.
-  decision-reference resolution) ·
-  `state-freshness.ts` (state/decisions freshness — git committer dates, never mtime) ·
-  `gate-integrity/` (inventory + lens) · `context-economy.ts`
-- `src/pack/` — the versioned pack: `templates.ts` (minimal scaffold + hooks) · `version.ts`
-- `src/ui/` — render + theme (all terminal output goes through here)
-- `test/` — vitest suites incl. `truth.test.ts` (the lying-fixture)
-- `docs/decisions/` — the decision record (001 founding · 002 foundation re-lock · 003 truth-guard
-  pivot — the current identity · 004 fleet mode · 005 declared rules, design only · 006 local gate
-  provenance · 007 declared entry fields · 008 derived gate tier · 009 state-doc truth · 010
-  premise — the task is an instruction · 011 milestones & the fleet board · 012 propose —
-  rubric-scored proposals)
-- `ROADMAP.md` — now/next/later, accepted heuristic trade-offs (release mechanics are a
-  machine-local runbook, deliberately untracked: operating detail attracts account and
-  environment specifics a public repo must not carry)
-
-## Composition points
-
-- `src/engine/run.ts` `LENSES` — the lens registry; adding a lens = registering it here +
-  its own module under `src/lenses/`. Invariant: a partial run (filtered lenses) must never
-  persist ledger resolutions for lenses that did not run.
-- `src/engine/finding.ts` `Finding` — the ONE finding schema every lens speaks;
-  never introduce a parallel finding shape.
-- `src/lenses/instruction-truth/checks.ts` — the ONE implementation of the command, path,
-  doc-reference, and decision-reference truth checks. `instruction-truth` (files, state docs) and
-  `premise` (the task) both call it; a check re-implemented beside it would let the two surfaces
-  drift apart, which is the failure this tool exists to catch. Tier, wording, and the task-only
-  outside-repo path scope are parameters, the rules are not. What a check examined is returned beside what it flagged, so a caller never
-  re-derives coverage by running the extractors a second time.
-- `src/lenses/instruction-truth/claims.ts` — claim extraction. Invariant: precision over recall;
-  every skip class (builtins, flagged invocations, globs/URLs/placeholders, unrecognized
-  extensions, gitignored claims, installed-binary commands, uninstalled node_modules,
-  create-this prose, naming stand-ins, foreign-record and unresolvable decision refs) is counted
-  and disclosed by the lens, never silently dropped.
-- `src/core/facts.ts` — cache (`.etymd/cache/`, gitignored) vs baseline
-  (`.etymd/baseline.json`, committed). Drift is measured against the baseline, never the cache.
-- `src/core/config.ts` — the optional committed config file under `.etymd/` (audit scope,
-  context budgets, and the pinned gate commands; here it carries only the gate pin — etymd itself
-  needs no scoping and no budget override). Invariant: scoping
-  must never buy silence — that holds in the LEDGER too. A tracked finding whose file the run
-  excluded is absent because nobody looked, not because it was fixed: `reconcileLedger` holds it
-  open (`outOfScope`), never `done`. Silently resolving it would let scoping rewrite unfixed
-  problems as successes. Every file dropped by
-  `instructions.exclude` is counted and NAMED in the lens disclosures, and malformed config is
-  disclosed instead of silently falling back — a narrowed audit that looked clean would be the
-  exact dishonesty this tool exists to catch. Reading config is the engine's job (`run.ts` loads
-  it into `LensContext`); a lens never reads the file itself.
-- `src/core/detect.ts` `ROLE_LADDERS` — command classification. Invariant: specific beats meta
-  (`test:unit` over a chaining `test`), and a writing command (`--write`/`--fix`/codegen) must
-  never be classified where a check belongs (`isSafeGateCommand` guards the hook generator too).
-- `src/lenses/gate-integrity/inventory.ts` — the gate inventory. Honesty rules are structural:
-  `allow_failure` ⇒ advisory (not a gate), inherited includes ⇒ disclosed as unseen, script-less
-  jobs ⇒ name/variable inference marked `scriptVisible: false`.
-- `src/pack/` — every template change is a pack change: bump `PACK_VERSION` when meaning changes;
-  nothing outside `pack/` may hardcode template content. The scaffold must never claim what the
-  scan cannot know.
-- `src/core/fleet.ts` + `src/engine/fleet.ts` — the fleet seam. The loader resolves BOTH manifest
-  shapes (registry pair, legacy corpus pair) into one model; fleet-scope findings are constructed
-  directly as `Finding`s under lens id `fleet-manifest` — no new Lens abstraction until a second
-  finding family earns it. Invariants, each pinned by test: the sweep never creates `.etymd`
-  anywhere; a guarded worktree takes zero writes regardless of flags or a stray `.etymd` inside it
-  (guarded persistence root = `<manifestDir>/guarded/<name>/.etymd/`); zero guarded-resolved content ever
-  lands under the manifest repo's tracked paths; unresolvable entries and skipped checks are
-  disclosed (`outOfScope` / problems), never silently dropped; a filtered sweep never moves the
-  `last.fleet.json` delta baseline (the ledger's partial-run rule, applied to deltas).
+- **Reuse-first, minimal diffs.** Check `src/core/util.ts`, the engine and the ui layer before
+  writing a helper; never touch files outside the task's scope.
+- **One objective.** Every addition makes an instruction truer or it does not ship (D-003).
+- **Two tests before any opinion ships:** can the tool mechanise the check, and would a user who
+  is not us ever set this? A new predicate over user config also answers the five questions in
+  D-005, in the pull request that adds it.
+- **Findings cite evidence and disclose what they could not see.** A heuristic is never
+  dressed as a fact; every skipped class is counted and named.
+- **Precision over recall.** A false "your file is lying" costs more than a missed lie.
+- **The shared checks live once**, in `src/lenses/instruction-truth/checks.ts`; files, state
+  documents and the task all call them (D-010).
+- **A template change is a pack change:** bump `PACK_VERSION` in `src/pack/version.ts` when the
+  meaning of a generated file changes; nothing outside `src/pack/` hardcodes template content.
+- **`--json` schemas are stable.** Changing one is a breaking change. The fleet `--json` output,
+  `proposal/1` and the `registry.json` schema may still change before 1.0 and say so.
+- **Dependencies are exact-pinned** (`.npmrc` sets `save-exact=true`); no `^` or `~`.
+- A test name prefixed `PINNED:` guards an invariant the design record fixed; do not relax it.
+- **Never commit or push unasked.** The maintainer drives version control; commits stay
+  unattributed (no co-author or generated-with trailers).
+- **Public repo.** Publishing exposes all history, so no tracked file or commit message may
+  carry: absolute paths, hostnames or other machine detail; workplace or third-party
+  identifiers; credential or identity configuration in prose; references to the maintainer's
+  other work; internal deliberation or provenance. Documentation examples never name a real
+  private project. The test: would this line make sense, and be safe, read by a stranger?
 
 ## Conventions
 
 - Prettier (no semicolons, double quotes, trailing commas, width 100); `npm run format` before
-  finishing. A code span ending in a double-star (a `**` glob) must never sit inside bold —
-  Prettier 3.4 mis-pairs the delimiters and silently rewrites the sentence, and `--check` still
-  passes. `guard:md` fails both format scripts when that damage signature (an escaped star-pair)
-  reaches a markdown file.
+  finishing. `guard:md` fails the format scripts when an escaped star pair reaches a markdown
+  file, the signature of Prettier mis-pairing bold around a `**` glob.
 - kebab-case filenames; commands mirror their CLI name; comment the why, not the what.
-- Every user-visible output path goes through `src/ui/render.ts` — no ad-hoc `console.log`.
-- `--json` outputs are machine-stable schemas; changing them is a breaking change. One declared
-  escape hatch: the fleet `--json` schema and the `registry.json` schema are EXPERIMENTAL through
-  0.2.x — both say so in their own output/docs.
+- Commit subjects follow Conventional Commits; the generated `commit-msg` hook checks them.
 
 ## Done =
 
-A change is done when these are green:
-
-- `npm run format:check`
-- `npm run typecheck`
-- `npm test`
-- the self-audit — the built CLI run against this repo with `audit --fail-on risk`, which the
-  pre-push hook and CI both enforce. etymd guards its own instructions with etymd.
-
-## Commands
-
-```bash
-npm run build        # tsup (cli + index)
-npm test             # vitest run
-npm run typecheck    # tsc --noEmit
-npm run format       # prettier --write
-node dist/cli.js …   # run the built CLI
-```
-
-## Session protocol
-
-1. Read `docs/decisions/003-truth-guard-pivot.md` for the current locked identity before non-trivial
-   changes; 001/002 are the historical record (under the former name, clothaid).
-2. Work in small vertical slices; keep this map and the decision record current in the same change —
-   `etymd audit` on this repo will flag what you forget.
-3. At the end of a change, summarise what changed and what comes next.
+- `npm run format:check`, `npm run typecheck`, `npm test`, `npm run build` pass.
+- The self-audit passes: `node dist/cli.js audit --no-ledger --fail-on risk`, which the pre-push
+  hook and CI both run.

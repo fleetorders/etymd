@@ -73,8 +73,8 @@ export function riskReachability(facts: ProjectFacts): string[] {
  * The tier the pre-push audit should fail on, and where that tier came from.
  *
  * A recorded `gates.failOn` is a decision and is never adjusted — the derivation may only choose
- * between defaults. That asymmetry is the point: the reverting regeneration this fixes was a
- * generated file quietly reinstating a default over a tier the repo had measured and chosen.
+ * between defaults. That asymmetry is the point: a regeneration must never reinstate a default over a tier
+ * the repo measured and chose.
  */
 export function deriveFailOn(
   facts: ProjectFacts,
@@ -116,7 +116,7 @@ export interface PlanOptions {
   /**
    * Emit the publish-time screen. Defaults to `facts.publishable` — set it explicitly to
    * override the derivation (a repo that publishes by a route npm cannot see, or one that
-   * declines the door).
+   * declines the gate).
    */
   publishGate?: boolean
   /** Recorded gate choices; absent means derive everything from the scan. */
@@ -167,10 +167,9 @@ export async function planWorkflow(
     await add("CLAUDE.md", generateClaudePointerMd(), "Claude Code pointer to AGENTS.md")
   }
   if (opts.gates) {
-    // Preservation belongs HERE, not in the command that calls this. `etymd gates` used to read
-    // the existing hook itself, so every other caller — the fleet drift check above all —
-    // regenerated without it and compared a repo against a hook missing checks the repo really
-    // runs: permanent false drift, and a silent downgrade for anyone who applied it.
+    // Preservation belongs HERE, not in the command that calls this: every caller (the fleet
+    // drift check above all) must regenerate with the checks the existing hook already runs, or
+    // it compares a repo against a hook missing them and reports permanent false drift.
     const existingPrePush = await readText(path.join(root, ".githooks", "pre-push"))
     // Decided ONCE, here, from the manifest — the dev-build arm in the content-screen resolution
     // is emitted into this package's own repo and no other. See `contentGateResolution`: as a
@@ -208,12 +207,11 @@ export async function planWorkflow(
           allowWriting: opts.gateConfig?.allowWriting ?? [],
         }
 
-    // The tier derivation is decided HERE, not in the command that installs the hook. `etymd
-    // gates` has always derived it (a repo where no risk-tier finding can fire gets `gap`, or
-    // its audit line is a gate that always passes — 008); the fleet's drift comparison
-    // planned with the RAW config value, so for exactly those repos its "what your own inputs
-    // generate" permanently differed from what `etymd gates` writes — a gate-stale finding
-    // unclearable by the action it names. Every caller must generate the same hook, so the
+    // The tier derivation is decided HERE, not in the command that installs the hook: a repo
+    // where no risk-tier finding can fire gets `gap`, or its audit line is a gate that always
+    // passes (docs/decisions.md, D-008). A caller that planned with the raw config value would
+    // write a hook that differs from `etymd gates`, and the drift check would report a
+    // gate-stale finding its own action cannot clear. Every caller must generate the same hook, so the
     // derivation lives where the hook is built. Idempotent for a caller that already derived.
     const tier = deriveFailOn(facts, {
       failOn: gateConfig.failOn,
@@ -237,7 +235,7 @@ export async function planWorkflow(
         true,
       )
     }
-    // The publish door is only meaningful where something actually ships. A recorded answer
+    // The publish gate is only meaningful where something actually ships. A recorded answer
     // wins; otherwise fall back to the derivation. Note the derivation is a GUESS: npm treats a
     // missing `private` as publishable, which is right about npm's semantics and wrong about a
     // local fork that will never be published — hence the recorded override.

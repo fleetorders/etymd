@@ -41,7 +41,7 @@ describe.skipIf(!existsSync(CLI))("etymd init — the AGENTS.md scaffold is opt-
 
     await init("-y")
     expect(existsSync(path.join(dir, ".etymd", "baseline.json"))).toBe(true)
-    // The defect: a mechanical baseline-only rollout used to land unfilled contract prose
+    // The defect: a baseline-only init used to land unfilled contract prose
     // nobody reviewed — and the baseline then defended it.
     expect(existsSync(path.join(dir, "AGENTS.md"))).toBe(false)
     expect(existsSync(path.join(dir, "CLAUDE.md"))).toBe(false)

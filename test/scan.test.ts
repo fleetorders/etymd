@@ -121,7 +121,7 @@ describe("scanProject", () => {
   })
 })
 
-describe("classifyCommands — corpus-shaped script sets", () => {
+describe("classifyCommands — realistic script sets", () => {
   it("Nx monorepo shape: bare meta `test` must not shadow test:unit:local; test:format is the check", () => {
     const cmds = classifyCommands({
       test: "npm-run-all test:lint:local test:types:local test:unit:local",

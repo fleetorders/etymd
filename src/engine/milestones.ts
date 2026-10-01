@@ -14,9 +14,9 @@
  * `depends-on` is `—` or a comma-separated list of ids from the same table. Anything after the
  * table is free prose and never parsed. A header-only table is a legitimate state: declared, empty.
  *
- * Why a table and not frontmatter or YAML: the file is edited by hand at the end of a session and
- * read back by a person in a terminal; a table reads in both places, and a fixed column list is
- * the smallest grammar a validator can hold a writer to (label fields; do not guard).
+ * Why a table and not frontmatter or YAML: the file is edited by hand and read back by a person in a
+ * terminal; a table reads in both places, and a fixed column list is the smallest grammar a
+ * validator can hold a writer to.
  *
  * The board is a pure function of the parsed files plus an optional ranked initiatives table
  * (`| rank | id | initiative | goal | status | next | effort | projects | depends-on |`) — the

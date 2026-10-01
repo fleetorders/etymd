@@ -12,17 +12,17 @@ import type { FleetProjectSweep } from "./fleet.js"
  *
  * Everything here is a pure function of its inputs — no clocks, no randomness — so the same
  * sweep plus the same rubric yields byte-identical output, and a filed proposal can be
- * re-derived and compared later. Decision record: docs/decisions/012.
+ * re-derived and compared later. Design: docs/decisions.md, D-012.
  */
 
-/** The record schema marker — experimental through 0.2.x with the rest of the fleet family. */
+/** The record schema marker; like the rest of the fleet family it may still change before 1.0. */
 export const PROPOSAL_SCHEMA = "proposal/1"
 
 /**
  * The criteria the tool can compute, each mapped to a 1–3 value. The vocabulary is closed: a
  * rubric line naming anything else is refused, because a criterion this tool cannot derive
  * mechanically would be an opinion wearing a number — the exact product anti-pattern. The
- * WEIGHTS are the fleet's; the tool imposes none.
+ * WEIGHTS are the user's; the tool imposes none.
  */
 export const RUBRIC_CRITERIA = ["severity", "economy", "confidence", "breadth"] as const
 export type RubricCriterion = (typeof RUBRIC_CRITERIA)[number]
@@ -249,7 +249,7 @@ export interface ProposeResult {
  * Build the proposals from a sweep result: every `kind: "improvement"` finding from every
  * personal project, plus every recurring class recomputed over personal projects only. Guarded
  * entries are excluded from the output entire (their findings, and their names inside class
- * breadth) — a guarded improvement is the guarded side's backlog, not this fleet's proposal queue —
+ * breadth; a guarded improvement belongs to the guarded repository, not to this proposal queue)
  * and their exclusion is disclosed by name so absence is a stated policy, never a hole.
  */
 export function buildProposals(
@@ -284,7 +284,7 @@ export function buildProposals(
   const subjects: Subject[] = []
   for (const project of personal) {
     for (const f of project.findings) {
-      // Truth findings are not opportunities — a lie is fixed, not ranked (012).
+      // Truth findings are not opportunities — a lie is fixed, not ranked (docs/decisions.md, D-012).
       if (f.kind === "improvement") subjects.push(findingSubject(project, f))
     }
   }

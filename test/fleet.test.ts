@@ -649,7 +649,7 @@ describe("fleet check — manifest truth", () => {
   })
 })
 
-describe("fleet wall findings", () => {
+describe("manifest checks", () => {
   it("flags a guarded worktree carrying PROJECT_CONTEXT.md or DECISIONS.md at its root", async () => {
     await initRepo("guarded-zz-worktree", { stateAt: "2026-01-01T10:00:00Z" })
     const manifestPath = await writeHub([guarded("c-one")], {
@@ -977,7 +977,7 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
     }
   })
 
-  it("the sweep's wall reports a CLAUDE.md that never imports AGENTS.md as a risk", async () => {
+  it("the sweep's manifest checks report a CLAUDE.md that never imports AGENTS.md as a risk", async () => {
     vi.stubEnv("ETYMD_CLAUDE_VERSION", CLAUDE_AGENTS_FALLBACK_VERSION)
     await initRepo("shadowed")
     await write("shadowed/AGENTS.md", AGENTS)
@@ -1232,7 +1232,7 @@ describe.skipIf(!existsSync(CLI))("fleet CLI wiring (built binary)", () => {
 
 describe("fleet gate drift", () => {
   it("PINNED: names a repo missing a gate its siblings install — the gap invisible from inside", async () => {
-    // The case this check exists for: a repo wired for screening whose commit-msg door was
+    // The case this check exists for: a repo wired for screening whose commit-msg hook was
     // simply never installed. Nothing inside that repo can notice.
     await initRepo("partial")
     await fs.mkdir(path.join(dir, "partial", ".githooks"), { recursive: true })
@@ -1245,7 +1245,7 @@ describe("fleet gate drift", () => {
   })
 
   it("PINNED: honours a declared `gates: none` as a state, not a gap", async () => {
-    // Wall findings are deliberately not ledger-quietable (004) — correct for leak and partition
+    // Manifest findings are deliberately not ledger-quietable (docs/decisions.md, D-004) — correct for leak and partition
     // conditions, whose only honest resolution is fixing them, but wrong for a repo that
     // legitimately has nothing to gate. Without honoring the declaration a settled decision is
     // re-reported on every sweep until the whole report gets ignored.
@@ -1323,7 +1323,7 @@ describe("fleet gate drift", () => {
 
   it("PINNED: a repo whose gate tier is DERIVED does not read as stale to the drift check", async () => {
     // The seed-repo shape the false finding lived in: no package manifest, no state doc — no
-    // risk-tier rule can fire, so `etymd gates` derives `gap` (008). The drift check planned
+    // risk-tier rule can fire, so `etymd gates` derives `gap` (docs/decisions.md, D-008). The drift check planned
     // with the RAW config tier (`risk`), so its expectation permanently differed from the hook
     // the generator itself writes: a gate-stale finding unclearable by the very action it
     // names, on every repo of this shape. The generator and the comparison must agree — the

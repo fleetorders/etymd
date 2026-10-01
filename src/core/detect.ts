@@ -207,8 +207,7 @@ type Pattern = (key: string, value: string) => boolean
 const isMeta = (value: string) => /npm-run-all|run-s\b|run-p\b|concurrently|&&/.test(value)
 
 // Per-role priority ladders, most specific first. Checked against ALL scripts per rung, so a
-// bare meta `test` declared first can no longer shadow the real `test:unit(:local)` — the
-// real-repo failure that motivated this shape.
+// bare meta `test` declared first cannot shadow the narrower `test:unit(:local)`.
 const ROLE_LADDERS: { role: CommandRole; exclude?: RegExp; ladder: Pattern[] }[] = [
   {
     role: "formatCheck",

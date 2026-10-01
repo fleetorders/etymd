@@ -249,17 +249,15 @@ export function isSelfBuildRepo(facts: ProjectFacts): boolean {
  * In this package's OWN repo — and only there, decided at generation time from the manifest
  * name — one step is inserted between them, for the dogfood case: a repo developing the
  * screener has to gate on its own unreleased build, or its hooks enforce the last PUBLISHED
- * behaviour against a tree that has already moved past it (observed: a renamed allow file the
+ * behaviour against a tree that has already moved past it (for example, a renamed allow file the
  * published binary could not read, silently voiding every exemption).
  *
- * That step was previously emitted into EVERY repo as a bare `[ -x ./dist/cli.js ]` existence
- * check — and `dist/cli.js` is simply where a great many CLI projects build. Any such repo had
- * its hook resolve the screener to ITS OWN binary, which does not know `screen`: the commit
- * door then failed closed on every commit, while the push door — which ignores the screen's
- * exit status by design — skipped the whole-tree pass in silence, the worse of the two. The
- * trap armed itself on a plain dependency install, since that runs the repo's build. Deciding
- * at generation time is what keeps the arm out of every repo it cannot be true for; a repo that
- * needs a different runner for one invocation still has CONTENT_GATE.
+ * A bare `[ -x ./dist/cli.js ]` check must never be emitted into other repos: `dist/cli.js` is
+ * where many CLI projects build, and such a repo's hook would resolve the screener to its own
+ * binary, which does not know `screen`. The commit hook then fails closed on every commit while
+ * the push hook, which ignores the screen's exit status by design, skips its whole-tree pass in
+ * silence. Deciding at generation time keeps that step out of every repo it cannot be true for;
+ * a repo that needs a different runner for one invocation still has CONTENT_GATE.
  */
 function contentGateResolution(selfBuild: boolean): string {
   if (!selfBuild) return `GATE="\${CONTENT_GATE:-$(command -v etymd || true)}"`
@@ -300,9 +298,9 @@ function contentScreenCall(opts: {
  * The seam between what the pack owns and what the repo owns.
  *
  * A generated file that cannot hold anything local forces a false choice: accept the pack and
- * lose your own checks, or hand-maintain the file and lose regeneration. Both were observed in
- * real repos — one carries a bespoke archive guard, another documents why its audit tier differs
- * from every sibling — and regenerating either would have destroyed working, reasoned work.
+ * lose your own checks, or hand-maintain the file and lose regeneration. Real repos carry
+ * both: a bespoke guard here, a documented audit tier there; regenerating either would destroy
+ * working, reasoned work.
  *
  * So the pack owns the whole generated file and simply CALLS a companion it never reads or
  * writes. Two files, two owners, one convention. Deliberately not a marked region inside the
@@ -378,7 +376,7 @@ export const COMMIT_TYPES = [
 export const SUBJECT_ADVISORY_LENGTH = 72
 
 /**
- * Conventional Commits, checked at the only door that sees a message. Emitted ONLY where
+ * Conventional Commits, checked at the only hook that sees a message. Emitted ONLY where
  * `gates.commitFormat` is explicitly true — see the caller.
  *
  * This is a FORMAT check and deliberately not a taste check: it reads the first non-comment
@@ -386,10 +384,10 @@ export const SUBJECT_ADVISORY_LENGTH = 72
  * because the gate that argues about wording is the gate everyone learns to bypass — and the
  * bypass flag is shared with the screen above, which must never be bypassed.
  *
- * It earns its keep where a repo has chosen the convention, because a convention with no door
+ * It earns its keep where a repo has chosen the convention, because a convention with no gate
  * erodes without anyone deciding to abandon it: histories drift one hurried commit at a time,
  * and nothing objects until the log is already mixed. That is an argument for offering the
- * door, never for installing it in a repo that did not ask.
+ * check, never for installing it in a repo that did not ask.
  *
  * Merge, revert, fixup, squash and amend subjects are git's own wording rather than the
  * author's — gating them would ask people to rewrite text they did not write.
@@ -420,8 +418,8 @@ esac`
 
 /**
  * The message is published history too, and the staged screen cannot see it: that gate reads
- * `git diff --cached`, which is file bytes only. A real audit found several leaks living in
- * commit messages rather than files, which is why this is its own door.
+ * `git diff --cached`, which is file bytes only. Leaks live in commit
+ * messages as readily as in files, which is why this is its own hook.
  */
 export function generateCommitMsgHook(gates?: GateConfig): string {
   // Unset means OFF, and only an explicit `true` turns it on. A convention is an opinion, and
@@ -465,18 +463,18 @@ exit 0
  */
 export function generateShellDiscoveryScript(): string {
   return stampGenerated(`#!/usr/bin/env sh
-# etymd: shell script discovery for the pre-push shellcheck step. Three calls per commit:
+# etymd: shell script discovery for the pre-push shellcheck step. Four calls per commit:
 #   discover-shell-scripts.sh --config <scratch> <tree> <ls-tree record>...
 #   discover-shell-scripts.sh --skips <scratch> <ls-tree record>...
 #   discover-shell-scripts.sh --commit <scratch> <tree> <commit> <commit>:<path>...
-# The first writes the commit's .shellcheckrc files into the tree as raw blobs, so the checker
-# finds its config where it looks, and flags one that turns external-sources on. The second counts the changed paths that are symlinks or
-# submodule entries. The second reads
-# the candidates \`git grep\` found with a line starting \`#!\`, and classifies each by its FIRST
-# line. Verdicts land in the scratch: scripts (NUL-delimited matches) and one dot per decision
-# into count / zsh-count / skip-count, tallied by the hook after the pipeline. Each script found
-# is written into <tree> at its path, so the checker reads it there. With external-sources on,
 #   discover-shell-scripts.sh --context <scratch> <tree> <ls-tree record>...
+# --config writes the commit's .shellcheckrc files into the tree as raw blobs, so the checker
+# finds its config where it looks, and flags one that turns external-sources on. --skips counts
+# the changed paths that are symlinks or submodule entries. --commit reads the candidates
+# \`git grep\` found with a line starting \`#!\`, and classifies each by its FIRST line. Verdicts
+# land in the scratch: scripts (NUL-delimited matches) and one dot per decision into count /
+# zsh-count / skip-count, tallied by the hook after the pipeline. Each script found is written
+# into <tree> at its path, so the checker reads it there. With external-sources on, --context
 # then stages, as raw blobs, the files the staged scripts source.
 #
 # Every byte comes from git's object store as the raw blob — \`git cat-file blob\`, which
@@ -971,7 +969,7 @@ exit 0
 }
 
 /**
- * The publish door — the only check that inspects what actually SHIPS.
+ * The publish gate: the only check that inspects what actually SHIPS.
  *
  * Every git-scoped check answers "what is in the repository?". That question misses the leak
  * that reaches users: a gitignored file can be packaged into a published artifact (npm and vsce

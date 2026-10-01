@@ -320,7 +320,7 @@ export const stateFreshnessLens: Lens = {
       }
     }
 
-    // ---- state char budget (session-injection hooks truncate around 10,000 chars) ----
+    // ---- state char budget (some agent harnesses truncate a loaded file around 10,000 chars) ----
     for (const a of stateArtifacts) {
       const text = await readText(path.join(ctx.root, a.path))
       if (text === null) {
@@ -335,7 +335,7 @@ export const stateFreshnessLens: Lens = {
           tier: "gap",
           claim: `${a.path} is ${text.length} chars — over the ${budgets.maxChars}-char state budget`,
           evidence: [`${a.path}: ${text.length} chars`],
-          why: "Session-injection hooks truncate state around 10,000 chars — an over-budget state doc gets cut mid-sentence, and every session pays its full weight before the task begins.",
+          why: "Some agent harnesses truncate a loaded file around 10,000 chars — an over-budget state doc gets cut mid-sentence, and every session pays its full weight before the task begins.",
           action: "Trim to budget; move overflow into decisions/docs and keep a pointer.",
           effort: "M",
           confidence: "high",
