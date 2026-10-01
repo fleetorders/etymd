@@ -27,7 +27,7 @@
   },
   "type": "module",
   "bin": {
-    "etymd": "./dist/cli.js"
+    "etymd": "dist/cli.js"
   },
   "main": "./dist/index.js",
   "module": "./dist/index.js",
