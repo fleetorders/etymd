@@ -113,7 +113,9 @@ registers; on a Claude Code older than 2.1.277 it gets a note, since that versio
   tracked `/Users/` paths in the manifest repo, private identifiers from the local file (labels,
   dir names, hosts) inside `trust: "public-repo"` entries, guarded-host commit emails on personal
   entries, and repos whose `AGENTS.md` no `CLAUDE.md` pointer or symlink makes visible to Claude
-  Code (`claude-pointer-missing`): each a risk finding; each check that cannot run is disclosed.
+  Code (`claude-pointer-missing`: a risk when a `CLAUDE.md` exists and never imports it, a gap
+  when none exists and the installed Claude Code still needs one). The others are risk findings;
+  each check that cannot run is disclosed.
   These are not ledger-quietable; the only honest resolution is fixing them.
 - **No global pointer.** `--manifest` is required unless the cwd holds `registry.json`. There
   is deliberately no env var and no home-directory pointer.

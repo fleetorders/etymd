@@ -40,7 +40,8 @@ steps:
 
 ## Your own checks, beside the generated ones
 
-Generated hooks are overwritten on every `etymd gates` run, so nothing hand-written belongs in
+A generated hook that is provably stale etymd output is regenerated on the next `etymd gates`
+run (an edited or unstamped one is kept and reported), so nothing hand-written belongs in
 them. Each one calls a companion instead (`.githooks/pre-commit.local`, `commit-msg.local`,
 `pre-push.local`) that etymd **never reads, writes or regenerates**. Make it executable and it
 runs; a non-zero exit stops the commit or push exactly as the generated checks do.

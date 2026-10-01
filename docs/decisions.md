@@ -63,7 +63,7 @@ sync, no transcript reading, no MCP server.
 
 A finding carries a `kind`: `truth` (an instruction is false) or `improvement` (something could be
 better). It lives on the finding, not the lens, because one lens can emit both. The committed
-`.etymd/config.json` may carry a `_why` block beside `gates`: a reason attached to a value, keyed
+`.etymd/config.json` may carry a `_why` block inside `gates`: a reason attached to a value, keyed
 by the field it explains. The tool keeps a reason as long as the value stands and drops it when it
 changes the value, because a reason attached to a value it no longer explains is worse than none.
 
