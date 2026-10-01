@@ -1,5 +1,16 @@
 # etymd
 
+## 0.20.0
+
+### Minor Changes
+
+- 3e72375: The content screen no longer reads the older `.artifact-check-allow` file name. When only that file exists, the screen prints a hint to rename it to `.etymd-screen-allow`; until then its records exempt nothing.
+
+### Patch Changes
+
+- 2ad9453: `docs/decisions.md` is recognised as a decision record, so `D-NNN` citations resolve against it. A decisions-format marker counts only on a line of its own; one mentioned in prose or inline code no longer opts a file into format checks.
+- 68b13b6: Repository shape: the design record lives in `docs/decisions.md`, the README is split into reference pages under `docs/`, one CI workflow, plain comments and messages, a condensed changelog. The generated shell-discovery script's header comment changed, so `etymd gates` reports it stale once and regenerates it.
+
 ## 0.19.5
 
 ### Patch Changes
