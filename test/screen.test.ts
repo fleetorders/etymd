@@ -547,4 +547,19 @@ describe("generated-data exemption end to end (run)", () => {
     process.exitCode = 0
     expect(blocked).toBe(1) // unsigned hole in the gate → refused, vocabulary applies
   })
+
+  it("the older .artifact-check-allow name is not read — its records exempt nothing", async () => {
+    const { run } = await import("../src/commands/screen.js")
+    const { dir, stage, patterns } = await initStagedRepo()
+    await stage(
+      ".artifact-check-allow",
+      ["generated ^src/data/corpus\\.json$", "reason r", "date 2026-09-04", "author x"].join("\n"),
+    )
+    await stage("src/data/corpus.json", `${corpusLine}\n`)
+    process.exitCode = 0
+    await run({ cwd: dir, scope: "staged", patterns })
+    const blocked = process.exitCode
+    process.exitCode = 0
+    expect(blocked).toBe(1)
+  })
 })
