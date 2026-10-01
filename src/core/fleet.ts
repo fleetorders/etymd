@@ -3,11 +3,10 @@ import path from "node:path"
 
 import { readText } from "./util.js"
 
-// The fleet manifest loader — promoted from the corpus test harness's sources.json pattern.
-// It parses BOTH manifest shapes through one resolved model:
+// The fleet manifest loader. It parses BOTH manifest shapes through one resolved model:
 //
-//   (a) the fleet registry:  registry.json  (tracked)  + registry.local.json (gitignored)
-//   (b) the legacy corpus:   sources.json   (tracked)  + sources.local.json  (gitignored)
+//   (a) the fleet registry:        registry.json (tracked) + registry.local.json (gitignored)
+//   (b) the older two-file format: sources.json  (tracked) + sources.local.json  (gitignored)
 //
 // The tracked file carries CLAIMS (names, kinds, profiles, contract overrides); the gitignored
 // sibling carries this MACHINE's facts (real directories, labels, guarded host patterns). Private
@@ -81,7 +80,7 @@ export interface FleetEntry {
   upstream?: string
   /**
    * How exposed this entry is — see {@link FleetTrust}. `"public-repo"` marks an
-   * outside-contribution surface (hygiene needles apply). Undeclared on a non-guarded entry is a
+   * outside-contribution surface (the private-identifier check applies). Undeclared on a non-guarded entry is a
    * `fleet check` finding, never a silent "private".
    */
   trust?: FleetTrust
@@ -91,7 +90,7 @@ export interface FleetEntry {
   /**
    * How this entry's git hooks are governed. `"none"` declares that generated gates are
    * deliberately absent — a prose repo with nothing mechanically checkable, or one whose gate is
-   * hand-written on purpose. Wall findings cannot be quieted through the ledger (004: their only
+   * hand-written on purpose. Manifest findings cannot be quieted through the ledger (004: their only
    * honest resolution is fixing them), which is right for leak and partition conditions but
    * wrong for a state a fleet legitimately chooses; without this, a settled decision is
    * re-reported on every sweep until the report is ignored.
@@ -148,7 +147,7 @@ const REBUILD_RECIPE =
 
 /**
  * A name must be ONE path-safe segment: names build finding ids (`fleet-manifest/<class>:<name>`)
- * and filesystem paths (`guarded/<name>/.etymd/`, corpus sibling resolution). A `../` name would
+ * and filesystem paths (`guarded/<name>/.etymd/`, sibling resolution for the older format). A `../` name would
  * steer a ledger write outside the guarded zone — the manifest can lie, and a lie must never steer
  * a write. No separators, no leading dot, no whitespace, no `:` (the id delimiter).
  */
@@ -334,7 +333,7 @@ function loadCorpusEntries(
       contract: {},
       links: {},
     }
-    // Exactly the historical corpus resolution: the local dir wins, then the declared path,
+    // Resolution for the older format: the local dir wins, then the declared path,
     // then a same-named sibling of the manifest's parent (whose absence simply skips a smoke).
     const localDir = manifest.localDirs[name]
     if (localDir) {
@@ -441,7 +440,8 @@ export async function loadFleetManifest(manifestPath: string): Promise<FleetMani
     manifest.problems.push({
       kind: "bad-shape",
       file: manifestFile,
-      detail: "neither a `projects` (registry) nor a `sources` (corpus) array — no entries loaded",
+      detail:
+        "neither a `projects` (registry) nor a `sources` (older format) array — no entries loaded",
     })
   }
 

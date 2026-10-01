@@ -1,4 +1,4 @@
-// The one Finding schema every analysis surface reports through. score/doctor/audit all speak
+// The one Finding schema every analysis surface reports through. doctor and audit both speak
 // this shape so the ledger, ranking, and JSON output stay machine-stable across lenses.
 
 export type FindingTier = "risk" | "gap" | "polish"

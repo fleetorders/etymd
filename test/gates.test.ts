@@ -388,7 +388,7 @@ exit 23
   })
 
   it("PINNED: the pushed commit is the read — a deleted working-tree copy neither dodges the gate nor blocks it", async () => {
-    // The 2026-09-15 shape inverted: the working tree was never the right read. Deleting the
+    // The earlier shape inverted this: the working tree was never the right read. Deleting the
     // only working-tree copy of a script must not skip the commit's copy — and must not break
     // an unrelated push the way a tree-reading gate did.
     await baseRepo()
@@ -939,7 +939,7 @@ describe.skipIf(!existsSync(CLI))(
 
       await gates()
 
-      // Every door that resolves a screener, not just the one the failure was noticed at.
+      // Every hook that resolves a screener, not just the one the failure was noticed at.
       for (const rel of [".githooks/pre-commit", ".githooks/pre-push"]) {
         const hook = await fs.readFile(path.join(dir, rel), "utf8")
         expect(hook, rel).toContain('GATE="${CONTENT_GATE:-$(command -v etymd || true)}"')
@@ -1004,7 +1004,7 @@ describe.skipIf(!existsSync(CLI))(
 )
 
 describe.skipIf(!existsSync(CLI))(
-  "etymd gates — a screen door that explains its own failure",
+  "etymd gates — a screening hook that explains its own failure",
   () => {
     it("PINNED: a runner that does not understand `screen` gets a self-explaining line, not a bare error", async () => {
       // `screen` needs etymd 0.11+. Against an older one the runner answers with its own
@@ -1084,41 +1084,38 @@ describe.skipIf(!existsSync(CLI))(
 describe.skipIf(!existsSync(CLI))(
   "etymd gates — the generated hooks pass the checker they run",
   () => {
-    it("PINNED: every generated hook is shellcheck-clean at warning", async () => {
-      // A hook that gates on shellcheck must survive shellcheck itself. The specific trap this
-      // pins: any comment whose first word is the checker's own name is parsed as a DIRECTIVE, so
-      // prose explaining why a shell dialect is skipped can itself become a parse error — a
-      // generated gate breaking the tool it exists to run.
-      const hasShellcheck = await pExecFile("command", ["-v", "shellcheck"], { shell: true }).then(
-        () => true,
-        () => false,
-      )
-      if (!hasShellcheck) return
+    it.skipIf(!hasShellcheck)(
+      "PINNED: every generated hook is shellcheck-clean at warning",
+      async () => {
+        // A hook that gates on shellcheck must survive shellcheck itself. The specific trap this
+        // pins: any comment whose first word is the checker's own name is parsed as a DIRECTIVE, so
+        // prose explaining why a shell dialect is skipped can itself become a parse error — a
+        // generated gate breaking the tool it exists to run.
+        await write("package.json", JSON.stringify({ name: "demo", private: true }, null, 2) + "\n")
+        await write("AGENTS.md", "# AGENTS.md\n")
+        await write("scripts/thing.sh", "#!/usr/bin/env sh\necho hi\n")
+        await gates()
 
-      await write("package.json", JSON.stringify({ name: "demo", private: true }, null, 2) + "\n")
-      await write("AGENTS.md", "# AGENTS.md\n")
-      await write("scripts/thing.sh", "#!/usr/bin/env sh\necho hi\n")
-      await gates()
+        const targets = [
+          ".githooks/pre-commit",
+          ".githooks/pre-push",
+          ".githooks/commit-msg",
+          ".githooks/discover-shell-scripts.sh",
+        ].filter((rel) => existsSync(path.join(dir, rel)))
+        expect(targets.length).toBeGreaterThan(0)
 
-      const targets = [
-        ".githooks/pre-commit",
-        ".githooks/pre-push",
-        ".githooks/commit-msg",
-        ".githooks/discover-shell-scripts.sh",
-      ].filter((rel) => existsSync(path.join(dir, rel)))
-      expect(targets.length).toBeGreaterThan(0)
-
-      const result = await pExecFile("shellcheck", ["-S", "warning", ...targets], {
-        cwd: dir,
-      }).then(
-        () => ({ ok: true, out: "" }),
-        (e: { stdout?: string; stderr?: string }) => ({
-          ok: false,
-          out: (e.stdout ?? "") + (e.stderr ?? ""),
-        }),
-      )
-      expect(result.out).toBe("")
-      expect(result.ok).toBe(true)
-    })
+        const result = await pExecFile("shellcheck", ["-S", "warning", ...targets], {
+          cwd: dir,
+        }).then(
+          () => ({ ok: true, out: "" }),
+          (e: { stdout?: string; stderr?: string }) => ({
+            ok: false,
+            out: (e.stdout ?? "") + (e.stderr ?? ""),
+          }),
+        )
+        expect(result.out).toBe("")
+        expect(result.ok).toBe(true)
+      },
+    )
   },
 )

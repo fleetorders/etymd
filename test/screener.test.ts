@@ -101,12 +101,12 @@ describe("content-screen reachability", () => {
     expect(deriveScreenerFindings(probe, [])).toHaveLength(0)
   })
 
-  it("names every door that calls the screen, not just the first", async () => {
+  it("names every hook that calls the screen, not just the first", async () => {
     await hookCallingScreen("pre-commit")
     await hookCallingScreen("pre-push")
     process.env.CONTENT_GATE = await runnerThat(false)
 
     const probe = await probeScreener(dir, facts())
-    expect(probe.doors).toEqual([".githooks/pre-commit", ".githooks/pre-push"])
+    expect(probe.hooks).toEqual([".githooks/pre-commit", ".githooks/pre-push"])
   })
 })

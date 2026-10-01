@@ -264,7 +264,7 @@ function renderSweep(
     }
   }
 
-  section("Fleet wall")
+  section("Manifest checks")
   if (!result.wall.length) print(`  ${glyph.ok} ${theme.dim("clean")}`)
   else
     print(
@@ -328,15 +328,6 @@ export interface FleetAddCmdOptions {
 }
 
 /**
- * Register a project, refusing to write an entry that is missing a mandatory field.
- *
- * The gate is the point: a manifest entry is the fleet's claim about a project, and the fields
- * a scanner CANNOT derive — `trust` above all — are exactly the ones that get forgotten when
- * registration is a hand-edit. Prompting at the moment of mutation is what makes the mandatory
- * set true by construction instead of true by remembering. Non-interactive runs (`--yes`, CI)
- * must pass every mandatory value as a flag; a missing one is an error, never a default.
- */
-/**
  * Record a guarded entry's alias → directory mapping in the gitignored local manifest.
  *
  * A guarded entry in the tracked manifest is deliberately alias-only: no path, no remote. That is
@@ -396,11 +387,22 @@ async function recordGuardedMapping(
   return value
 }
 
+/**
+ * Register a project, refusing to write an entry that is missing a mandatory field.
+ *
+ * The gate is the point: a manifest entry is the fleet's claim about a project, and the fields
+ * a scanner CANNOT derive — `trust` above all — are exactly the ones that get forgotten when
+ * registration is a hand-edit. Prompting at the moment of mutation is what makes the mandatory
+ * set true by construction instead of true by remembering. Non-interactive runs (`--yes`, CI)
+ * must pass every mandatory value as a flag; a missing one is an error, never a default.
+ */
 export async function add(opts: FleetAddCmdOptions): Promise<void> {
   const { manifest, autoNote } = await loadManifest(opts.cwd, opts.manifest)
   if (autoNote) print(`  ${theme.dim(`◦ ${autoNote}`)}`)
   if (manifest.shape !== "registry") {
-    throw new Error("`fleet add` targets the registry shape — this manifest is a legacy corpus")
+    throw new Error(
+      "`fleet add` targets the registry shape — this manifest is the older two-file format",
+    )
   }
   const raw = await readText(manifest.manifestPath)
   if (raw === null) throw new Error(`cannot read ${manifest.manifestPath}`)
@@ -412,7 +414,7 @@ export async function add(opts: FleetAddCmdOptions): Promise<void> {
     throw new Error(`\`${name}\` is already registered — resolution is keyed by name`)
   }
 
-  // The pointer contract, refused at the door: Claude Code reads CLAUDE.md when one exists and
+  // The pointer contract, refused at registration: Claude Code reads CLAUDE.md when one exists and
   // falls back to AGENTS.md only when none does, so a CLAUDE.md that never imports AGENTS.md
   // hides the contract from it on every version. The fleet would then sweep a repo whose
   // instructions one whole agent never receives — registered coverage that isn't. A bare
@@ -438,13 +440,13 @@ export async function add(opts: FleetAddCmdOptions): Promise<void> {
 
   section(`Fleet add ${theme.dim(`· ${name} · ${absTarget}`)}`)
 
-  // `profile` decides which side of the wall an entry lives on — a placement decision, not a
+  // `profile` decides which side of the manifest's split an entry lives on — a placement decision, not a
   // repo fact. Defaulting it silently would let a guarded repo land as personal, so it is asked
   // (the flag answers it for non-interactive runs; personal stays the pre-selected default).
   let profile = opts.profile
   if (!profile && !opts.yes) {
     const picked = await select({
-      message: "Which side of the wall does this belong to?",
+      message: "Which profile does this entry take?",
       initialValue: "personal",
       options: [
         { value: "personal", label: "personal — your own work" },
@@ -465,7 +467,7 @@ export async function add(opts: FleetAddCmdOptions): Promise<void> {
   // `kind` is deliberately a FREE string, not a vocabulary: a fleet's categories are its own,
   // and constraining them would make a general tool impose one user's taxonomy. The scan can
   // only tell tool-shaped from repo-shaped, so that guess seeds the prompt and the kinds
-  // already used in this manifest are offered beside it — the fleet's vocabulary reinforces
+  // already used in this manifest are offered beside it — the manifest's vocabulary reinforces
   // itself without ever being hardcoded.
   const derivedKind = facts.commands.build || facts.commands.test ? "tool" : "repo"
   let kind = opts.kind
@@ -648,7 +650,7 @@ async function resolveFleetFinding(
   const { ledgerRoot, recorded } = await ensureFindingRecorded(manifest, opts.name, opts.id)
   if (!recorded) {
     throw new Error(
-      `no finding \`${opts.id}\` recorded for \`${opts.name}\` even after a fresh audit — check the id against \`etymd fleet\` output (fleet-manifest wall findings are not ledger-quietable)`,
+      `no finding \`${opts.id}\` recorded for \`${opts.name}\` even after a fresh audit — check the id against \`etymd fleet\` output (fleet-manifest findings are not ledger-quietable)`,
     )
   }
   if (!hadLedger) {
@@ -689,7 +691,7 @@ export async function board(opts: FleetBoardCmdOptions): Promise<void> {
   const projects: BoardProject[] = []
   for (const entry of manifest.entries) {
     // Guarded entries never reach a board: the board is a publishable artifact of the personal
-    // side, and a guarded plan is exactly the content the wall exists to keep out of it.
+    // side, and a guarded plan is exactly the content the profile split exists to keep out of it.
     if (entry.profile === "guarded") continue
     const file = entry.contract.milestones
     const base = { name: entry.name, kind: entry.kind, rows: [], problems: [] as string[] }

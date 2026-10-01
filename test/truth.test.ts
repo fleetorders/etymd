@@ -119,7 +119,7 @@ describe("claim extraction", () => {
   })
 
   it("keeps every backticked span as a claim for instruction files — a prose introducer is not a namespace", () => {
-    // Real-repo find: `facts: `docs/seo-strategy.md`` in a committed skill file — the label reads
+    // Seen in a committed skill file: `facts: `docs/seo-strategy.md`` — the label reads
     // as prose, and only the task surface (opts.namespaces) reads prefixes at all.
     const text =
       "Two facts: `docs/seo-strategy.md` locks the cadence; see app: `docs/other.md` too."
@@ -222,7 +222,7 @@ describe("instruction-truth lens (the lying-AGENTS.md fixture)", () => {
   })
 
   it("a tilde-home doc mention is skipped and disclosed, never a dangling ref", async () => {
-    // The observed defect: prose pointing at the reader's machine accused the repo of a missing
+    // The defect: prose pointing at the reader's machine accused the repo of a missing
     // file. The home file is real; the repo never had one — nothing to verify here.
     await write("package.json", JSON.stringify({ name: "homedoc", private: true }))
     await write(

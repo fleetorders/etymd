@@ -151,7 +151,7 @@ describe("allow-file records", () => {
 
   it("an orphan provenance line exempts nothing and creates no record", () => {
     // Fail-safe by design: an orphan can only under-exempt, and under-exemption reports
-    // its own gap at the door that sees the hit.
+    // its own gap at the hook that sees the hit.
     const { lines: entries } = compileAllow(
       ["reason no pattern above me", "pattern ^a$"].join("\n"),
     )

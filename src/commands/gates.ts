@@ -15,7 +15,7 @@ import { print, renderPlan, section } from "../ui/render.js"
 import { glyph, theme } from "../ui/theme.js"
 
 /**
- * The publish door: the script etymd owns, and the manifest key that fires it.
+ * The publish gate: the script etymd owns, and the manifest key that fires it.
  *
  * The key depends on the publish route. npm runs `prepublishOnly`; `vsce` ignores that key
  * completely and runs `vscode:prepublish`, so wiring the npm key into an extension installs a
@@ -50,8 +50,8 @@ function printGateSummary(
   const listed = [...gates.commands.map((c) => `${run} ${c}`), ...(shellStep ? [shellStep] : [])]
   const cmds = listed.length ? listed.join(", ") : "none detected"
   print(`  ${glyph.bullet} ${theme.dim("pre-push runs")} ${theme.info(cmds)}`)
-  // Never print the tier alone. A tier word with no provenance is what let a measured choice be
-  // reverted by a regeneration for six days without anyone reading the diff as policy.
+  // Never print the tier alone: a tier word with no provenance reads as policy in a diff, and a
+  // regeneration can revert a measured choice without anyone noticing.
   const origin =
     tier.source === "config"
       ? `set in ${CONFIG_FILE}`
@@ -327,8 +327,7 @@ export async function run(opts: GatesOptions): Promise<void> {
 
   section("Done")
   for (const w of result.written) print(`  ${glyph.ok} ${theme.dim("wrote")} ${theme.info(w)}`)
-  // Say which of the two reasons applied, and name the way out. The refusal used to be a dead
-  // end: one message for every case, and nothing pointing at the next move.
+  // Say which of the two reasons applied, and name the way out.
   for (const sk of result.skipped) {
     const drift = gateFiles.find((f) => f.path === sk)?.drift
     const reason = drift === "edited" ? "kept (edited since generated)" : "kept (no etymd stamp)"
@@ -352,27 +351,25 @@ export async function run(opts: GatesOptions): Promise<void> {
     )}`,
   )
 
-  // The publish door needs one line in package.json to fire. The plan already showed it and the
+  // The publish gate needs one line in package.json to fire. The plan already showed it and the
   // install was consented to, so this does not ask again — but the merge itself stays
   // conservative: it refuses to overwrite a publish hook someone else wrote.
   const wrotePublishGate = result.written.includes(PUBLISH_GATE_SCRIPT)
   if (wrotePublishGate) {
     const pkgPath = path.join(opts.cwd, "package.json")
     const PUBLISH_GATE_KEY = publishGateKey(facts.publishRoute)
-    {
-      const merged = await ensurePackageScript(pkgPath, PUBLISH_GATE_KEY, PUBLISH_GATE_VALUE)
-      if (merged.outcome === "added")
-        print(`  ${glyph.ok} ${theme.dim("wired")} ${theme.code(PUBLISH_GATE_KEY)}`)
-      else if (merged.outcome === "conflict")
-        print(
-          `  ${glyph.partial} ${theme.warn(`${PUBLISH_GATE_KEY} already runs \`${merged.existing}\``)} ${theme.dim("— left as is; chain the screen into it by hand if you want both.")}`,
-        )
-      else if (merged.outcome === "unchanged")
-        print(`  ${glyph.bullet} ${theme.dim(`${PUBLISH_GATE_KEY} already wired`)}`)
-      else
-        print(
-          `  ${glyph.partial} ${theme.dim(`package.json ${merged.outcome}${merged.detail ? `: ${merged.detail}` : ""} — wire ${PUBLISH_GATE_KEY} by hand`)}`,
-        )
-    }
+    const merged = await ensurePackageScript(pkgPath, PUBLISH_GATE_KEY, PUBLISH_GATE_VALUE)
+    if (merged.outcome === "added")
+      print(`  ${glyph.ok} ${theme.dim("wired")} ${theme.code(PUBLISH_GATE_KEY)}`)
+    else if (merged.outcome === "conflict")
+      print(
+        `  ${glyph.partial} ${theme.warn(`${PUBLISH_GATE_KEY} already runs \`${merged.existing}\``)} ${theme.dim("— left as is; chain the screen into it by hand if you want both.")}`,
+      )
+    else if (merged.outcome === "unchanged")
+      print(`  ${glyph.bullet} ${theme.dim(`${PUBLISH_GATE_KEY} already wired`)}`)
+    else
+      print(
+        `  ${glyph.partial} ${theme.dim(`package.json ${merged.outcome}${merged.detail ? `: ${merged.detail}` : ""} — wire ${PUBLISH_GATE_KEY} by hand`)}`,
+      )
   }
 }
