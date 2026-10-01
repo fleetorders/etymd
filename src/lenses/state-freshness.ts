@@ -23,7 +23,9 @@ export const DECISIONS_FORMAT_MARKER = "<!-- decisions-format: 1 -->"
 /** The version this build understands; a higher one is honoured as v1 and disclosed, never guessed at. */
 const KNOWN_FORMAT_VERSION = 1
 
-const MARKER_RE = /<!--\s*decisions-format:\s*(\d+)([^>]*?)-->/
+// On a line of its own: a file that merely mentions the marker in prose or inline code (as a
+// decisions file documenting the convention does) has not opted in.
+const MARKER_RE = /^[ \t]*<!--\s*decisions-format:\s*(\d+)([^>]*?)-->[ \t]*$/m
 
 /** Declarable field names. Narrow on purpose: no regex metacharacters can reach the matcher. */
 const FIELD_NAME_RE = /^[A-Za-z0-9 _-]+$/

@@ -454,6 +454,12 @@ const ARTIFACT_SPECS: Omit<DetectedArtifact, "exists">[] = [
     path: "DECISIONS.md",
     kind: "decisions",
   },
+  {
+    id: "decisions-doc",
+    label: "docs/decisions.md (decision record)",
+    path: "docs/decisions.md",
+    kind: "decisions",
+  },
   { id: "adr-dir", label: "ADR directory (docs/adr)", path: "docs/adr", kind: "decisions" },
   {
     id: "decisions-dir",

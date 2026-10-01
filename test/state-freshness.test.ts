@@ -251,6 +251,24 @@ describe("state-freshness — decisions format (marker-gated, forward-only)", ()
     expect(report.findings).toEqual([])
   })
 
+  it("a marker mentioned in inline code is not an opt-in", async () => {
+    await write(
+      "DECISIONS.md",
+      [
+        "# Decisions",
+        "",
+        "## D-001 — 2026-01-05 — the format",
+        "",
+        "A file opts in with `<!-- decisions-format: 1 -->` on a line of its own.",
+        "",
+        "## D-002 — 2026-01-06 — second, with no Scope line",
+        "",
+      ].join("\n"),
+    )
+    const report = await stateFreshnessLens.run(await ctx())
+    expect(report.findings).toEqual([])
+  })
+
   it("checks fields the file declared, on every entry, and passes when they are present", async () => {
     // Invented field names: etymd ships no vocabulary here, it checks what the file asked for.
     const declaring = "<!-- decisions-format: 1 fields=Owner,Rollback -->"
@@ -435,6 +453,14 @@ describe("state-freshness — ADR conventions are recognized as decisions artifa
     const report = await stateFreshnessLens.run(await ctx())
     expect(report.findings).toEqual([])
     expect(report.disclosures.some((d) => d.includes("docs/adr"))).toBe(true)
+  })
+
+  it("recognizes a docs/decisions.md file and reads its entries", async () => {
+    await write("docs/decisions.md", "# Decisions\n\n## D-001 — the first\n\nText.\n")
+    const facts = await scanProject(dir)
+    const doc = facts.artifacts.find((a) => a.id === "decisions-doc")
+    expect(doc?.exists).toBe(true)
+    expect(doc?.kind).toBe("decisions")
   })
 
   it("recognizes NNNN-*.md files directly under docs/", async () => {
