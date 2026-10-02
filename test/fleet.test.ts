@@ -245,6 +245,47 @@ describe("fleet loader — the registry shape", () => {
   })
 })
 
+describe("fleet loader — the legacy two-file shape", () => {
+  // sources.json + sources.local.json predates the registry pair, and the loader still resolves
+  // it so a fleet that never migrated keeps sweeping. Nothing else in the suite exercises this
+  // resolver — a regression here would surface as a silently empty fleet, far from its cause.
+  it("parses sources.json with local dirs winning, then declared paths, then same-named siblings", async () => {
+    await write(
+      "sources.json",
+      JSON.stringify(
+        {
+          sources: [
+            { name: "alpha-notes", shape: "docs-only" },
+            { name: "beta-tool", shape: "cli", path: "checkouts/beta" },
+            { name: "gamma-web", shape: "webapp", private: true },
+          ],
+        },
+        null,
+        2,
+      ) + "\n",
+    )
+    await write(
+      "sources.local.json",
+      JSON.stringify({ dirs: { "gamma-web": "machine-dirs/gamma" } }, null, 2) + "\n",
+    )
+    const manifest = await loadFleetManifest(path.join(dir, "sources.json"))
+    expect(manifest.shape).toBe("sources")
+    expect(manifest.problems).toEqual([])
+    expect(manifest.localPresent).toBe(true)
+    const byName = new Map(manifest.entries.map((e) => [e.name, e]))
+    // Resolution order, pinned: the machine's dir mapping over both others, the declared
+    // path over the fallback, and the same-named sibling of the manifest's parent last.
+    expect(byName.get("gamma-web")?.resolvedRoot).toBe(
+      path.resolve(dir, "..", "machine-dirs", "gamma"),
+    )
+    expect(byName.get("beta-tool")?.resolvedRoot).toBe(path.resolve(dir, "checkouts", "beta"))
+    expect(byName.get("alpha-notes")?.resolvedRoot).toBe(path.resolve(dir, "..", "alpha-notes"))
+    expect(byName.get("gamma-web")?.private).toBe(true)
+    expect(byName.get("alpha-notes")?.kind).toBe("docs-only")
+    expect(byName.get("alpha-notes")?.profile).toBe("personal")
+  })
+})
+
 describe("fleet sweep — pinned invariants", () => {
   it("PINNED: a sweep never creates .etymd anywhere, with and without --persist-ledgers", async () => {
     await initRepo("alpha", { stateAt: "2026-01-01T10:00:00Z" })
