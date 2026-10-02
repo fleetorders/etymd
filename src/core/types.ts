@@ -1,5 +1,5 @@
-// The shared vocabulary of a "reckoning": the deterministic facts a scan produces, the maturity
-// score derived from them, and the leash policy that parameterises what etymd generates.
+// The shared vocabulary of a "reckoning": the deterministic facts a scan produces, and the
+// options that parameterise what etymd generates.
 
 export type PackageManager = "pnpm" | "yarn" | "npm" | "bun" | "unknown"
 

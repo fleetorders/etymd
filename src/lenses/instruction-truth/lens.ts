@@ -25,7 +25,7 @@ function finding(partial: Omit<Finding, "lens">): Finding {
   return { lens: LENS_ID, ...partial }
 }
 
-// ---- baseline drift (carried over from the former contract-drift lens) ----
+// ---- baseline drift ----
 
 function compareCommands(baseline: ProjectFacts, fresh: ProjectFacts): Finding[] {
   const out: Finding[] = []

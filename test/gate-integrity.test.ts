@@ -45,7 +45,7 @@ describe("expandScriptRefs / matchTools", () => {
     expect(() => expandScriptRefs("yarn a", cyclic)).not.toThrow()
   })
 
-  // Every shape below was found live in real repos. The previous
+  // Every shape below occurs in real repos. The previous
   // positional regex handled only `npm run x`, `yarn x` and `pnpm x`; the rest expanded to
   // nothing, so a hook running `pnpm run typecheck` reported as having no typecheck at all.
   const SCRIPTS = {
@@ -106,7 +106,7 @@ describe("expandScriptRefs / matchTools", () => {
   })
 })
 
-// The cra-legacy shape: a sonar job with NO local script (it lives
+// The legacy Create React App shape: a sonar job with NO local script (it lives
 // in an org template) but SONAR_* variables + allow_failure; husky-v3 + lint-staged
 // prettier-only locally; coverage collected but no threshold; commitlint installed but unwired;
 // an org include the tool cannot read; !reference tags that must not break parsing.
@@ -148,7 +148,7 @@ async function writeLegacySpaFixture() {
   await write(
     "package.json",
     JSON.stringify({
-      name: "cra-legacy-like",
+      name: "legacy-cra-like",
       scripts: {
         test: "yarn test:lint && yarn test:format && yarn test:types && yarn test:unit",
         "test:lint": "eslint . --ext .ts,.tsx",
@@ -167,7 +167,7 @@ async function writeLegacySpaFixture() {
   await write(".gitlab-ci.yml", LEGACY_SPA_CI)
 }
 
-describe("buildGateInventory (cra-legacy-shaped fixture)", () => {
+describe("buildGateInventory (legacy CRA-shaped fixture)", () => {
   it("parses CI with !reference tags, records inherited includes and advisory jobs", async () => {
     await writeLegacySpaFixture()
     const facts = await scanProject(dir)
@@ -210,7 +210,7 @@ describe("buildGateInventory (cra-legacy-shaped fixture)", () => {
     expect(ids).toContain("gate-integrity/ci-only-lint")
     expect(ids).toContain("gate-integrity/ci-only-test")
 
-    // The motivating legacy-repo case, phrased humbly about the server-side threshold.
+    // The older-repo case, phrased humbly about the server-side threshold.
     const coverage = findings.find((f) => f.id === "gate-integrity/coverage-no-local-threshold")
     expect(coverage).toBeDefined()
     expect(coverage?.claim).toContain("server-side")
@@ -410,7 +410,7 @@ npm test || exit 1
 describe("hook wiring is a developer-machine fact, not a CI one", () => {
   // A CI checkout never has git config, so core.hooksPath is ALWAYS unset there. Accusing it
   // would fail the very `etymd audit --fail-on risk` gate the README tells users to add — in
-  // every repo with tracked hooks. Caught by etymd's own first CI run.
+  // every repo with tracked hooks.
   const inv = {
     local: { source: "githooks", wired: false, preCommit: [], prePush: [], commitMsg: [] },
     ci: { system: "none", jobs: [], inheritedIncludes: [], parseErrors: [] },

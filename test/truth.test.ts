@@ -71,7 +71,7 @@ describe("claim extraction", () => {
         "Routes live at `/admin/batches` and `~/home` and `@scope/pkg`.",
         "Globs like `src/**/*.ts` and urls `https://x.dev/a/b` and `$VAR/x` are skipped.",
         "Route params `p/$slug` are skipped.",
-        // Dotted prose is not a file claim: dotted hook notation from corpus prose.
+        // Dotted prose is not a file claim: dotted hook notation from real prose.
         "Hooks fire on `create/update.after` once an address is proven.",
         "Unrecognized extensions like `pkg/mod.xyz9` stay prose.",
       ].join("\n"),
@@ -79,7 +79,7 @@ describe("claim extraction", () => {
     expect(paths.sort()).toEqual(["docs/design", "src/core/detect.ts"])
   })
 
-  it("treats create-this paths as prospective, not claims (the oss-fork skill class)", () => {
+  it("treats create-this paths as prospective, not claims (the forked-repo skill class)", () => {
     const { paths, prospective } = extractPathClaims(
       [
         "Create `migrations/quarantine/` before starting the move.",
@@ -119,9 +119,10 @@ describe("claim extraction", () => {
   })
 
   it("keeps every backticked span as a claim for instruction files — a prose introducer is not a namespace", () => {
-    // Corpus find: `facts: `docs/seo-strategy.md`` in a committed skill file — the label reads
+    // Seen in a committed skill file: `facts: `docs/seo-strategy.md`` — the label reads
     // as prose, and only the task surface (opts.namespaces) reads prefixes at all.
-    const text = "Two facts: `docs/seo-strategy.md` locks the cadence; see pc: `docs/other.md` too."
+    const text =
+      "Two facts: `docs/seo-strategy.md` locks the cadence; see app: `docs/other.md` too."
     const plain = extractPathClaims(text)
     expect(plain.paths).toEqual(["docs/seo-strategy.md", "docs/other.md"])
     expect(plain.namespaced).toEqual([])
@@ -221,7 +222,7 @@ describe("instruction-truth lens (the lying-AGENTS.md fixture)", () => {
   })
 
   it("a tilde-home doc mention is skipped and disclosed, never a dangling ref", async () => {
-    // The observed defect: prose pointing at the reader's machine accused the repo of a missing
+    // The defect: prose pointing at the reader's machine accused the repo of a missing
     // file. The home file is real; the repo never had one — nothing to verify here.
     await write("package.json", JSON.stringify({ name: "homedoc", private: true }))
     await write(
@@ -248,7 +249,7 @@ describe("instruction-truth lens (the lying-AGENTS.md fixture)", () => {
     )
     const report = await runTruth()
     // Both claims resolve in the workspace — flagging them would be the false-positive class
-    // the workspace-fullstack live run exposed.
+    // a live run on a pnpm workspace exposed.
     expect(report.findings).toEqual([])
   })
 
@@ -284,7 +285,7 @@ describe("instruction-truth lens (the lying-AGENTS.md fixture)", () => {
     await git(dir, ["init"])
     const report = await runTruth()
     const ids = report.findings.map((f) => f.id)
-    // The corpus case: a skill honestly says a gitignored file is "present on this machine" —
+    // A real case: a skill honestly says a gitignored file is "present on this machine" —
     // its absence in a fresh checkout is not a lie.
     expect(ids).not.toContain("instruction-truth/stale-path:AGENTS.md:apps/api/.env")
     expect(ids).toContain("instruction-truth/stale-path:AGENTS.md:apps/api/gone.ts")

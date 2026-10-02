@@ -1,18 +1,18 @@
 {
-  "packVersion": "16",
-  "etymdVersion": "0.19.1",
-  "approvedAt": "2026-09-26T07:33:07.855Z",
+  "packVersion": "18",
+  "etymdVersion": "0.19.5",
+  "approvedAt": "2026-10-01T06:30:50.849Z",
   "profile": "solo",
   "facts": {
-    "etymdVersion": "0.19.1",
-    "packVersion": "16",
-    "generatedAt": "2026-09-26T07:33:07.854Z",
+    "etymdVersion": "0.19.5",
+    "packVersion": "18",
+    "generatedAt": "2026-10-01T06:30:50.847Z",
     "root": ".",
     "name": "etymd",
     "git": {
       "isRepo": true,
-      "branch": "fix/review-055",
-      "head": "ec7056f",
+      "branch": "chore/repo-shape",
+      "head": "54ccfb5",
       "hooksPath": ".githooks",
       "husky": false,
       "recentAuthors": 1
@@ -51,7 +51,6 @@
     "ci": {
       "system": "github",
       "files": [
-        ".github/workflows/checks.yml",
         ".github/workflows/ci.yml"
       ]
     },
@@ -99,7 +98,7 @@
         "label": "ADR directory (docs/decisions)",
         "path": "docs/decisions",
         "kind": "decisions",
-        "exists": true
+        "exists": false
       },
       {
         "id": "claude",
@@ -204,15 +203,8 @@
       "scripts": 5
     },
     "freshness": {
-      "repoLastCommit": "2026-09-25T07:41:44+03:00",
-      "artifacts": [
-        {
-          "artifactId": "decisions-dir",
-          "path": "docs/decisions",
-          "lastCommit": "2026-09-04T16:52:59+03:00",
-          "commitsSince": true
-        }
-      ],
+      "repoLastCommit": "2026-09-30T17:53:37+03:00",
+      "artifacts": [],
       "unverifiable": []
     },
     "tree": {
@@ -223,22 +215,18 @@
         },
         {
           "name": "test",
-          "files": 18
-        },
-        {
-          "name": "docs",
-          "files": 13
+          "files": 17
         },
         {
           "name": ".githooks",
           "files": 7
         },
         {
-          "name": ".changeset",
-          "files": 2
+          "name": "docs",
+          "files": 6
         },
         {
-          "name": ".github",
+          "name": ".changeset",
           "files": 2
         },
         {
@@ -246,7 +234,7 @@
           "files": 2
         },
         {
-          "name": ".vscode",
+          "name": ".github",
           "files": 1
         },
         {

@@ -7,7 +7,7 @@ import { readJson, readText } from "../core/util.js"
 import type { PackageJson } from "../core/detect.js"
 
 // The pin-integrity lens: lockfile arithmetic over the dependency pins a manifest declares —
-// decision 013, item 2. An `overrides` / `resolutions` entry that no longer rewrites anything the
+// D-013. An `overrides` / `resolutions` entry that no longer rewrites anything the
 // tree requests, and a `patchedDependencies` target that no longer exists at the version the patch
 // names, are dead pins: the manifest claims a constraint on a dependency that is no longer there,
 // and every reader (and every agent asked "why is this pinned?") is misled. STRICTLY offline: the

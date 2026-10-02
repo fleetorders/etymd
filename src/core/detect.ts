@@ -207,8 +207,7 @@ type Pattern = (key: string, value: string) => boolean
 const isMeta = (value: string) => /npm-run-all|run-s\b|run-p\b|concurrently|&&/.test(value)
 
 // Per-role priority ladders, most specific first. Checked against ALL scripts per rung, so a
-// bare meta `test` declared first can no longer shadow the real `test:unit(:local)` — the
-// corpus failure that motivated this shape.
+// bare meta `test` declared first cannot shadow the narrower `test:unit(:local)`.
 const ROLE_LADDERS: { role: CommandRole; exclude?: RegExp; ladder: Pattern[] }[] = [
   {
     role: "formatCheck",
@@ -453,6 +452,12 @@ const ARTIFACT_SPECS: Omit<DetectedArtifact, "exists">[] = [
     id: "decisions",
     label: "DECISIONS.md (decision record)",
     path: "DECISIONS.md",
+    kind: "decisions",
+  },
+  {
+    id: "decisions-doc",
+    label: "docs/decisions.md (decision record)",
+    path: "docs/decisions.md",
     kind: "decisions",
   },
   { id: "adr-dir", label: "ADR directory (docs/adr)", path: "docs/adr", kind: "decisions" },

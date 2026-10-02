@@ -107,7 +107,7 @@ export interface ClaimCounters {
   qualifiedRefsSkipped: number
   /** Decision references with no `## D-NNN` ledger to resolve against. */
   unresolvableRefs: number
-  /** Path claims whose every mention sits behind a namespace prefix (`pc:`) — another repo's. */
+  /** Path claims whose every mention sits behind a namespace prefix (`app:`) — another repo's. */
   namespacedSkipped: number
   /** Missing paths starting at no directory of this repo — quoted from elsewhere (task only). */
   outsideRepoSkipped: number
@@ -166,13 +166,13 @@ export interface TextClaimsOptions {
   /**
    * Directories a missing path may start from and still be plausibly repo-relative — the root,
    * workspace packages, and their src/ scripts/. Supplied by the task surface (`etymd premise`)
-   * only: a task quoting a path from ANOTHER repository (a clone in a scratchpad) starts where
+   * only: a task quoting a path from ANOTHER repository (a clone elsewhere on the machine) starts where
    * no directory of this repo does, and its absence here proves nothing. Instruction files keep
    * the stricter reading — their references are written against this repo.
    */
   rootedFirstSegments?: ReadonlySet<string>
   /**
-   * Read namespace-prefixed path mentions (`pc: `src/x.ts``) as another repo's tree — the task
+   * Read namespace-prefixed path mentions (`app: `src/x.ts``) as another repo's tree — the task
    * surface only; instruction files keep every backticked span as a claim of this repo.
    */
   treatNamespacedPrefixes?: boolean

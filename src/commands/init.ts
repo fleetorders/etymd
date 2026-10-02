@@ -123,8 +123,7 @@ export async function run(opts: InitOptions): Promise<void> {
   // The approved reckoning becomes the committed drift baseline; the cache stays out of git.
   // Re-scan first: `facts` predates the scaffold, so baselining it would approve a repo that no
   // longer exists — the contract and hooks init just wrote would be absent from the baseline, and
-  // deleting them later would never register as drift. (Caught by the first live `approve` pass,
-  // which reported them as additions in every scaffolded repo.)
+  // deleting them later would never register as drift.
   const approved = result.written.length ? await scanProject(opts.cwd) : facts
   await writeBaseline(opts.cwd, {
     packVersion: PACK_VERSION,

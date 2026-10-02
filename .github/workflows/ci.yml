@@ -1,5 +1,8 @@
-# Activates when the repo gains a GitHub remote. Mirrors the local pre-push gate + build.
+# The checks the local pre-push hook runs, plus the build, the self-audit and a pack dry-run.
 name: ci
+
+permissions:
+  contents: read
 
 on:
   push:
@@ -20,14 +23,11 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      # etymd guards its own instructions with etymd. The README tells users to gate CI on this
-      # exact command; a truth guard that does not run on itself is the thing it exists to catch.
+      # etymd checks its own instruction files with the command the README tells users to run in CI.
       - name: etymd audit (self)
         run: node dist/cli.js audit --no-ledger --fail-on risk
-      # The publish artifact, proven on every push rather than first attempted on release day.
-      # The class this guards is real: packagers ignore .gitignore, so a stray local file can
-      # ship in a release while every git-scoped check stays green. Asserting the exact top-level
-      # manifest of the tarball catches any addition — file or directory — before it is permanent.
+      # npm pack ignores .gitignore, so a stray local file can ship while every git-scoped check
+      # stays green. The tarball's top level must match this exact list.
       - name: pack dry-run (what would ship)
         run: |
           npm pack --pack-destination /tmp >/dev/null

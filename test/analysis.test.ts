@@ -148,7 +148,7 @@ describe("planWorkflow", () => {
     expect(published.map((p) => p.path)).toContain("scripts/artifact-check.sh")
 
     // An explicit option overrides the derivation both ways — a repo can publish by a route
-    // npm cannot see, or decline the door entirely.
+    // npm cannot see, or decline the hook entirely.
     const forcedOff = await planWorkflow("/nonexistent-root", facts({ publishable: true }), {
       agents: false,
       gates: true,
@@ -179,7 +179,7 @@ describe("planWorkflow", () => {
   })
 
   it("PINNED: regeneration keeps a test step the existing hook already ran", async () => {
-    // Found by migrating a real repo: the derived set is format/typecheck/lint, so a repo whose
+    // The derived set is format/typecheck/lint, so a repo whose
     // hook ran tests lost that check on regeneration — a silent downgrade, and the reason a
     // generator that drops working checks cannot be trusted to regenerate anything. `test` is
     // still not in the DEFAULT set (a slow suite in a push gate teaches people --no-verify);
@@ -217,7 +217,7 @@ describe("planWorkflow", () => {
   it("PINNED: every generated hook calls a repo-owned companion it never generates", () => {
     // The seam that makes regeneration safe. Without it, a repo with its own guards had to
     // choose between accepting the pack (losing them) and hand-maintaining the file (losing
-    // regeneration) — and a trial migration of real repos destroyed working checks proving it.
+    // regeneration) — and regenerating over them destroys working checks.
     const hooks: [string, string][] = [
       ["pre-commit", generatePreCommitHook()],
       ["commit-msg", generateCommitMsgHook()],
@@ -351,7 +351,7 @@ describe("commit-message format gate", () => {
     for (const config of [undefined, gates, { ...gates, commitFormat: false }]) {
       const hook = generateCommitMsgHook(config)
       expect(hook).not.toContain("expected '<type>")
-      // What is absent is the format step — never the screen, which is the leak door.
+      // What is absent is the format step — never the screen, which is the leak gate.
       expect(hook).toContain('"$GATE" screen --message "$1"')
     }
     // An explicit true, and only that, installs it.
@@ -620,7 +620,7 @@ describe("preservation is a property of generation, not of the command", () => {
 describe("shell correctness gate — the surface package.json cannot see", () => {
   it("writes a shellcheck step for a repo with a shell surface", () => {
     const hook = generatePrePushHook(facts({ shell: { scripts: 12 } }))
-    expect(hook).toContain("shellcheck -x --source-path=SCRIPTDIR -S warning")
+    expect(hook).toContain("shellcheck -S warning")
     // Discovery happens IN the hook, at push time, over the commits being pushed. A baked-in
     // file list is correct the day it is generated and silently wrong the first time someone
     // adds a script; a working-tree read certifies bytes that never ship.
@@ -659,8 +659,8 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
     // flag is shared with the content screen, which must never be bypassed.
     const hook = generatePrePushHook(facts({ shell: { scripts: 3 } }))
     // Only the warning pass may end the push. Asserting style is never MENTIONED pins the wrong
-    // property — and did: it is what let 0.4.0 ship with the advisory pass missing entirely,
-    // while the docs promised it.
+    // property: it once let a release ship with the advisory pass missing entirely while the
+    // docs promised it.
     // The warning pass is the only one wired to a failure branch...
     expect(hook).toMatch(/-S warning[^\n]* \|\| \{[^}]*exit 1/)
     // ...while the style pass is captured into a variable and explicitly tolerated with
@@ -669,7 +669,7 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
   })
 
   it("stops claiming 'no correctness commands detected' when shell IS the surface", () => {
-    // The contradiction that motivated this: a repo of shell scripts was told it had nothing to
+    // The contradiction: a repo of shell scripts was told it had nothing to
     // check, one line above a step that checks it.
     const hook = generatePrePushHook(facts({ commands: { raw: {} }, shell: { scripts: 9 } }))
     expect(hook).not.toContain("no correctness commands detected")
@@ -692,7 +692,7 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
 
 describe("shell gate — sub-warning findings are shown, never enforced", () => {
   it("emits an advisory pass, and it cannot change the exit code", () => {
-    // The published 0.4.0 documented this and did not do it: style findings were discarded
+    // An earlier release documented this and did not do it: style findings were discarded
     // entirely. A doc claiming behaviour the code lacks is the exact defect etymd's own
     // instruction-truth lens exists to catch.
     const hook = generatePrePushHook(facts({ shell: { scripts: 5 } }))

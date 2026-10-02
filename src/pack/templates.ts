@@ -131,7 +131,7 @@ export function generateAgentsMd(facts: ProjectFacts): string {
   const run = runPrefix(facts.packageManager)
   const done = doneDefinition(facts)
   // "none detected" stays true with or without a manifest; "see package.json" lied in docs-only
-  // repos where that file does not exist (the docs-only onboarding case, 2026-07-26).
+  // repos where that file does not exist.
   const frameworks = facts.frameworks.length ? facts.frameworks.join(", ") : "none detected"
   const workspace =
     facts.workspace.kind === "none" ? "single package" : `${facts.workspace.kind} workspace`
@@ -249,17 +249,15 @@ export function isSelfBuildRepo(facts: ProjectFacts): boolean {
  * In this package's OWN repo — and only there, decided at generation time from the manifest
  * name — one step is inserted between them, for the dogfood case: a repo developing the
  * screener has to gate on its own unreleased build, or its hooks enforce the last PUBLISHED
- * behaviour against a tree that has already moved past it (observed: a renamed allow file the
+ * behaviour against a tree that has already moved past it (for example, a renamed allow file the
  * published binary could not read, silently voiding every exemption).
  *
- * That step was previously emitted into EVERY repo as a bare `[ -x ./dist/cli.js ]` existence
- * check — and `dist/cli.js` is simply where a great many CLI projects build. Any such repo had
- * its hook resolve the screener to ITS OWN binary, which does not know `screen`: the commit
- * door then failed closed on every commit, while the push door — which ignores the screen's
- * exit status by design — skipped the whole-tree pass in silence, the worse of the two. The
- * trap armed itself on a plain dependency install, since that runs the repo's build. Deciding
- * at generation time is what keeps the arm out of every repo it cannot be true for; a repo that
- * needs a different runner for one invocation still has CONTENT_GATE.
+ * A bare `[ -x ./dist/cli.js ]` check must never be emitted into other repos: `dist/cli.js` is
+ * where many CLI projects build, and such a repo's hook would resolve the screener to its own
+ * binary, which does not know `screen`. The commit hook then fails closed on every commit while
+ * the push hook, which ignores the screen's exit status by design, skips its whole-tree pass in
+ * silence. Deciding at generation time keeps that step out of every repo it cannot be true for;
+ * a repo that needs a different runner for one invocation still has CONTENT_GATE.
  */
 function contentGateResolution(selfBuild: boolean): string {
   if (!selfBuild) return `GATE="\${CONTENT_GATE:-$(command -v etymd || true)}"`
@@ -300,9 +298,9 @@ function contentScreenCall(opts: {
  * The seam between what the pack owns and what the repo owns.
  *
  * A generated file that cannot hold anything local forces a false choice: accept the pack and
- * lose your own checks, or hand-maintain the file and lose regeneration. Both were observed in
- * real repos — one carries a bespoke archive guard, another documents why its audit tier differs
- * from every sibling — and regenerating either would have destroyed working, reasoned work.
+ * lose your own checks, or hand-maintain the file and lose regeneration. Real repos carry
+ * both: a bespoke guard here, a documented audit tier there; regenerating either would destroy
+ * working, reasoned work.
  *
  * So the pack owns the whole generated file and simply CALLS a companion it never reads or
  * writes. Two files, two owners, one convention. Deliberately not a marked region inside the
@@ -386,7 +384,7 @@ export const COMMIT_TYPES = [
 export const SUBJECT_ADVISORY_LENGTH = 72
 
 /**
- * Conventional Commits, checked at the only door that sees a message. Emitted ONLY where
+ * Conventional Commits, checked at the only hook that sees a message. Emitted ONLY where
  * `gates.commitFormat` is explicitly true — see the caller.
  *
  * This is a FORMAT check and deliberately not a taste check: it reads the first non-comment
@@ -394,10 +392,10 @@ export const SUBJECT_ADVISORY_LENGTH = 72
  * because the gate that argues about wording is the gate everyone learns to bypass — and the
  * bypass flag is shared with the screen above, which must never be bypassed.
  *
- * It earns its keep where a repo has chosen the convention, because a convention with no door
+ * It earns its keep where a repo has chosen the convention, because a convention with no gate
  * erodes without anyone deciding to abandon it: histories drift one hurried commit at a time,
  * and nothing objects until the log is already mixed. That is an argument for offering the
- * door, never for installing it in a repo that did not ask.
+ * check, never for installing it in a repo that did not ask.
  *
  * Merge, revert, fixup, squash and amend subjects are git's own wording rather than the
  * author's — gating them would ask people to rewrite text they did not write.
@@ -428,8 +426,8 @@ esac`
 
 /**
  * The message is published history too, and the staged screen cannot see it: that gate reads
- * `git diff --cached`, which is file bytes only. A real audit found several leaks living in
- * commit messages rather than files, which is why this is its own door.
+ * `git diff --cached`, which is file bytes only. Leaks live in commit
+ * messages as readily as in files, which is why this is its own hook.
  */
 export function generateCommitMsgHook(gates?: GateConfig): string {
   // Unset means OFF, and only an explicit `true` turns it on. A convention is an opinion, and
@@ -473,49 +471,151 @@ exit 0
  */
 export function generateShellDiscoveryScript(): string {
   return stampGenerated(`#!/usr/bin/env sh
-# etymd: shell script discovery for the pre-push shellcheck step. Arguments: the scratch
-# directory the hook created, then the tracked paths to classify (NUL-delimited on the hook's
-# side, positional here). Verdicts land in the scratch: scripts (NUL-delimited matches) and one
-# dot per decision into count / zsh-count / other-count / skip-count, tallied by the hook
-# after the pipeline.
+# etymd: shell script discovery for the pre-push shellcheck step. Four calls per commit:
+#   discover-shell-scripts.sh --config <scratch> <tree> <ls-tree record>...
+#   discover-shell-scripts.sh --skips <scratch> <ls-tree record>...
+#   discover-shell-scripts.sh --commit <scratch> <tree> <commit> <commit>:<path>...
+#   discover-shell-scripts.sh --context <scratch> <tree> <ls-tree record>...
+# --config writes the commit's .shellcheckrc files into the tree as raw blobs, so the checker
+# finds its config where it looks, and flags one that turns external-sources on. --skips counts
+# the changed paths that are symlinks or submodule entries. --commit reads the candidates
+# \`git grep\` found with a line starting \`#!\`, and classifies each by its FIRST line. Verdicts
+# land in the scratch: scripts (NUL-delimited matches) and one dot per decision into count /
+# zsh-count / other-count / skip-count, tallied by the hook after the pipeline. Each script found is written
+# into <tree> at its path, so the checker reads it there. With external-sources on, --context
+# then stages, as raw blobs, the files the staged scripts source.
 #
-# The hook runs it from inside a commit materialised from git's object store, so paths resolve
-# against that tree, never the working tree. A symlink that resolves is read THROUGH: the bytes
-# classified are its target's as of THIS commit, under the link's own name — a push that
-# repoints a link at an unchanged script still classifies the bytes the link now ships, because
-# the tree the link resolves in is the commit being pushed, whether or not the target's path is
-# in the changed set. A path with nothing readable behind it — a submodule entry, a dangling
-# symlink — cannot lie about its contents, so it is a disclosed skip, never a block. A regular
-# file that EXISTS but cannot be read is the other branch — coverage would silently shrink, so
-# it fails, naming the path.
+# Every byte comes from git's object store as the raw blob — \`git cat-file blob\`, which
+# applies no eol, text or filter attribute. A checkout converts: under \`eol=crlf\` the shebang
+# line ends in a carriage return, the match below fails, and the script leaves the checked set
+# without a word. Only the entries handed in are read, never the whole commit.
+#
+# A symlink or submodule entry has no script bytes of its own — a link's target is a tracked
+# path checked under its own name — so it is a disclosed skip, never a block. A candidate that
+# cannot be read fails, naming the path: coverage would otherwise silently shrink.
 #
 # The match/error protocol: grep reports "no match" as 1 and a failure as 2 or more, and only
 # the first is a verdict. Letting a failure fall through would pass a broken matcher as "not a
 # shell script" — the exact silent coverage-shrink the fail-closed rules exist to prevent. The
 # status is captured on the grep's own line (\`|| st=$?\`), so no command added later can come
 # between the grep and the check and silently replace the status being read.
-work=$1
-shift
-for file do
-  if [ ! -f "./$file" ]; then
-    printf . >> "$work/skip-count" || exit 1
-    continue
-  fi
-  # 4096 bytes bound the read — a binary with no newline would otherwise be copied whole
-  # into the scratch on every push. The second head restores line-1-only semantics, so a
-  # shebang embedded on a LATER line of a document cannot match the patterns below.
-  head -c 4096 "./$file" > "$work/head-bytes" || {
+tab=$(printf '\\t')
+case \${1-} in
+  (--skips)
+    # Records only: a symlink or submodule entry is counted, everything else is left to the
+    # candidate pass. Builtins only — this loop sees every changed path.
+    work=$2
+    shift 2
+    for record do
+      case \${record%% *} in
+        (100644|100755) ;;
+        (*) printf . >> "$work/skip-count" || exit 1 ;;
+      esac
+    done
+    exit 0 ;;
+  (--config)
+    # Every entry of the commit, of which only .shellcheckrc files are kept — builtins decide,
+    # so the whole listing costs no process per path. Each is written into the tree as its raw
+    # blob, where the checker looks for it, and one turning external-sources on is flagged.
+    work=$2
+    tree=$3
+    shift 3
+    for record do
+      meta=\${record%%"$tab"*}
+      file=\${record#*"$tab"}
+      case $file in
+        (.shellcheckrc|*/.shellcheckrc) ;;
+        (*) continue ;;
+      esac
+      case \${meta%% *} in
+        (100644|100755) ;;
+        (*) continue ;;
+      esac
+      case $file in
+        (*/*) dir=\${file%/*} ;;
+        (*) dir=. ;;
+      esac
+      mkdir -p -- "$tree/$dir" && git cat-file blob "\${meta##* }" > "$tree/$file" || {
+        echo "etymd: cannot read tracked file for shellcheck: $file" >&2
+        exit 1
+      }
+      st=0
+      grep -qE '^[[:space:]]*external-sources[[:space:]]*=[[:space:]]*true' "$tree/$file" || st=$?
+      case $st in
+        (0) : > "$work/external-sources" || exit 1 ;;
+        (1) ;;
+        (*) exit 1 ;;
+      esac
+    done
+    exit 0 ;;
+  (--context)
+    # Records again, for external sources: a regular entry whose file name is among the names
+    # the staged files source (scratch/source-names, one per line) is written into the tree as
+    # its raw blob, unless the tree has it already. Matching by name over-stages at worst, and
+    # a raw blob runs no checkout filter — an unrelated file's filter can never refuse the push.
+    work=$2
+    tree=$3
+    shift 3
+    nl='
+'
+    names="$nl$(cat "$work/source-names")$nl" || exit 1
+    for record do
+      meta=\${record%%"$tab"*}
+      file=\${record#*"$tab"}
+      case \${meta%% *} in
+        (100644|100755) ;;
+        (*) continue ;;
+      esac
+      case $names in
+        (*"$nl\${file##*/}$nl"*) ;;
+        (*) continue ;;
+      esac
+      [ -e "$tree/$file" ] && continue
+      case $file in
+        (*/*) dir=\${file%/*} ;;
+        (*) dir=. ;;
+      esac
+      mkdir -p -- "$tree/$dir" && git cat-file blob "\${meta##* }" > "$tree/$file" || {
+        echo "etymd: cannot read tracked file for shellcheck: $file" >&2
+        exit 1
+      }
+    done
+    exit 0 ;;
+  (--commit)
+    [ $# -ge 4 ] || exit 1 ;;
+  (*)
+    echo "etymd: discover-shell-scripts.sh expects --commit, --skips, --config or --context; the pre-push beside it is older than this classifier — run 'etymd gates'" >&2
+    exit 1 ;;
+esac
+work=$2
+tree=$3
+sha=$4
+shift 4
+for entry do
+  file=\${entry#"$sha":}
+  # 4096 bytes bound the classifying read — a binary with no newline would otherwise be copied
+  # whole into the next step. The second head restores line-1-only semantics, so a shebang
+  # embedded on a LATER line of a document cannot match the patterns below.
+  git cat-file blob "$sha:$file" > "$work/blob" && head -c 4096 "$work/blob" > "$work/head-bytes" || {
     echo "etymd: cannot read tracked file for shellcheck: $file" >&2
     exit 1
   }
   head -n 1 "$work/head-bytes" > "$work/first-line" || exit 1
-  st=0
   # Trailing whitespace after the interpreter name is still the interpreter: a tab before a
-  # flag (sh<TAB>-e) or a CRLF-committed first line (sh<CR>) must classify, or the script
-  # leaves every bucket — unchecked, unexcluded, undisclosed.
+  # flag (sh<TAB>-e) or a first line committed with a carriage return must classify, or the
+  # script leaves every bucket — unchecked, unexcluded, undisclosed.
+  st=0
   grep -qE "^#!.*[/ ](ba|da)?sh([[:space:]].*)?$" "$work/first-line" || st=$?
   case $st in
     (0)
+      case $file in
+        (*/*) dir=\${file%/*} ;;
+        (*) dir=. ;;
+      esac
+      mkdir -p -- "$tree/$dir" && mv -- "$work/blob" "$tree/$file" || {
+        echo "etymd: cannot stage tracked file for shellcheck: $file" >&2
+        exit 1
+      }
       printf "./%s\\0" "$file" >> "$work/scripts" || exit 1
       printf . >> "$work/count" || exit 1 ;;
     (1)
@@ -554,24 +654,11 @@ done
  * doing that discovery is itself a tracked, shebanged file (see `generateShellDiscoveryScript`),
  * so the scan finds it too once the gates are committed — the gate covers its own classifier.
  *
- * Sourced helpers are followed by the CHECKER, never by the hook: `source` lines are shell code
- * (three quoting styles, backslash escapes, \`source=\` directives), and a hook that re-parses
- * them to stage helpers by name was the most defect-dense code this pack ever shipped — five
- * fixes in five commits, every one a quoting or directive shape the hand parser mishandled, and
- * basename matching staged every same-named file in the commit. The checker resolves paths
- * itself, inside the materialised commit (\`-x\` + \`--source-path=SCRIPTDIR\`): a sibling helper
- * resolves through SCRIPTDIR, a root-relative one through the cwd, which is the tree. A path
- * that resolves to nothing is a NOTE — a script may rightly source files a checkout does not
- * carry — and a helper that fails to PARSE is SC1094, a warning: a broken helper ships with the
- * script that dots it. A followed helper's own findings surface when the helper is itself a
- * classified input (a shebanged one is); one without a shebang is followed for context, not
- * reported — the disclosure that keeps that boundary honest.
- *
- * The check reads the commits BEING PUSHED, each materialised from git's object store — never
+ * The check reads the commits BEING PUSHED, each script read as its raw blob from git's object store — never
  * the working tree (a fixed tree let an unfixed commit ship while the gate read the
- * tree, and a dirty tree shared by several sessions blocked an unrelated push), and never the
+ * tree, and uncommitted edits in the tree blocked an unrelated push), and never the
  * tip alone (a bad commit under its own fix shipped while the gate read only the tip). A
- * commit that cannot be materialised refuses the push: certifying bytes the gate did not read
+ * commit or blob that cannot be read refuses the push: certifying bytes the gate did not read
  * is the one thing this gate must never do.
  *
  * Discovery fails closed only where coverage could silently shrink: failed enumeration, and a
@@ -593,9 +680,9 @@ function shellcheckStep(): string {
   return `
 # Shell correctness. Scripts are discovered by shebang over TRACKED files at push time, so a
 # script added later is covered without regenerating this hook. The commits BEING PUSHED are
-# the bytes that ship, so each one is materialised from git's object store and checked there —
+# the bytes that ship, so each script is read as its raw blob from git's object store —
 # never the working tree (wrong in both directions: a fixed tree let an unfixed commit ship, and
-# a dirty tree shared by several sessions blocked an unrelated push) and never the tip alone (a
+# uncommitted edits in the tree blocked an unrelated push) and never the tip alone (a
 # bad commit under a clean tip shipped while the gate read only the tip's fix). The classifier
 # is discover-shell-scripts.sh beside this hook — tracked and shebanged like what it classifies,
 # so the scan it implements finds and checks it too. zsh is NOT in the checked set:
@@ -676,7 +763,7 @@ if command -v shellcheck >/dev/null 2>&1; then
     else
       echo "› shellcheck: no commit in the pushed refs (deletes only, or nothing on stdin) — nothing to check"
     fi
-    # Resolved once, before any cd: the classifier runs inside each materialised tree, and a
+    # Resolved once, before any cd: the checker runs inside each commit's scratch tree, and a
     # relative hook path would no longer point at it from there.
     discover="$(cd "$(dirname "$0")" && pwd)/discover-shell-scripts.sh" || exit 1
     # A checker upgrade can flag bytes nobody touched: a new shellcheck release adds checks
@@ -695,35 +782,18 @@ if command -v shellcheck >/dev/null 2>&1; then
     force_whole=0
     if [ -f "$checker_stamp" ]; then
       checker_old=$(cat "$checker_stamp" 2>/dev/null) || force_whole=1
-      if [ "$checker_old" != "$checker_ver" ]; then
+      if [ "\${checker_old:-unknown}" != "\${checker_ver:-unknown}" ]; then
         force_whole=1
         echo "› shellcheck: the checker changed (\${checker_old:-unknown} → \${checker_ver:-unknown}) — re-checking the whole shell surface this push"
       fi
     fi
     printf '%s\\n' "$checker_ver" > "$checker_stamp" 2>/dev/null || true
     for sha in $shas; do
-      # A fresh directory per commit, removed once that commit is checked so a long push does
-      # not pile up one full tree per commit; the subshell trap above still cleans the root on
-      # every early exit.
+      # A fresh directory per commit holding only that commit's scripts, removed once it is
+      # checked; the subshell trap above still cleans the root on every early exit.
       tree=$(mktemp -d "$shellcheck_tmp/commit.XXXXXX") || exit 1
-      # Checked out through a scratch index, never \`git archive\`: archive honours the
-      # export-ignore and export-subst attributes, so a script marked export-ignore would leave
-      # the checked set without a word. read-tree + checkout-index writes every tracked blob.
-      # Large-file pointers stay pointers — they are never shell, and a push must not need the
-      # network to be checked.
-      if ! git cat-file -e "\${sha}^{commit}" 2>/dev/null \\
-         || ! GIT_INDEX_FILE="$shellcheck_tmp/index" git read-tree "$sha" 2>/dev/null \\
-         || ! GIT_INDEX_FILE="$shellcheck_tmp/index" GIT_LFS_SKIP_SMUDGE=1 \\
-              git checkout-index -a -f --prefix="$tree/" 2>/dev/null; then
-        echo "✗ shellcheck: could not materialise $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha") — refusing the push rather than certifying bytes this gate did not read" >&2
-        exit 1
-      fi
-      # The emptiness probe lists the ROOT, never recursively: the answer is identical (git
-      # keeps no empty subtrees, so a tree is empty exactly when its root listing is), and a
-      # recursive listing made every commit pay for the whole tree the narrow path had just
-      # avoided enumerating.
-      if [ -n "$(git ls-tree "$sha")" ] && [ -z "$(ls -A "$tree")" ]; then
-        echo "✗ shellcheck: $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha") extracted to an empty tree — refusing the push" >&2
+      if ! git cat-file -e "\${sha}^{commit}" 2>/dev/null; then
+        echo "✗ shellcheck: cannot read commit $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha") — refusing the push rather than certifying bytes this gate did not read" >&2
         exit 1
       fi
       : > "$shellcheck_tmp/scripts" && : > "$shellcheck_tmp/count" \\
@@ -778,10 +848,72 @@ if command -v shellcheck >/dev/null 2>&1; then
           exit 1
         }
       fi
-      ( cd "$tree" && xargs -0 "$discover" "$shellcheck_tmp" ) < "$shellcheck_tmp/tracked" || {
+      # Only these paths are read, each as its raw blob — never a checkout of the commit, which
+      # would apply eol and filter attributes (a CRLF shebang left the checked set silently) and
+      # write the whole tree to check a handful of files. Never \`git archive\` either: it honours
+      # export-ignore, so a script so marked would leave the set without a word.
+      : > "$shellcheck_tmp/records" && : > "$shellcheck_tmp/candidates" || exit 1
+      if [ -s "$shellcheck_tmp/tracked" ]; then
+        # The candidates: changed blobs holding a line that starts \`#!\`, found in one pass over
+        # the raw blobs (git grep reads no eol or filter conversion). Only these are read one by
+        # one — a file with no such line cannot have a shebang first line. grep's "no match" is
+        # 1, a verdict; xargs would fold it into a failure, so the wrapper maps 1 to 0 and lets
+        # anything higher through as the failure it is.
+        xargs -0 git --literal-pathspecs ls-tree -z "$sha" -- < "$shellcheck_tmp/tracked" > "$shellcheck_tmp/records" \\
+          && xargs -0 sh -c 'git --literal-pathspecs grep -z -l --full-name -e "^#!" "$0" -- "$@"; st=$?; [ "$st" -le 1 ]' "$sha" \\
+            < "$shellcheck_tmp/tracked" > "$shellcheck_tmp/candidates" || {
+          echo "etymd: shell script discovery failed; cannot list the tracked entries of $short" >&2
+          exit 1
+        }
+      fi
+      # The checker's config sits beside the scripts it governs: every .shellcheckrc in the
+      # commit, raw, and a flag when one turns external-sources on (handled after discovery).
+      rm -f "$shellcheck_tmp/external-sources" || exit 1
+      git ls-tree -r -z "$sha" > "$shellcheck_tmp/entries" \\
+        && xargs -0 "$discover" --config "$shellcheck_tmp" "$tree" < "$shellcheck_tmp/entries" || {
+        echo "etymd: shell script discovery failed; cannot read the .shellcheckrc files of $short" >&2
+        exit 1
+      }
+      xargs -0 "$discover" --skips "$shellcheck_tmp" < "$shellcheck_tmp/records" \\
+        && xargs -0 "$discover" --commit "$shellcheck_tmp" "$tree" "$sha" < "$shellcheck_tmp/candidates" || {
         echo "etymd: shell script discovery failed; shellcheck coverage is incomplete" >&2
         exit 1
       }
+      # With external-sources on, the checker follows what scripts source — helpers with no
+      # shebang, so no script — and a missing one turns its assignments into false findings.
+      # The names sourced (a \`.\` or \`source\` argument, or a \`source=\` directive) are read from
+      # the staged files and the matching entries staged as raw blobs, again until nothing new
+      # is sourced, so a helper's own helpers are there too. A name built from a variable cannot
+      # be followed by the checker either, so it is dropped. Never a checkout: that runs every
+      # tracked file's filters, and an unrelated failing one would refuse the push.
+      if [ -e "$shellcheck_tmp/external-sources" ]; then
+        : > "$shellcheck_tmp/source-names" || exit 1
+        # An argument is a double-quoted path, a single-quoted one, or a bare word whose
+        # backslash escapes are kept and then undone, so a name with a space stays whole. The pattern travels as an argument: a single-quote
+        # alternative cannot sit inside the single-quoted sh -c body.
+        src_pat='(^|[;&|[:space:]])(\\.|source)[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|([^[:space:];&|\\]|\\\\.)+)|source=("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]]+)'
+        while :; do
+          # Each step's status is its own: in a pipeline only the last one counts, and a failed
+          # extraction would pass as a short list of names.
+          ( cd "$tree" && find . -type f ! -name .shellcheckrc -exec sh -c 'pat=$1; shift; grep -h -o -E -e "$pat" -- "$@"; st=$?; [ "$st" -le 1 ]' sh "$src_pat" {} + ) > "$shellcheck_tmp/source-lines" \\
+            && sed -E -e 's/^[;&|[:space:]]?(\\.|source)[[:space:]]+//' -e 's/^source=//' -e '/^["'"'"']/!s/\\\\(.)/\\1/g' -e 's/^"(.*)"$/\\1/' -e "s/^'(.*)'\\$/\\\\1/" -e 's|.*/||' "$shellcheck_tmp/source-lines" > "$shellcheck_tmp/source-args" || {
+            echo "etymd: cannot read what the scripts of $short source" >&2
+            exit 1
+          }
+          st=0
+          grep -v -e '[$]' -e '^$' "$shellcheck_tmp/source-args" > "$shellcheck_tmp/source-kept" || st=$?
+          [ "$st" -le 1 ] && sort -u "$shellcheck_tmp/source-kept" > "$shellcheck_tmp/source-names.next" || {
+            echo "etymd: cannot read what the scripts of $short source" >&2
+            exit 1
+          }
+          cmp -s "$shellcheck_tmp/source-names.next" "$shellcheck_tmp/source-names" && break
+          mv "$shellcheck_tmp/source-names.next" "$shellcheck_tmp/source-names" \\
+            && xargs -0 "$discover" --context "$shellcheck_tmp" "$tree" < "$shellcheck_tmp/entries" || {
+            echo "etymd: cannot stage what the scripts of $short source" >&2
+            exit 1
+          }
+        done
+      fi
       count=$(wc -c < "$shellcheck_tmp/count") || exit 1
       zsh_count=$(wc -c < "$shellcheck_tmp/zsh-count") || exit 1
       other_count=$(wc -c < "$shellcheck_tmp/other-count") || exit 1
@@ -796,7 +928,7 @@ if command -v shellcheck >/dev/null 2>&1; then
       other_count=$((other_count))
       skip_count=$((skip_count))
       if [ "$skip_count" -gt 0 ]; then
-        echo "› shellcheck: $((skip_count)) tracked path(s) with nothing readable behind them (submodule or dangling symlink) — not checked, not failed"
+        echo "› shellcheck: $((skip_count)) tracked path(s) that are symlinks or submodule entries — no script bytes of their own (a link's target is checked under its own path); not checked, not failed"
       fi
       if [ "$zsh_count" -gt 0 ]; then
         echo "› shellcheck: $((zsh_count)) zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
@@ -808,30 +940,13 @@ if command -v shellcheck >/dev/null 2>&1; then
         echo "› shellcheck: no shell script $where — nothing to check there"
       else
         echo "› shellcheck ($((count)) scripts $where, blocking at severity=warning)"
-        # Sources are followed by the checker, from inside this materialised tree — never by
-        # this hook re-parsing \`source\` lines to stage helpers by name. A sibling resolves
-        # through SCRIPTDIR, a root-relative path through the cwd, which is the tree; a path
-        # that resolves to nothing is a note (a script may rightly source what a checkout does
-        # not carry), while a helper that fails to parse is SC1094, a warning — a broken
-        # helper ships with the script that dots it.
-        ( cd "$tree" && xargs -0 shellcheck -x --source-path=SCRIPTDIR -S warning -- < "$shellcheck_tmp/scripts" ) || {
-          # The sub-warning findings name what the blocking ones cannot: an unassigned helper
-          # variable (SC2154 on a source that never loaded) gets its "not following: <path>"
-          # note printed here, so the refusal says which file the script reached for that the
-          # tree did not carry. Informational only — the push is already refused; one extra
-          # read on a failing push costs nothing the verdict cares about.
-          notes=$( ( cd "$tree" && xargs -0 shellcheck -x --source-path=SCRIPTDIR -S style -f gcc -- < "$shellcheck_tmp/scripts" 2>/dev/null ) \\
-            | grep -v ': warning:\\|: error:' || true)
-          if [ -n "$notes" ]; then
-            echo "  · context (not blocking):"
-            printf '%s\\n' "$notes" | sed 's/^/    /'
-          fi
+        ( cd "$tree" && xargs -0 shellcheck -S warning -- < "$shellcheck_tmp/scripts" ) || {
           echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
           exit 1
         }
         # Everything below the blocking bar, shown once the push is already cleared. Never affects
         # the exit code — advice that can fail a push is not advice.
-        advice=$( ( cd "$tree" && xargs -0 shellcheck -x --source-path=SCRIPTDIR -S style -f gcc -- < "$shellcheck_tmp/scripts" 2>/dev/null ) \\
+        advice=$( ( cd "$tree" && xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/scripts" 2>/dev/null ) \\
           | grep -v ': warning:\\|: error:' || true)
         if [ -n "$advice" ]; then
           echo "  · style/info (not blocking):"
@@ -870,9 +985,7 @@ fi`
  */
 const SCRUBBED_RUNNER = `
 # Gate steps run scrubbed of git's exported GIT_* names: a child git that inherits them ignores
-# its cwd, so any step building fixture repositories would operate on the real repo. The derived
-# steps (format:check / typecheck / lint) are static checks that build none — the scrub is
-# standing protection for a step that ever does, a suite pinned into the gate commands above all.
+# its cwd, so a hook-run suite building fixture repositories would operate on the real repo.
 run_gate() (
   # shellcheck disable=SC2046  # word-splitting is the point: one -u per exported GIT_* name
   env $(env | grep -o '^GIT_[A-Za-z0-9_]*' | sed 's/^/-u /') "$@"
@@ -941,7 +1054,7 @@ exit 0
 }
 
 /**
- * The publish door — the only check that inspects what actually SHIPS.
+ * The publish gate: the only check that inspects what actually SHIPS.
  *
  * Every git-scoped check answers "what is in the repository?". That question misses the leak
  * that reaches users: a gitignored file can be packaged into a published artifact (npm and vsce

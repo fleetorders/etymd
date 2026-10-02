@@ -19,7 +19,7 @@ import {
 } from "./instruction-truth/comments.js"
 
 // The comment-truth lens: the four claim checkers (script, path, doc, decision) over source-code
-// COMMENTS, not just instruction files — decision 013. A comment is a written rule that happens to
+// COMMENTS, not just instruction files — D-013. A comment is a written rule that happens to
 // live in a `.ts` file; it rots the same way an AGENTS.md line does, and nothing else in the repo
 // checks it. The checks themselves are the shared ones (checks.ts) with the premise surface's
 // prose promotion, so a third copy of the precision rules can never drift in beside them.

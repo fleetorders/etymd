@@ -17,7 +17,7 @@ export interface ScreenerProbe {
   /** A hook in this repo actually calls the content screen. Nothing below matters otherwise. */
   present: boolean
   /** Hooks that call it, for evidence. */
-  doors: string[]
+  hooks: string[]
   /** The resolved runner, or null when nothing resolves (the designed no-op). */
   runner: string | null
   source: ScreenerSource | null
@@ -33,7 +33,7 @@ export interface ScreenerProbe {
 
 const HOOK_FILES = ["pre-commit", "pre-push", "commit-msg"] as const
 
-/** The call the pack emits at every screen door. Matching the CALL, not the resolution line. */
+/** The call the pack emits at every screening hook. Matching the CALL, not the resolution line. */
 const SCREEN_CALL_RE = /"\$GATE"\s+screen\b/
 
 /** The dev-build arm, emitted only into the screener's own repo. */
@@ -46,7 +46,7 @@ const DEV_BUILD_ARM = "[ -x ./dist/cli.js ]"
  * Why this executes something during an audit, when nothing else here does: the question is
  * "will the gate run?", and no amount of reading answers it. The hook picks a runner at commit
  * time and calls it; if that runner is the wrong program, or an etymd too old to have `screen`,
- * the commit door fails closed with the runner's own unexplained error and the push door — which
+ * the commit hook fails closed with the runner's own unexplained error and the push hook — which
  * ignores the screen's exit status by design — skips its pass in silence. That combination went
  * unnoticed across several repos for months, which is exactly the kind of quiet, unverified
  * claim this tool exists to refuse.
@@ -58,7 +58,7 @@ const DEV_BUILD_ARM = "[ -x ./dist/cli.js ]"
 export async function probeScreener(root: string, facts: ProjectFacts): Promise<ScreenerProbe> {
   const absent: ScreenerProbe = {
     present: false,
-    doors: [],
+    hooks: [],
     runner: null,
     source: null,
     answersScreen: null,
@@ -67,15 +67,15 @@ export async function probeScreener(root: string, facts: ProjectFacts): Promise<
   const dir = facts.hooks.dir
   if (!dir) return absent
 
-  const doors: string[] = []
+  const hooks: string[] = []
   let devBuildArm = false
   for (const name of HOOK_FILES) {
     const text = await readText(path.resolve(root, dir, name))
     if (!text || !SCREEN_CALL_RE.test(text)) continue
-    doors.push(`${dir}/${name}`)
+    hooks.push(`${dir}/${name}`)
     if (text.includes(DEV_BUILD_ARM)) devBuildArm = true
   }
-  if (!doors.length) return absent
+  if (!hooks.length) return absent
 
   // The hook's own order: an explicit override, then the dev-build arm where the hook carries
   // one, then whatever is on PATH.
@@ -97,7 +97,7 @@ export async function probeScreener(root: string, facts: ProjectFacts): Promise<
     // `screen --help` exits non-zero on a runner that does not know the subcommand; commander
     // prints its "unknown command" to stderr and fails. That failure IS the signal.
     await pExecFile(runner, ["screen", "--help"], { cwd: root, timeout: 10_000 })
-    return { present: true, doors, runner, source, answersScreen: true }
+    return { present: true, hooks, runner, source, answersScreen: true }
   } catch (err) {
     const e = err as NodeJS.ErrnoException & { killed?: boolean }
     // Nothing installed is the designed no-op, not a defect: the hook guards on `[ -x "$GATE" ]`
@@ -105,23 +105,23 @@ export async function probeScreener(root: string, facts: ProjectFacts): Promise<
     if (e.code === "ENOENT") {
       return {
         present: true,
-        doors,
+        hooks,
         runner: null,
         source,
         answersScreen: null,
-        skipped: `no checker named \`${runner}\` is installed — the screen doors no-op here by design, and nothing was verified.`,
+        skipped: `no checker named \`${runner}\` is installed — the screening hooks no-op here by design, and nothing was verified.`,
       }
     }
     if (e.killed || e.code === "ETIMEDOUT") {
       return {
         present: true,
-        doors,
+        hooks,
         runner,
         source,
         answersScreen: null,
         skipped: `\`${runner} screen --help\` did not return within 10s — the runner was not verified either way.`,
       }
     }
-    return { present: true, doors, runner, source, answersScreen: false }
+    return { present: true, hooks, runner, source, answersScreen: false }
   }
 }

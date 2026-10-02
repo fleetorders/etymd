@@ -200,11 +200,11 @@ program
 const fleet = program
   .command("fleet")
   .description(
-    "Sweep every project in a fleet manifest: per-repo audits + manifest-truth wall checks (schemas EXPERIMENTAL through 0.2.x)",
+    "Sweep every project in a fleet manifest: per-repo audits + the manifest's own checks (schemas may still change before 1.0)",
   )
   .option(
     "--manifest <file>",
-    "the fleet manifest (registry.json / legacy sources.json) — required unless the cwd holds registry.json",
+    "the fleet manifest (registry.json / older sources.json) — required unless the cwd holds registry.json",
   )
   .option("--only <names...>", "sweep only these registered names")
   .option("--profile <profile>", "sweep only entries with this profile (personal|guarded)")
@@ -213,7 +213,7 @@ const fleet = program
     "--persist-ledgers",
     "persist per-repo ledgers — personal-profile entries that already carry .etymd only; guarded worktrees are never written",
   )
-  .option("--json", "print the machine schema (EXPERIMENTAL through 0.2.x, local-only)")
+  .option("--json", "print the machine schema (may still change before 1.0, local-only)")
   .option(
     "--fail-on <tier>",
     "exit non-zero when findings at/above this tier exist (risk|gap|polish)",
@@ -250,7 +250,7 @@ fleet
   .command("check")
   .description("Validate the manifest pair only — no lenses: dangling mappings, duplicates, leaks")
   .option("--manifest <file>", "the fleet manifest — required unless the cwd holds registry.json")
-  .option("--json", "print the findings as JSON (EXPERIMENTAL through 0.2.x)")
+  .option("--json", "print the findings as JSON (may still change before 1.0)")
   .action((_opts, cmd) =>
     action(async () => {
       const { check } = await import("./commands/fleet.js")
@@ -418,12 +418,11 @@ program
 program
   .command("gates")
   .description("Install the local git-hook gates (process → pre-commit, correctness → pre-push)")
-  .option("--ci", "note about the CI review gate (ships later; local gates install now)")
   .option("-y, --yes", "skip prompts; never overwrites a hand-edited hook")
   .action((opts, cmd) =>
     action(async () => {
       const { run } = await import("./commands/gates.js")
-      await run({ cwd: resolveCwd(cmd), ci: opts.ci, yes: opts.yes })
+      await run({ cwd: resolveCwd(cmd), yes: opts.yes })
     }),
   )
 

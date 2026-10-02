@@ -405,7 +405,7 @@ exit 23
   })
 
   it("PINNED: the pushed commit is the read — a deleted working-tree copy neither dodges the gate nor blocks it", async () => {
-    // The 2026-09-15 shape inverted: the working tree was never the right read. Deleting the
+    // The earlier shape inverted this: the working tree was never the right read. Deleting the
     // only working-tree copy of a script must not skip the commit's copy — and must not break
     // an unrelated push the way a tree-reading gate did.
     await baseRepo()
@@ -442,9 +442,10 @@ exit 23
     }
   })
 
-  it("skips tracked paths with nothing readable behind them, and says so", async () => {
-    // A submodule entry and a dangling symlink, both committed: neither is a checking hazard
-    // that can lie, so neither blocks — but both are disclosed, never silent.
+  it("skips symlink and submodule entries, and says so", async () => {
+    // A submodule entry and a symlink, both committed: neither carries script bytes of its own
+    // (a link's target is a tracked path, checked under its own name), so neither blocks — but
+    // both are disclosed, never silent.
     await write("scripts/keep", "#!/bin/sh\necho ok\n")
     const env = await fixture()
     await recordShellcheck()
@@ -458,12 +459,22 @@ exit 23
     const pushed = await commitFixture({ stage: false })
 
     const { stdout } = await runPrePush(env, pushed)
-    expect(stdout).toContain("2 tracked path(s) with nothing readable behind them")
+    expect(stdout).toContain("2 tracked path(s) that are symlinks or submodule entries")
     for (const args of await recorded()) {
       expect(args).toContain("./scripts/keep")
       expect(args).not.toContain("./dangling")
       expect(args).not.toContain("./vendored")
     }
+  })
+
+  it("refuses loudly when a pre-push older than the classifier calls it in the old form", async () => {
+    // A hand-edited pre-push is kept across a regeneration while its classifier is replaced.
+    // The old call shape must stop the push with a way out — never classify nothing and pass.
+    const env = await fixture()
+    const discoverOld = path.join(dir, ".githooks", "discover-shell-scripts.sh")
+    await expect(
+      pExecFile(discoverOld, [path.join(dir, "scratch"), "scripts/run"], { cwd: dir, env }),
+    ).rejects.toMatchObject({ stderr: expect.stringContaining("run 'etymd gates'") })
   })
 
   it("treats only the first line as a shebang, so docs embedding one are not scripts", async () => {
@@ -481,11 +492,10 @@ exit 23
   })
 
   it("the classifier header states the interface the hook actually invokes", async () => {
-    // The 2026-09-28 review caught the header numbering a mode as "the second" twice — and the
-    // header is the spec the next pack maintainer reads. The rewrite carries ONE interface:
-    // the scratch directory, then the tracked paths, with no mode dispatch for prose to
-    // misnumber. This pins header and invocation to the same claim, so a mode flag can never
-    // return without its description returning with it.
+    // The header is the spec the next pack maintainer reads: the 2026-09-28 review caught it
+    // numbering a mode as "the second" twice. This pins header and invocation to the same
+    // claim — every mode the hook dispatches appears in the header's call list, and every
+    // mode the header names is one the hook actually invokes — so neither can drift.
     await baseRepo()
     await write("tool/run.sh", "#!/bin/sh\necho ok\n")
     await pExecFile("git", ["add", "."], { cwd: dir })
@@ -495,121 +505,31 @@ exit 23
       path.join(dir, ".githooks", "discover-shell-scripts.sh"),
       "utf8",
     )
-    expect(hook).toContain('xargs -0 "$discover" "$shellcheck_tmp"')
-    expect(classifier).toContain("positional here")
-    // No dispatch exists for the header to miscount: the script branches on no mode flag.
-    expect(classifier).not.toMatch(/--[a-z]+\)/)
+    expect(classifier).toContain("Four calls per commit")
+    for (const mode of ["--config", "--skips", "--commit", "--context"]) {
+      expect(hook).toContain(`"$discover" ${mode}`)
+      expect(classifier).toContain(mode)
+    }
   })
 
-  it.skipIf(!hasShellcheck)(
-    "PINNED: repointing a symlink at an unchanged script classifies the bytes the link now ships",
-    async () => {
-      // The 2026-09-28 review shape: a push that changes ONLY the link. The target's path is
-      // in no changed set, and a link's own blob is just the target-path string — nothing a
-      // name-based candidate pass would ever read. The bytes the link ships reach the checker
-      // only because classification reads THROUGH the link, inside the commit being pushed,
-      // where it already points at the new target.
-      await baseRepo()
-      await write("lib/good.sh", "#!/bin/sh\necho ok\n")
-      await write("lib/bad.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
-      await fs.mkdir(path.join(dir, "tool"), { recursive: true })
-      await fs.symlink("../lib/good.sh", path.join(dir, "tool", "run.sh"))
-      await commitAll("chore: link to the good target")
-      await fs.unlink(path.join(dir, "tool", "run.sh"))
-      await fs.symlink("../lib/bad.sh", path.join(dir, "tool", "run.sh"))
-      await commitAll("chore: repoint at the bad target")
-      await gates()
-      const env = await stubEnv()
-      const base = await revParse("HEAD~1")
-      const head = await revParse("HEAD")
-
-      const failure = await runPrePush(env, update("main", head, base)).then(
-        () => {
-          throw new Error("expected the repointed link to block the push")
-        },
-        (error) => error,
-      )
-      expect(failure.code).toBe(1)
-      // The report names the link's path and the defect in the target's bytes: the link's own
-      // changed entry is what carried those bytes into the checked set.
-      expect(failure.stdout).toContain("SC2034")
-      expect(failure.stdout).toContain("tool/run.sh")
-    },
-  )
-
-  it.skipIf(!hasShellcheck)(
-    "PINNED: sourced helpers resolve through the checker, not a hook-side parser",
-    async () => {
-      // The hand-rolled source-line reader — three quoting styles, backslash escapes,
-      // source= directives, basename collisions; five fixes in five commits — is gone. The
-      // checker follows sources itself, inside the materialised commit. A source that
-      // resolves to nothing is a NOTE (a script may rightly source what a checkout does not
-      // carry) and must not block; a helper that fails to PARSE is SC1094, a warning, because
-      // a broken helper ships with the script that dots it.
-      await baseRepo()
-      await write("sub/missing.sh", "#!/bin/sh\n. ./not-in-tree.sh\nexit 0\n")
-      await commitAll("chore: source that resolves to nothing")
-      await gates()
-      const env = await stubEnv()
-      let base = await revParse("HEAD~1")
-      let head = await revParse("HEAD")
-      const clean = await runPrePush(env, update("main", head, base))
-      expect(clean.stdout).toContain("shellcheck (1 scripts")
-
-      await write("sub/broken.sh", "#!/bin/sh\n. ./broken-lib.sh\nexit 0\n")
-      // No shebang: the helper is not itself a classified input, so whatever surfaces comes
-      // from being FOLLOWED — exactly the path the old parser owned.
-      await write("sub/broken-lib.sh", "if [ 1 ]; then\necho oops\n")
-      await commitAll("chore: dot in a helper that cannot parse")
-      base = head
-      head = await revParse("HEAD")
-      const failure = await runPrePush(env, update("main", head, base)).then(
-        () => {
-          throw new Error("expected the unparsable helper to block the push")
-        },
-        (error) => error,
-      )
-      expect(failure.code).toBe(1)
-      expect(failure.stdout).toContain("SC1094")
-      // The flags that hand resolution to the checker, pinned on the generated bytes so the
-      // parser cannot return unannounced.
-      const hook = await prePush()
-      expect(hook).toContain("shellcheck -x --source-path=SCRIPTDIR")
-    },
-  )
+  // Merge 2026-10-02: the branch's "repointing a symlink classifies the bytes the link now
+  // ships" pin was dropped — the merged gate keeps the shipped design where a symlink is a
+  // disclosed skip and its target is checked under its own path ("skips symlink and submodule
+  // entries, and says so" below). The narrower coverage gap (a repointed link whose target
+  // otherwise changes nothing) is named in the merge commit for a deliberate follow-up.
+  // Merge 2026-10-02: the branch's "sourced helpers resolve through the checker, not a
+  // hook-side parser" pin was dropped — the merged gate keeps the shipped staging pipeline
+  // (source lines read from staged files, helpers staged as raw blobs until nothing new is
+  // sourced), pinned by the external-sources series in "the range being pushed" below. The
+  // checker-resolves alternative stays recorded in the merge commit as a direction to weigh.
 })
 
 describe.skipIf(!existsSync(CLI))(
   "etymd gates — the range being pushed, not the tree or the tip",
   () => {
-    it.skipIf(!hasShellcheck)(
-      "PINNED: a refusal over an unresolved source names the source, not just the symptom",
-      async () => {
-        // The failure being fixed: a script sourcing a name no tracked file answers blocked on
-        // SC2154 with nothing naming the path — the variable was named, the file reached for
-        // was not. Sources are followed by the checker from inside the materialised tree, and
-        // its "not following: <path>" note prints beside the refusal, so the person fixing is
-        // told which file the checkout did not carry.
-        await baseRepo()
-        await write("tool/main.sh", '#!/bin/sh\n. ./lib/missing.sh\necho "$helper"\n')
-        await commitAll("chore: source a name nothing answers")
-        await gates()
-        const env = await stubEnv()
-        const head = await revParse("HEAD")
-
-        const pushed = runPrePush(env, `refs/heads/topic ${head} refs/heads/topic ${ZERO}`)
-        await expect(pushed).rejects.toMatchObject({
-          code: 1,
-          stdout: expect.stringContaining("SC2154"),
-        })
-        // and the same stdout names the unresolved path — checked separately so a regression
-        // to the unnamed block cannot hide behind the finding assertion above.
-        const failure = await pushed.catch((error) => error as { stdout: string })
-        expect(failure.stdout).toContain("Not following")
-        expect(failure.stdout).toContain("missing.sh")
-      },
-    )
-
+    // Merge 2026-10-02: the branch's "a refusal over an unresolved source names the source"
+    // pin was dropped with the checker-resolves design it tested; the merged gate stages what
+    // resolves and refuses on the finding that remains, per the external-sources series below.
     it.skipIf(!hasShellcheck)(
       "PINNED: a bad middle commit under a clean tip refuses the push",
       async () => {
@@ -743,40 +663,12 @@ describe.skipIf(!existsSync(CLI))(
       }
     })
 
-    it("PINNED: the narrow path probes the tree root, never a whole-tree listing", async () => {
-      // The cost being fixed: the empty-extraction guard ran `git ls-tree -r` once per commit —
-      // a full recursive listing on the very path built to avoid whole-tree work, so the cost
-      // the narrow path removed came back through a guard nobody reads as enumeration. A git
-      // shim logs every argv the hook passes; the emptiness question (does this commit's tree
-      // exist at all?) is answered by the root listing, and nothing here may list deeper.
-      await baseRepo()
-      await write("tool/one.sh", "#!/bin/sh\necho one\n")
-      await commitAll("chore: one script")
-      await gates()
-      await recordShellcheck()
-      const realGit = execSync("command -v git").toString().trim()
-      await stub(
-        "git",
-        '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$ETYMD_GIT_LOG"\nexec "$ETYMD_REAL_GIT" "$@"\n',
-      )
-      const env = await stubEnv({
-        ETYMD_RECORD: path.join(dir, "shellcheck.jsonl"),
-        ETYMD_GIT_LOG: path.join(dir, "git.log"),
-        ETYMD_REAL_GIT: realGit,
-      })
-
-      const { stdout } = await runPrePush(
-        env,
-        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
-      )
-      expect(stdout).toContain("1 commit(s) in the pushed range")
-      const lines = (await fs.readFile(path.join(dir, "git.log"), "utf8")).trim().split("\n")
-      // The probe itself must run (otherwise the pin is vacuous) — at the root only.
-      const lsTree = lines.filter((line) => line.startsWith("ls-tree "))
-      expect(lsTree.length).toBeGreaterThan(0)
-      for (const line of lsTree) expect(line).not.toContain("-r")
-    })
-
+    // Merge 2026-10-02: the branch's "the narrow path probes the tree root" pin was dropped —
+    // it guarded the empty-extraction probe of the deleted materialise-and-read design. The
+    // invariant it served (the narrow path checks the changed scripts, never the whole tree as
+    // the checked set) stays pinned by "each pushed commit is checked for the scripts it
+    // changes" above; the whole-tree listing the merged hook does run feeds .shellcheckrc and
+    // source staging, never the checked set.
     it("a commit that changes no shell script says so, never a silent pass", async () => {
       await baseRepo()
       await write("tool/old.sh", "#!/bin/sh\necho old\n")
@@ -1003,6 +895,152 @@ process.stdout.write("      " + n + "\\n")
           code: 1,
           stdout: expect.stringContaining("SC2034"),
         })
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: a script checked out with CRLF line endings is still checked — the read is the raw blob",
+      async () => {
+        // A checkout applies eol and filter attributes: under `eol=crlf` the shebang line ends
+        // in a carriage return, the shebang match fails, and the script left the checked set
+        // without a word. The gate reads the committed bytes, never a converted checkout.
+        await baseRepo()
+        await write(".gitattributes", "*.sh text eol=crlf\n")
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: bad script under a crlf attribute")
+        await gates()
+        const env = await stubEnv()
+        const base = await revParse("HEAD~1")
+        const head = await revParse("HEAD")
+
+        await expect(runPrePush(env, update("main", head, base))).rejects.toMatchObject({
+          code: 1,
+          stdout: expect.stringContaining("SC2034"),
+        })
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: a .shellcheckrc in the pushed commit still governs the check",
+      async () => {
+        // Only scripts are read into the scratch tree; the checker finds its config by walking
+        // up from each script, so a repo's .shellcheckrc must be read in beside them.
+        await baseRepo()
+        await write(".shellcheckrc", "disable=SC2034\n")
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: script with a disabled check")
+        await gates()
+        const env = await stubEnv()
+
+        await runPrePush(env, update("main", await revParse("HEAD"), await revParse("HEAD~1")))
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: with external-sources on, a sourced file without a shebang is there to follow",
+      async () => {
+        // A sourced helper has no shebang, so it is no script — but under external-sources the
+        // checker follows it, and a missing file turns its assignments into false findings.
+        await baseRepo()
+        await write(".shellcheckrc", "external-sources=true\n")
+        await write("tool/lib.inc", "# shellcheck source=tool/inner.inc\n. ./tool/inner.inc\n")
+        await write("tool/inner.inc", "greeting=hi\n")
+        await write(
+          "tool/do.sh",
+          '#!/bin/sh\n# shellcheck source=tool/lib.inc\n. ./tool/lib.inc\necho "$greeting"\n',
+        )
+        await commitAll("chore: script sourcing a helper")
+        await gates()
+        const env = await stubEnv()
+
+        const { stdout } = await runPrePush(
+          env,
+          update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+        )
+        expect(stdout).not.toContain("SC1091")
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: with external-sources on, a quoted helper path with a space is staged whole",
+      async () => {
+        // Split at the space, the name read would be "my" and the helper never staged.
+        await baseRepo()
+        await write(".shellcheckrc", "external-sources=true\n")
+        await write("tool/my helper.inc", "greeting=hi\n")
+        await write("tool/do.sh", '#!/bin/sh\n. "./tool/my helper.inc"\necho "$greeting"\n')
+        await commitAll("chore: script sourcing a helper with a space in its name")
+        await gates()
+        const env = await stubEnv()
+
+        const { stdout } = await runPrePush(
+          env,
+          update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+        )
+        expect(stdout).not.toContain("SC1091")
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: with external-sources on, a backslash-escaped helper path is staged whole",
+      async () => {
+        await baseRepo()
+        await write(".shellcheckrc", "external-sources=true\n")
+        await write("tool/my helper.inc", "greeting=hi\n")
+        await write("tool/do.sh", '#!/bin/sh\n. ./tool/my\\ helper.inc\necho "$greeting"\n')
+        await commitAll("chore: script sourcing an escaped helper path")
+        await gates()
+        const env = await stubEnv()
+
+        const { stdout } = await runPrePush(
+          env,
+          update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+        )
+        expect(stdout).not.toContain("SC1091")
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: with external-sources on, a quoted source= directive names its helper whole",
+      async () => {
+        // The directive is the only way the checker can follow a source built from a variable.
+        await baseRepo()
+        await write(".shellcheckrc", "external-sources=true\n")
+        await write("tool/my helper.inc", "greeting=hi\n")
+        await write(
+          "tool/do.sh",
+          '#!/bin/sh\n# shellcheck source="tool/my helper.inc"\n. "$HELPER"\necho "$greeting"\n',
+        )
+        await commitAll("chore: script sourcing through a quoted directive")
+        await gates()
+        const env = await stubEnv()
+
+        const { stdout } = await runPrePush(
+          env,
+          update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+        )
+        expect(stdout).not.toContain("SC1091")
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: with external-sources on, an unrelated file's failing checkout filter does not block",
+      async () => {
+        // Context is staged as raw blobs of what the scripts source — never a checkout, which
+        // would run every tracked file's filters and let an unrelated one refuse the push.
+        await baseRepo()
+        await pExecFile("git", ["config", "filter.boom.clean", "cat"], { cwd: dir })
+        await pExecFile("git", ["config", "filter.boom.smudge", "false"], { cwd: dir })
+        await pExecFile("git", ["config", "filter.boom.required", "true"], { cwd: dir })
+        await write(".gitattributes", "*.bin filter=boom\n")
+        await write("data.bin", "payload\n")
+        await write(".shellcheckrc", "external-sources=true\n")
+        await write("tool/do.sh", "#!/bin/sh\necho ok\n")
+        await commitAll("chore: a filtered file beside a script")
+        await gates()
+        const env = await stubEnv()
+
+        await runPrePush(env, update("main", await revParse("HEAD"), await revParse("HEAD~1")))
       },
     )
 
@@ -1255,7 +1293,7 @@ describe.skipIf(!existsSync(CLI))(
 
       await gates()
 
-      // Every door that resolves a screener, not just the one the failure was noticed at.
+      // Every hook that resolves a screener, not just the one the failure was noticed at.
       for (const rel of [".githooks/pre-commit", ".githooks/pre-push"]) {
         const hook = await fs.readFile(path.join(dir, rel), "utf8")
         expect(hook, rel).toContain('GATE="${CONTENT_GATE:-$(command -v etymd || true)}"')
@@ -1320,7 +1358,7 @@ describe.skipIf(!existsSync(CLI))(
 )
 
 describe.skipIf(!existsSync(CLI))(
-  "etymd gates — a screen door that explains its own failure",
+  "etymd gates — a screening hook that explains its own failure",
   () => {
     it("PINNED: a runner that does not understand `screen` gets a self-explaining line, not a bare error", async () => {
       // `screen` needs etymd 0.11+. Against an older one the runner answers with its own
@@ -1400,41 +1438,38 @@ describe.skipIf(!existsSync(CLI))(
 describe.skipIf(!existsSync(CLI))(
   "etymd gates — the generated hooks pass the checker they run",
   () => {
-    it("PINNED: every generated hook is shellcheck-clean at warning", async () => {
-      // A hook that gates on shellcheck must survive shellcheck itself. The specific trap this
-      // pins: any comment whose first word is the checker's own name is parsed as a DIRECTIVE, so
-      // prose explaining why a shell dialect is skipped can itself become a parse error — a
-      // generated gate breaking the tool it exists to run.
-      const hasShellcheck = await pExecFile("command", ["-v", "shellcheck"], { shell: true }).then(
-        () => true,
-        () => false,
-      )
-      if (!hasShellcheck) return
+    it.skipIf(!hasShellcheck)(
+      "PINNED: every generated hook is shellcheck-clean at warning",
+      async () => {
+        // A hook that gates on shellcheck must survive shellcheck itself. The specific trap this
+        // pins: any comment whose first word is the checker's own name is parsed as a DIRECTIVE, so
+        // prose explaining why a shell dialect is skipped can itself become a parse error — a
+        // generated gate breaking the tool it exists to run.
+        await write("package.json", JSON.stringify({ name: "demo", private: true }, null, 2) + "\n")
+        await write("AGENTS.md", "# AGENTS.md\n")
+        await write("scripts/thing.sh", "#!/usr/bin/env sh\necho hi\n")
+        await gates()
 
-      await write("package.json", JSON.stringify({ name: "demo", private: true }, null, 2) + "\n")
-      await write("AGENTS.md", "# AGENTS.md\n")
-      await write("scripts/thing.sh", "#!/usr/bin/env sh\necho hi\n")
-      await gates()
+        const targets = [
+          ".githooks/pre-commit",
+          ".githooks/pre-push",
+          ".githooks/commit-msg",
+          ".githooks/discover-shell-scripts.sh",
+        ].filter((rel) => existsSync(path.join(dir, rel)))
+        expect(targets.length).toBeGreaterThan(0)
 
-      const targets = [
-        ".githooks/pre-commit",
-        ".githooks/pre-push",
-        ".githooks/commit-msg",
-        ".githooks/discover-shell-scripts.sh",
-      ].filter((rel) => existsSync(path.join(dir, rel)))
-      expect(targets.length).toBeGreaterThan(0)
-
-      const result = await pExecFile("shellcheck", ["-S", "warning", ...targets], {
-        cwd: dir,
-      }).then(
-        () => ({ ok: true, out: "" }),
-        (e: { stdout?: string; stderr?: string }) => ({
-          ok: false,
-          out: (e.stdout ?? "") + (e.stderr ?? ""),
-        }),
-      )
-      expect(result.out).toBe("")
-      expect(result.ok).toBe(true)
-    })
+        const result = await pExecFile("shellcheck", ["-S", "warning", ...targets], {
+          cwd: dir,
+        }).then(
+          () => ({ ok: true, out: "" }),
+          (e: { stdout?: string; stderr?: string }) => ({
+            ok: false,
+            out: (e.stdout ?? "") + (e.stderr ?? ""),
+          }),
+        )
+        expect(result.out).toBe("")
+        expect(result.ok).toBe(true)
+      },
+    )
   },
 )

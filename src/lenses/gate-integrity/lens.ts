@@ -226,8 +226,8 @@ export function deriveScreenerFindings(probe: ScreenerProbe, disclosures: string
       tier: "risk",
       kind: "truth",
       claim: `The content screen resolves to \`${probe.runner}\`, which does not understand \`screen\` — the gate cannot run`,
-      evidence: [...probe.doors, `${probe.runner} screen --help → failed (${via})`],
-      why: "The commit door fails closed on an error that explains nothing, and the push door — advisory by design — skips the whole-tree pass in silence, so the repo reads as screened when nothing screened it.",
+      evidence: [...probe.hooks, `${probe.runner} screen --help → failed (${via})`],
+      why: "The commit hook fails closed on an error that explains nothing, and the push hook — advisory by design — skips the whole-tree pass in silence, so the repo reads as screened when nothing screened it.",
       action:
         "Install or upgrade etymd (`screen` needs 0.11+), or point CONTENT_GATE at a checker that provides it, then re-run `etymd gates` to refresh the hooks.",
       effort: "S",

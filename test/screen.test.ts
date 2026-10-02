@@ -94,13 +94,15 @@ describe("content screen", () => {
 describe("allow-file records", () => {
   it("reads a labeled record: the pattern is the rest of its line, verbatim", () => {
     const { lines: entries } = compileAllow(
-      ["pattern ^AcmeInc$", "reason fixture text", "date 2026-08-15", "author nightly"].join("\n"),
+      ["pattern ^AcmeInc$", "reason fixture text", "date 2026-08-15", "author maintainer"].join(
+        "\n",
+      ),
     )
     expect(entries).toHaveLength(1)
     expect(entries[0]?.pattern.source).toBe("^AcmeInc$")
     expect(entries[0]?.reason).toBe("fixture text")
     expect(entries[0]?.date).toBe("2026-08-15")
-    expect(entries[0]?.author).toBe("nightly")
+    expect(entries[0]?.author).toBe("maintainer")
   })
 
   it("PINNED: a pattern may contain pipes — alternation survives intact", () => {
@@ -108,9 +110,12 @@ describe("allow-file records", () => {
     // first branch and the rest could masquerade as provenance — a silent narrowing of the
     // gate. Labeled lines cannot express that misparse: the pattern runs to end of line.
     const { lines: entries } = compileAllow(
-      ["pattern AcmeInc|BetaInc", "reason either name", "date 2026-08-15", "author nightly"].join(
-        "\n",
-      ),
+      [
+        "pattern AcmeInc|BetaInc",
+        "reason either name",
+        "date 2026-08-15",
+        "author maintainer",
+      ].join("\n"),
     )
     expect(entries).toHaveLength(1)
     expect(entries[0]?.pattern.source).toBe("AcmeInc|BetaInc")
@@ -146,7 +151,7 @@ describe("allow-file records", () => {
 
   it("an orphan provenance line exempts nothing and creates no record", () => {
     // Fail-safe by design: an orphan can only under-exempt, and under-exemption reports
-    // its own gap at the door that sees the hit.
+    // its own gap at the hook that sees the hit.
     const { lines: entries } = compileAllow(
       ["reason no pattern above me", "pattern ^a$"].join("\n"),
     )
@@ -541,5 +546,20 @@ describe("generated-data exemption end to end (run)", () => {
     const blocked = process.exitCode
     process.exitCode = 0
     expect(blocked).toBe(1) // unsigned hole in the gate → refused, vocabulary applies
+  })
+
+  it("the older .artifact-check-allow name is not read — its records exempt nothing", async () => {
+    const { run } = await import("../src/commands/screen.js")
+    const { dir, stage, patterns } = await initStagedRepo()
+    await stage(
+      ".artifact-check-allow",
+      ["generated ^src/data/corpus\\.json$", "reason r", "date 2026-09-04", "author x"].join("\n"),
+    )
+    await stage("src/data/corpus.json", `${corpusLine}\n`)
+    process.exitCode = 0
+    await run({ cwd: dir, scope: "staged", patterns })
+    const blocked = process.exitCode
+    process.exitCode = 0
+    expect(blocked).toBe(1)
   })
 })
