@@ -844,6 +844,37 @@ if command -v shellcheck >/dev/null 2>&1; then
       fi
     fi
     printf '%s\\n' "$checker_ver" > "$checker_stamp" 2>/dev/null || true
+    # The verdict is parsed from gcc-format lines, so a format or severity override in
+    # SHELLCHECK_OPTS would hand the gate output it cannot read while the exit status still
+    # speaks: under '-f json' a real warning once sailed into the advice block and the push
+    # passed, because the environment's -f replaces this command's own. Those two flag
+    # classes are stripped from the options the gate runs with — every other option
+    # (disable=, external-sources, source-path, …) passes through untouched — and the strip
+    # is said out loud when it happens, because silently overriding the caller's environment
+    # is how the hole got missed.
+    sc_kept=""
+    sc_dropped=0
+    sc_prev=""
+    # shellcheck disable=SC2086  # word-splitting is the point: one option token per word, as shellcheck reads them itself
+    for sc_opt in \${SHELLCHECK_OPTS:-}; do
+      case "$sc_opt" in
+        (-f|-f*|-S|-S*|--format|--severity|--format=*|--severity=*)
+          sc_dropped=1
+          sc_prev="$sc_opt"
+          ;;
+        (*)
+          case "$sc_prev" in
+            (-f|--format|-S|--severity) ;;
+            (*) sc_kept="$sc_kept $sc_opt" ;;
+          esac
+          sc_prev=""
+          ;;
+      esac
+    done
+    sc_kept=\${sc_kept# }
+    if [ "$sc_dropped" -eq 1 ]; then
+      echo "› shellcheck: format/severity override in SHELLCHECK_OPTS ignored — the verdict reads gcc format at style severity"
+    fi
     for sha in $shas; do
       # A fresh directory per commit holding only that commit's scripts, removed once it is
       # checked; the subshell trap above still cleans the root on every early exit.
@@ -1000,7 +1031,7 @@ if command -v shellcheck >/dev/null 2>&1; then
         # scripts again for advice). The error/warning lines in the one output ARE the blocking
         # verdict; every other line is the advice — one read of one run instead of two passes
         # over files already read.
-        out=$( cd "$tree" && xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/scripts" 2> "$shellcheck_tmp/err" )
+        out=$( cd "$tree" && env SHELLCHECK_OPTS="$sc_kept" xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/scripts" 2> "$shellcheck_tmp/err" )
         sc_rc=$?
         err=$(cat "$shellcheck_tmp/err")
         blocking=$(printf '%s\\n' "$out" | grep -E ':[0-9]+:[0-9]+: (warning|error):' || true)

@@ -550,6 +550,28 @@ exit 23
     },
   )
 
+  it.skipIf(!hasShellcheck)(
+    "a SHELLCHECK_OPTS format override cannot soften the verdict",
+    async () => {
+      // The environment's -f replaces the gate's own format flag, and the one-run parser reads
+      // gcc lines: under '-f json' a warning-level finding reached the advice block and the
+      // push passed. The override is stripped from the gate's run, and the strip is said.
+      await write("scripts/warn", "#!/bin/sh\nnever_used=1\necho ok\n")
+      const env = await fixture()
+      const pushed = await commitFixture()
+
+      const failure = await runPrePush({ ...env, SHELLCHECK_OPTS: "-f json" }, pushed).then(
+        () => {
+          throw new Error("expected the warning to block the push under a format override")
+        },
+        (error) => error,
+      )
+      expect(failure.code).toBe(1)
+      expect(failure.stdout).toContain("SC2034")
+      expect(failure.stdout).toContain("SHELLCHECK_OPTS")
+    },
+  )
+
   it.skipIf(!hasShellcheck)("a style-only script passes the push and keeps its advice", async () => {
     await write("scripts/style", '#!/bin/sh\nx=`date`\necho "$x"\n')
     const env = await fixture()

@@ -27,4 +27,4 @@ if ! "$GATE" screen --dir "$WORK"; then
   exit 1
 fi
 exit 0
-# etymd:generated pack-v22 45c234f637736421
+# etymd:generated pack-v24 45c234f637736421

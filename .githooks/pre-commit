@@ -24,7 +24,9 @@ if [ -x "$GATE" ]; then
       echo "etymd: this checker does not understand 'screen' (needs etymd 0.11+) — upgrade it, or set CONTENT_GATE to a checker that does." >&2
     exit 1
   fi
+elif [ -n "${CONTENT_GATE:-}" ]; then
+  echo "pre-commit: CONTENT_GATE is set but not usable: $GATE (staged screen skipped)" >&2
 fi
 
 exit 0
-# etymd:generated pack-v22 9d67b9aa09d5b7ea
+# etymd:generated pack-v24 4bccca643203e2bb

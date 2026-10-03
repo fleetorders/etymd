@@ -145,6 +145,37 @@ if command -v shellcheck >/dev/null 2>&1; then
       fi
     fi
     printf '%s\n' "$checker_ver" > "$checker_stamp" 2>/dev/null || true
+    # The verdict is parsed from gcc-format lines, so a format or severity override in
+    # SHELLCHECK_OPTS would hand the gate output it cannot read while the exit status still
+    # speaks: under '-f json' a real warning once sailed into the advice block and the push
+    # passed, because the environment's -f replaces this command's own. Those two flag
+    # classes are stripped from the options the gate runs with — every other option
+    # (disable=, external-sources, source-path, …) passes through untouched — and the strip
+    # is said out loud when it happens, because silently overriding the caller's environment
+    # is how the hole got missed.
+    sc_kept=""
+    sc_dropped=0
+    sc_prev=""
+    # shellcheck disable=SC2086  # word-splitting is the point: one option token per word, as shellcheck reads them itself
+    for sc_opt in ${SHELLCHECK_OPTS:-}; do
+      case "$sc_opt" in
+        (-f|-f*|-S|-S*|--format|--severity|--format=*|--severity=*)
+          sc_dropped=1
+          sc_prev="$sc_opt"
+          ;;
+        (*)
+          case "$sc_prev" in
+            (-f|--format|-S|--severity) ;;
+            (*) sc_kept="$sc_kept $sc_opt" ;;
+          esac
+          sc_prev=""
+          ;;
+      esac
+    done
+    sc_kept=${sc_kept# }
+    if [ "$sc_dropped" -eq 1 ]; then
+      echo "› shellcheck: format/severity override in SHELLCHECK_OPTS ignored — the verdict reads gcc format at style severity"
+    fi
     for sha in $shas; do
       # A fresh directory per commit holding only that commit's scripts, removed once it is
       # checked; the subshell trap above still cleans the root on every early exit.
@@ -297,14 +328,32 @@ if command -v shellcheck >/dev/null 2>&1; then
         echo "› shellcheck: no shell script $where — nothing to check there"
       else
         echo "› shellcheck ($((count)) scripts $where, blocking at severity=warning)"
-        ( cd "$tree" && xargs -0 shellcheck -S warning -- < "$shellcheck_tmp/scripts" ) || {
+        # One run at the widest severity, gcc format (was two: a blocking pass, then the same
+        # scripts again for advice). The error/warning lines in the one output ARE the blocking
+        # verdict; every other line is the advice — one read of one run instead of two passes
+        # over files already read.
+        out=$( cd "$tree" && env SHELLCHECK_OPTS="$sc_kept" xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/scripts" 2> "$shellcheck_tmp/err" )
+        sc_rc=$?
+        err=$(cat "$shellcheck_tmp/err")
+        blocking=$(printf '%s\n' "$out" | grep -E ':[0-9]+:[0-9]+: (warning|error):' || true)
+        # xargs folds the checker's own exit status into 1 (BSD) or 123 (GNU), so findings and
+        # "the checker itself failed" can share a number; stderr separates them — and both block,
+        # exactly as a failed run of the old blocking pass always did.
+        if [ -n "$blocking" ] || [ -n "$err" ] || { [ "$sc_rc" -ne 0 ] && [ "$sc_rc" -ne 1 ] && [ "$sc_rc" -ne 123 ]; }; then
+          if [ -n "$err" ]; then
+            printf '%s\n' "$err"
+          fi
+          if [ -n "$blocking" ]; then
+            printf '%s\n' "$blocking"
+          fi
           echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
           exit 1
-        }
+        fi
         # Everything below the blocking bar, shown once the push is already cleared. Never affects
-        # the exit code — advice that can fail a push is not advice.
-        advice=$( ( cd "$tree" && xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/scripts" 2>/dev/null ) \
-          | grep -v ': warning:\|: error:' || true)
+        # the exit code — advice that can fail a push is not advice. ERE on purpose: the '\|'
+        # alternation this replaced is a GNU-ism BSD grep reads literally, which reprinted the
+        # blocking findings verbatim as "advice" on a BSD desk.
+        advice=$(printf '%s\n' "$out" | grep -Ev ':[0-9]+:[0-9]+: (warning|error):' || true)
         if [ -n "$advice" ]; then
           echo "  · style/info (not blocking):"
           printf '%s\n' "$advice" | sed 's/^/    /'
@@ -338,7 +387,9 @@ if [ -x "$GATE" ]; then
     "$GATE" screen --help >/dev/null 2>&1 ||
       echo "etymd: this checker does not understand 'screen' (needs etymd 0.11+) — upgrade it, or set CONTENT_GATE to a checker that does." >&2
   fi
+elif [ -n "${CONTENT_GATE:-}" ]; then
+  echo "pre-push: CONTENT_GATE is set but not usable: $GATE (advisory screen skipped)" >&2
 fi
 
 exit 0
-# etymd:generated pack-v22 aec203b897c8dd48
+# etymd:generated pack-v24 ca83d5a5e63e1b45
