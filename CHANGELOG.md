@@ -1,5 +1,60 @@
 # etymd
 
+## 0.21.0
+
+### Minor Changes
+
+- 7cbe8a5: Two new lenses run with the normal audit. `comment-truth` checks source-code comments the
+  way instruction files are checked: a comment citing a command, path, doc page or decision id
+  is a claim, and one whose reference died is reported with file and line — many comments
+  citing one dead reference collapse into a single finding. Extraction is per language and
+  string-aware, so text inside a string literal never becomes a claim; test, fixture, mock and
+  vendor files are counted and disclosed as skipped, never silently dropped. `pin-integrity`
+  judges dependency pins (`overrides`, `resolutions`, `patchedDependencies`) by offline
+  lockfile arithmetic: an override nothing in the tree requests any more, or a patch whose
+  target version the lock no longer carries, is a dead pin the manifest no longer means; a pin
+  the lockfile cannot judge is disclosed, never flagged.
+
+### Patch Changes
+
+- 0f21ec6: The `bin` entry in package.json is written as `dist/cli.js` instead of `./dist/cli.js`, the form npm normalises it to. npm no longer warns on publish that the bin script name was cleaned.
+- 9c3af51: Generated pre-push re-baselines when the shellcheck binary changes. A new checker release
+  can flag scripts already sitting on the remote, and the per-commit read only re-reads what a
+  commit touches — those findings waited for each script's next edit. The hook now stamps the
+  checker's version inside the git dir (never the working tree, so no repo grows an untracked
+  file for bookkeeping) and checks every commit of a push whole on the first push after the
+  version moves, saying so in its output; the stamp is rewritten before the checks run, so an
+  interrupted push cannot re-trigger the re-baseline. A commit's `.shellcheckrc` files are read
+  as raw blobs into the scratch tree the checker runs in, so a config-only change is honoured
+  without touching scripts.
+- 61b61b3: Four refinements to the generated pre-push gate, shipped together. A new branch's push range
+  is bounded by the remote actually being pushed to: commits only OTHER remotes hold were gated
+  by nobody (a fetch runs no hooks), so they stay in the range and are read here, while commits
+  the pushed-to remote already received drop out; a push that names a URL instead of a
+  configured remote keeps the wide bound, because `--remotes=<url>` matches no refs and would
+  check a fresh clone's entire history. A hand run of the hook from a terminal no longer hangs
+  waiting on stdin that never arrives — the pushed refs are read only when stdin is not a
+  terminal, and a terminal run says so. Scripts under interpreters outside the sh dialects
+  (ksh, ash) are counted in their own bucket and announced like the zsh exclusion, instead of
+  leaving the coverage accounting silently short of them. And a checked scratch tree that
+  cannot be removed after the checks pass refuses the push naming the leftover directory,
+  instead of exiting nonzero with no diagnosis. Regenerate existing hooks with
+  `etymd gates --yes` to apply.
+- cfb5139: Generated pre-push reads its discovery tallies through arithmetic before the integer tests
+  consume them. POSIX permits `wc` to pad its counts with leading blanks, and a `[`
+  implementation may reject a padded integer — which would turn all three gate branches false
+  and silently skip the shellcheck step, the exact silent coverage shrink the pack's comments
+  promise cannot happen. No mainstream shell was shown to fail (bash, dash and busybox all
+  parse padded integers), so this is portability hardening that also makes the hook consistent
+  with its own stripped `wc -l` read. Regenerate existing hooks with `etymd gates --yes` to
+  apply.
+- ce8cb64: Generated shell-script discovery now classifies a shebang whose interpreter name is followed
+  by a tab or a carriage return. `#!/bin/sh<TAB>-e` and CRLF-committed first lines previously
+  matched no bucket — not shellchecked, not excluded, not disclosed — so such scripts shipped
+  with no checker ever reading them. They now land in the checked set; a CRLF-committed script
+  is read and blocks on shellcheck's own SC1017 verdict instead of passing silently. Regenerate
+  existing hooks with `etymd gates --yes` to apply the correction.
+
 ## 0.20.0
 
 ### Minor Changes
