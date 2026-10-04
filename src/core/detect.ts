@@ -867,10 +867,14 @@ export async function checkClaudePointer(
   if (claudeVersion === undefined) resolved = await detectClaudeCodeVersion()
   else if (claudeVersion === null) resolved = { state: "absent" }
   else if (typeof claudeVersion === "string") {
-    // Injected versions pass the same extraction as pinned ones — one rule, no drift.
-    const v = VERSION_RE.exec(claudeVersion)?.[1]
-    resolved = v
-      ? { state: "version", version: v }
+    // An asserted version is parsed strictly — a triple plus an optional prerelease suffix —
+    // and judged as given, never trimmed to its numeric triple the way a pin or probe output
+    // is: the caller vouches for the whole string, so a prerelease of the fallback predates
+    // it. A string that is not a version establishes nothing and reads as undetermined — the
+    // fail-closed answer this kind exists for; the old-reader lean is for versions that parse.
+    const strict = /^(\d+\.\d+\.\d+)(-[0-9A-Za-z.-]+)?$/.exec(claudeVersion.trim())
+    resolved = strict
+      ? { state: "version", version: strict[0] }
       : { state: "undetermined", reason: `version ${claudeVersion} is not X.Y.Z` }
   } else resolved = claudeVersion
   if (resolved.state === "undetermined") {

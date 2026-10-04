@@ -978,12 +978,12 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
       kind: "no-import",
     },
     {
-      name: "trailing garbage after the triple still yields the triple",
+      name: "trailing garbage after the triple establishes nothing — the triple is not assumed",
       build: async (root) => {
         await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
       },
       version: `${CLAUDE_AGENTS_FALLBACK_VERSION}garbage`,
-      via: "native-fallback",
+      kind: "undetermined",
     },
     {
       name: "an import indented by two spaces still loads",
