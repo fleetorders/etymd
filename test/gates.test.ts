@@ -596,7 +596,7 @@ exit 23
     await runPrePush(env, pushed)
     const calls = await recorded()
     expect(calls.length).toBeGreaterThan(0)
-    for (const args of calls) expect(args).toContain("eol-less")
+    for (const args of calls) expect(args).toContain("./scripts/eol-less")
   })
 })
 
@@ -903,10 +903,10 @@ process.stdout.write("      " + n + "\\n")
       const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
 
       await runPrePush(env, update("main", await revParse("HEAD"), mainTip))
-      // Two passes (blocking, then advice) for the side commit, and two more for the merge.
-      // Diffed against the wrong parent, the merge would show only main's docs change.
+      // One checker run per pushed commit: the side commit's and the merge's. Diffed against
+      // the wrong parent, the merge would show only main's docs change.
       const withSide = (await recorded()).filter((args) => args.includes("./tool/side.sh"))
-      expect(withSide).toHaveLength(4)
+      expect(withSide).toHaveLength(2)
     })
 
     it("the commit that installs the gate is checked whole — scripts no gate ever read", async () => {
@@ -1127,7 +1127,7 @@ describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's r
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as string[])
-    expect(calls).toHaveLength(2)
+    expect(calls).toHaveLength(1)
     for (const args of calls) {
       expect(args.filter((arg) => arg.startsWith("./")).sort()).toEqual([
         "./tool/crlf.sh",
@@ -1159,9 +1159,8 @@ describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's r
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as string[])
-    // The blocking pass and the style/advice pass each see only the sh script — the ksh one
-    // is never handed to the checker.
-    expect(calls).toHaveLength(2)
+    // The one run sees only the sh script — the ksh one is never handed to the checker.
+    expect(calls).toHaveLength(1)
     for (const args of calls) {
       expect(args.filter((arg) => arg.startsWith("./"))).toEqual(["./tool/do.sh"])
     }
@@ -1460,7 +1459,12 @@ describe.skipIf(!existsSync(CLI))("etymd gates — a set-but-unusable override s
     await bareFixture()
 
     const env = { ...process.env, CONTENT_GATE: path.join(dir, "no-such-checker") }
-    const { stderr } = await pExecFile("sh", [".githooks/pre-push"], { cwd: dir, env })
+    // stdin must reach EOF: the hook reads the pushed refs from it, and execFile leaves its
+    // pipe open — without /dev/null the read blocks forever (git itself always closes stdin).
+    const { stderr } = await pExecFile("sh", ["-c", '".githooks/pre-push" < /dev/null', "sh"], {
+      cwd: dir,
+      env,
+    })
     expect(stderr).toContain("pre-push: CONTENT_GATE is set but not usable")
     expect(stderr).toContain("no-such-checker")
   })
@@ -1488,7 +1492,9 @@ describe.skipIf(!existsSync(CLI))("etymd gates — a set-but-unusable override s
   it("an unset gate stays a silent no-op — the line is for misconfiguration, not absence", async () => {
     await bareFixture()
 
-    const { stderr } = await pExecFile("sh", [".githooks/pre-push"], { cwd: dir })
+    const { stderr } = await pExecFile("sh", ["-c", '".githooks/pre-push" < /dev/null', "sh"], {
+      cwd: dir,
+    })
     expect(stderr).not.toContain("is set but not usable")
   })
 })
