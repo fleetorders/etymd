@@ -13,6 +13,9 @@ export default defineConfig({
     // Second occurrence, 2026-10: the fleet sweep tests grew with the pack work (the pinned
     // no-.etymd sweep idles around 7.5s) and blew 20s on a contended machine running the whole
     // suite in parallel — green isolated, red loaded. Same remedy, same reason: 60s.
-    testTimeout: 60_000,
+    // Third occurrence, 2026-10-04: with several heavy jobs sharing the machine, three
+    // subprocess tests (screen, propose ×2) ran just past 60s — green isolated, red loaded,
+    // a third time. The bound is a hang detector, not a budget; 180s.
+    testTimeout: 180_000,
   },
 })
