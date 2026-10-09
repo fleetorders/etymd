@@ -520,6 +520,49 @@ describe.skipIf(!existsSync(CLI))(
       },
     )
 
+    it("PINNED: a branch that merged commits a remote already has does not re-check them", async () => {
+      // The observed defect: the existing-branch range was "$rsha..$lsha" with no remote
+      // subtraction, so a branch that merged the upstream re-checked every upstream commit
+      // since its base — each at its own tree, where later fixes do not exist. A remote
+      // already gated those commits when they landed there; the same subtraction the
+      // new-branch case uses bounds this range too.
+      await baseRepo()
+      await write("tool/main-side.sh", "#!/bin/sh\necho main\n")
+      await commitAll("chore: main-side script")
+      const mainSide = await revParse("HEAD")
+      // The remote-tracking ref says a remote already has this commit.
+      await pExecFile("git", ["update-ref", "refs/remotes/origin/main", mainSide], { cwd: dir })
+      await pExecFile("git", ["checkout", "-q", "-b", "topic", "HEAD~1"], {
+        cwd: dir,
+        env: GIT_ENV,
+      })
+      await write("tool/topic-side.sh", "#!/bin/sh\necho topic\n")
+      await commitAll("chore: topic-side script")
+      const topicTip = await revParse("HEAD")
+      await pExecFile("git", ["merge", "-q", "--no-ff", mainSide, "-m", "merge the main side"], {
+        cwd: dir,
+        env: GIT_ENV,
+      })
+      const merged = await revParse("HEAD")
+      await gates()
+      await recordShellcheck()
+      const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+
+      const { stdout } = await runPrePush(env, update("topic", merged, topicTip))
+      // The old range said "2 commit(s)" — the merge AND the already-remote main commit,
+      // each re-checked at its own tree. One commit is left: the merge itself.
+      expect(stdout).toContain("1 commit(s) in the pushed range")
+      const calls = await recorded()
+      expect(calls.length).toBeGreaterThan(0)
+      for (const args of calls) {
+        // The merge's own first-parent diff still reads the merged side's script; the
+        // already-remote commit's separate re-read is gone, and the remote tip's script
+        // (checked when it landed there) never reaches the checker.
+        expect(args).toContain("./tool/main-side.sh")
+        expect(args).not.toContain("./tool/topic-side.sh")
+      }
+    })
+
     it("PINNED: each pushed commit is checked for the scripts it changes, not its whole tree", async () => {
       // The cost being fixed: every script in every pushed commit, so the step grew with the range
       // length times the script count. An untouched script carries its parent's bytes,

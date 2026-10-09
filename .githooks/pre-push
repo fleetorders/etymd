@@ -67,7 +67,11 @@ if command -v shellcheck >/dev/null 2>&1; then
     # minus every remote-tracking ref — commits a remote already received were gated when they
     # landed there, and the residue is exactly this push's new commits. A remote sha this clone
     # has never seen (the remote moved on since the last fetch) cannot bound a range, so it takes
-    # the same new-branch rule instead of refusing a push the gate could have read. Enumeration
+    # the same new-branch rule instead of refusing a push the gate could have read. The same
+    # subtraction bounds the EXISTING-branch range: a branch that merged the upstream drags
+    # commits a remote already has into "$rsha..$lsha", and each is re-checked at its own tree,
+    # where later fixes do not exist — so the range is the local sha minus the remote sha AND
+    # every remote-tracking ref. Enumeration
     # failure refuses the push: a range the gate could not list is a range it did not read.
     # (pattern) with both parens: bash 3.2 (macOS /bin/sh) cannot parse an unbalanced )
     # in a case pattern.
@@ -80,7 +84,7 @@ if command -v shellcheck >/dev/null 2>&1; then
       case "$rsha" in
         (*[!0]*)
           if git cat-file -e "${rsha}^{commit}" 2>/dev/null; then
-            git rev-list "$rsha..$lsha"
+            git rev-list "$lsha" --not "$rsha" --remotes
           else
             git rev-list "$lsha" --not --remotes
           fi ;;
@@ -270,4 +274,4 @@ if [ -x "$GATE" ]; then
 fi
 
 exit 0
-# etymd:generated pack-v18 abcb4d6d5a88ac23
+# etymd:generated pack-v25 1460379d81ac595c
