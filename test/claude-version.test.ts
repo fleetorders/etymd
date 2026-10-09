@@ -40,7 +40,17 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 let dir: string
 
+// The docs recommend pinning ETYMD_CLAUDE_VERSION in CI — and a pinned value (any value)
+// short-circuits the probe before execFile, so every test mocking the probe's child process
+// would race the caller's environment. The suite owns the variable for its whole run: cleared
+// in setup, restored to exactly what the caller had (present or absent) afterwards.
+let claudePin: string | undefined
+let claudePinWasSet: boolean
+
 beforeEach(async () => {
+  claudePin = process.env.ETYMD_CLAUDE_VERSION
+  claudePinWasSet = Object.prototype.hasOwnProperty.call(process.env, "ETYMD_CLAUDE_VERSION")
+  delete process.env.ETYMD_CLAUDE_VERSION
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-claude-version-"))
   mocks.execFile.mockReset()
   vi.resetModules()
@@ -48,6 +58,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.unstubAllEnvs()
+  if (claudePinWasSet) process.env.ETYMD_CLAUDE_VERSION = claudePin
+  else delete process.env.ETYMD_CLAUDE_VERSION
   await fs.rm(dir, { recursive: true, force: true })
 })
 
