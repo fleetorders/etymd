@@ -523,7 +523,8 @@ const ABSENCE_AFTER_RE =
 // What may sit between a creation phrase and the mention it explains: gap characters, an
 // article, or a determiner — "creating a `CLAUDE.md`" — and nothing else, so creation language
 // about a different object on the line ("when creating the cache, read CLAUDE.md") stays out.
-const CREATION_GAP_RE = /^(?:\s*(?:a|an|the|this|these|those|it|its|them|one|new|your|our)|[\s`'"])*$/i
+const CREATION_GAP_RE =
+  /^(?:\s*(?:a|an|the|this|these|those|it|its|them|one|new|your|our)|[\s`'"])*$/i
 
 /**
  * A bare substring match is not enough: `~/.claude/CLAUDE.md` mentions CLAUDE.md but points at

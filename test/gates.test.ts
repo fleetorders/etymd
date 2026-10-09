@@ -572,15 +572,18 @@ exit 23
     },
   )
 
-  it.skipIf(!hasShellcheck)("a style-only script passes the push and keeps its advice", async () => {
-    await write("scripts/style", '#!/bin/sh\nx=`date`\necho "$x"\n')
-    const env = await fixture()
-    const pushed = await commitFixture()
+  it.skipIf(!hasShellcheck)(
+    "a style-only script passes the push and keeps its advice",
+    async () => {
+      await write("scripts/style", '#!/bin/sh\nx=`date`\necho "$x"\n')
+      const env = await fixture()
+      const pushed = await commitFixture()
 
-    const { stdout } = await runPrePush(env, pushed)
-    expect(stdout).toContain("style/info (not blocking)")
-    expect(stdout).toMatch(/SC\d{4}/)
-  })
+      const { stdout } = await runPrePush(env, pushed)
+      expect(stdout).toContain("style/info (not blocking)")
+      expect(stdout).toMatch(/SC\d{4}/)
+    },
+  )
 
   it("a shebang-only file with no trailing newline is still a script", async () => {
     // The first-line read must yield the partial line even without its newline — a

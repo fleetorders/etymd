@@ -10,4 +10,5 @@ checks in `pre-push` need nothing but their tools being on PATH. A later `etymd 
 overwrites the generated hooks (it asks before clobbering hand-edited ones), so fixes to them
 belong upstream in etymd's pack; your own guards go in `pre-push.local`, `pre-commit.local`
 or `commit-msg.local`, which etymd never reads, writes or regenerates.
+
 <!-- etymd:generated pack-v24 f5e69569e5fabfb1 -->
