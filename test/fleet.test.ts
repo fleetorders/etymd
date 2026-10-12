@@ -978,12 +978,12 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
       kind: "no-import",
     },
     {
-      name: "trailing garbage after the version is unparseable, and fails closed",
+      name: "trailing garbage after the triple still yields the triple",
       build: async (root) => {
         await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
       },
       version: `${CLAUDE_AGENTS_FALLBACK_VERSION}garbage`,
-      kind: "old-reader",
+      via: "native-fallback",
     },
     {
       name: "an import indented by two spaces still loads",
@@ -994,12 +994,12 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
       via: "root-import",
     },
     {
-      name: "a prerelease of the fallback version predates it",
+      name: "a prerelease of the fallback version reads as the fallback",
       build: async (root) => {
         await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
       },
       version: `${CLAUDE_AGENTS_FALLBACK_VERSION}-rc1`,
-      kind: "old-reader",
+      via: "native-fallback",
     },
     {
       name: "a version that does not parse fails closed",
@@ -1007,7 +1007,7 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
         await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
       },
       version: "nightly",
-      kind: "old-reader",
+      kind: "undetermined",
     },
     {
       name: "an inline mention is not an import",
