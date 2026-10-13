@@ -46,3 +46,11 @@ costs more trust than a missed lie, and every skip class is disclosed in the len
   and reports it as inert rather than crediting checks that do not fire. Where the execute bit is
   not a meaningful question (no POSIX mode bits), the checks are counted rather than a dead gate
   invented.
+
+- **The pre-push hook stages only `.shellcheckrc`, and reads only an unquoted
+  `external-sources=true`.** shellcheck also reads a config named `shellcheckrc` (no dot), and
+  accepts quoted values such as `external-sources="true"` (its man page, RC FILES). A repo using
+  either form gets the checker's default settings in the hook, or unfollowed helpers, where a
+  checkout would have applied them. Recorded rather than fixed until a user needs it; both are
+  pinned as known gaps in the checkout-parity table in `test/gates.test.ts`, which turns red the
+  day they are fixed.
