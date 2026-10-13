@@ -2,6 +2,7 @@ import path from "node:path"
 
 import YAML from "yaml"
 
+import { hooksDirAbs } from "../../core/detect.js"
 import type { ProjectFacts } from "../../core/types.js"
 import { isExecutable, pathExists, readJson, readText } from "../../core/util.js"
 
@@ -419,7 +420,7 @@ function parseGithubWorkflow(
  * checks are counted and the uncertainty is disclosed — never converted into an accusation.
  */
 async function companionOf(
-  root: string,
+  base: string,
   hooksDir: string,
   hook: string,
   hookText: string,
@@ -427,12 +428,14 @@ async function companionOf(
 ): Promise<{ rel: string; tools: GateTool[]; state: "counted" | "unverified" | "inert" } | null> {
   const rel = path.posix.join(hooksDir.split(path.sep).join("/"), `${hook}.local`)
   if (!hookText.includes(`${hook}.local`)) return null
-  const abs = path.join(root, hooksDir, `${hook}.local`)
+  // `base` arrives already welded through `hooksDirAbs`: a hooks directory outside the repo is
+  // absolute and a plain join would place the companion beside the scan root, not the hook.
+  const abs = path.join(base, `${hook}.local`)
   const text = await readText(abs)
   if (text === null) return null
   const [executable, hookExecutable] = await Promise.all([
     isExecutable(abs),
-    isExecutable(path.join(root, hooksDir, hook)),
+    isExecutable(path.join(base, hook)),
   ])
   if (executable === false && hookExecutable === true) return { rel, tools: [], state: "inert" }
   return {
@@ -452,13 +455,13 @@ async function localHookTools(
   const companions: string[] = []
   const unverifiedCompanions: string[] = []
   const inertCompanions: string[] = []
+  const hooksBase = hooks.dir ? hooksDirAbs(root, hooks.dir) : null
   const readHook = async (name: string): Promise<GateTool[]> => {
-    if (!hooks.dir) return empty
-    // `resolve`, not `join`: a hooks directory outside the repo is absolute and must stay so.
-    const text = await readText(path.resolve(root, hooks.dir, name))
+    if (!hooksBase || !hooks.dir) return empty
+    const text = await readText(path.join(hooksBase, name))
     if (!text) return empty
     const tools = new Set<GateTool>(matchTools(text, scripts))
-    const companion = await companionOf(root, hooks.dir, name, text, scripts)
+    const companion = await companionOf(hooksBase, hooks.dir, name, text, scripts)
     if (companion) {
       if (companion.state === "inert") inertCompanions.push(companion.rel)
       else {

@@ -84,9 +84,10 @@ export interface GitFacts {
   branch?: string
   head?: string
   /**
-   * `core.hooksPath`, stated repo-relative whenever the directory sits inside the worktree — git
-   * accepts an absolute spelling of the same directory, and the spelling is neither a fact nor
-   * something a committed baseline should carry. Absolute only when it points outside the repo.
+   * `core.hooksPath`, stated in the scan root's frame whenever the directory sits inside the
+   * worktree — git accepts an absolute spelling of one inside directory, and the spelling is
+   * neither a fact nor something a committed baseline should carry. A subdirectory scan records
+   * `../…` for a directory above it but still inside the repo. Absolute only outside the repo.
    */
   hooksPath?: string
   husky: boolean
@@ -99,7 +100,11 @@ export interface GitFacts {
 export interface HookFacts {
   /** husky-legacy = husky v3/v4 config (package.json `husky` key or husky.config.js), no .husky dir. */
   source: "githooks" | "husky" | "husky-legacy" | "custom" | "none"
-  /** The actual hooks directory when known (covers a custom core.hooksPath). */
+  /**
+   * The actual hooks directory when known (covers a custom core.hooksPath). Stated in the scan
+   * root's frame (`../…` when a subdirectory scan looks up at the repo top); absolute only for a
+   * directory outside the repo. Resolved through `hooksDirAbs`, never a hand-rolled join.
+   */
   dir?: string
   preCommit: boolean
   prePush: boolean

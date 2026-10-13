@@ -315,6 +315,36 @@ npm test || exit 1
     return buildGateInventory(dir, facts)
   }
 
+  it("reads the companion of a hooks directory OUTSIDE the repo", async () => {
+    // core.hooksPath can point anywhere git can read, and the companion beside that hook is
+    // wired the same way — welding the absolute directory onto the scan root lost it.
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-hooks-"))
+    try {
+      await write("package.json", PACKAGE)
+      await write(".github/workflows/ci.yml", CI)
+      await fs.writeFile(path.join(outside, "pre-push"), HOOK, "utf8")
+      await fs.chmod(path.join(outside, "pre-push"), 0o755)
+      await fs.writeFile(path.join(outside, "pre-push.local"), COMPANION, "utf8")
+      await fs.chmod(path.join(outside, "pre-push.local"), 0o755)
+      const { execFile } = await import("node:child_process")
+      const { promisify } = await import("node:util")
+      const run = async (args: string[]) => await promisify(execFile)("git", args, { cwd: dir })
+      await run(["init"])
+      await run(["config", "user.email", "t@example.com"])
+      await run(["config", "user.name", "t"])
+      await run(["config", "commit.gpgsign", "false"])
+      await run(["config", "core.hooksPath", outside])
+
+      const facts = await scanProject(dir)
+      const inv = await buildGateInventory(dir, facts)
+
+      expect(inv.local.source).toBe("custom")
+      expect(inv.local.prePush).toContain("test")
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true })
+    }
+  })
+
   it("counts a check that lives in the companion as locally enforced", async () => {
     const inv = await fixture({ companion: COMPANION, executable: true })
     expect(inv.local.prePush).toContain("test")
