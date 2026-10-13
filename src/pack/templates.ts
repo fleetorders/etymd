@@ -1084,9 +1084,10 @@ fi`
  * The scrub strips EVERY exported GIT_* name, not a fixed list — git adds variables over time,
  * and a name the list missed is the whole defect back. A step that genuinely means this
  * repository finds it again from its working directory, which for a hook is the repo root.
- * The audit and shellcheck steps are deliberately NOT routed through it: audit operates on the
- * repo it is invoked in and never descends into fixtures, and shellcheck's `git rev-list` / `git ls-tree` must
- * see the real repo.
+ * The shellcheck step is deliberately NOT routed through it: its git enumerations must see
+ * the real repo the push runs from. The audit step IS routed through it: it runs inside a
+ * materialised worktree of the pushed tip, where a child git inheriting git's exported
+ * names would ignore the worktree it stands in and read the pushing checkout instead.
  */
 const SCRUBBED_RUNNER = `
 # Gate steps run scrubbed of git's exported GIT_* names: a child git that inherits them ignores
@@ -1117,9 +1118,10 @@ export function generatePrePushHook(
     )
     .map((key) => `${run} ${key}`)
   const shellStep = facts.shell?.scripts ? shellcheckStep() : ""
-  // Emitted only when a step exists to call it — a helper with no caller is dead text in a file
-  // people read to learn what their gate does.
-  const runner = steps.length ? SCRUBBED_RUNNER : ""
+  // Emitted unconditionally: the audit step below runs through run_gate even in a repo with no
+  // package steps (shell is its only checkable surface), so the helper always has a caller —
+  // dead text was the right call only while no step ran scrubbed by default.
+  const runner = SCRUBBED_RUNNER
   const body = steps.length
     ? steps.map((s) => `echo "› ${s}"\nrun_gate ${s} || exit 1`).join("\n")
     : shellStep
@@ -1133,9 +1135,46 @@ export function generatePrePushHook(
   // instead of silently passing.
   const failOn = gates?.failOn ?? "risk"
   const auditStep = `
+# The truth gate reads the bytes BEING PUSHED: each pushed tip is materialised as a detached
+# worktree of its own commit and audited there, the same subject rule the shell gate above
+# applies — and the same raw-blob rule: the worktree is added --no-checkout and populated
+# by git archive, because a checkout would run every tracked file's smudge filters and let an
+# unrelated one's failure refuse the push. hooksPath is neutralised for the materialisation
+# itself so no hook of the pushed tree runs as a side effect of this read; the audit inside
+# sees the repo's own config. It runs scrubbed (run_gate): a child git inheriting git's
+# exported names would ignore the worktree it stands in. A push that carries no commits
+# (deletes only) audits nothing, and says so.
 if command -v etymd >/dev/null 2>&1; then
-  echo "› etymd audit --fail-on ${failOn}"
-  etymd audit --no-ledger --fail-on ${failOn} || exit 1
+  (
+    audit_tmp=$(mktemp -d) || exit 1
+    trap 'rm -rf "$audit_tmp"' 0
+    trap 'exit 1' 1 2 3 15
+    : > "$audit_tmp/tips" || exit 1
+    printf '%s\\n' "$refs" | while read -r _lref lsha _rref rsha; do
+      case "$lsha" in
+        (*[!0]*) ;;
+        (*) continue ;;
+      esac
+      if [ "$lsha" != "$rsha" ]; then
+        printf '%s\\n' "$lsha" >> "$audit_tmp/tips"
+      fi
+    done || exit 1
+    tips=$(sort -u "$audit_tmp/tips") || exit 1
+    [ -n "$tips" ] || echo "› etymd audit: no commit in the pushed refs (deletes only, or nothing new) — nothing to audit"
+    for tip in $tips; do
+      wt=$(mktemp -d "$audit_tmp/tip.XXXXXX") || exit 1
+      if ! git -c core.hooksPath=/dev/null worktree add --detach --no-checkout -q "$wt" "$tip" 2>/dev/null \
+        || ! git archive "$tip" | tar -xf - -C "$wt"; then
+        echo "✗ etymd audit: could not materialise $(git rev-parse --short "$tip" 2>/dev/null || echo "$tip") for the audit — refusing the push rather than certifying bytes this gate did not read" >&2
+        exit 1
+      fi
+      echo "› etymd audit --no-ledger --fail-on ${failOn} (at $(git rev-parse --short "$tip" 2>/dev/null || echo "$tip"), the pushed tip)"
+      if ! (cd "$wt" && run_gate etymd audit --no-ledger --fail-on ${failOn}); then
+        exit 1
+      fi
+      git -c core.hooksPath=/dev/null worktree remove --force "$wt" >/dev/null 2>&1 || exit 1
+    done
+  ) || exit 1
 else
   echo "› etymd audit skipped (not on PATH)"
 fi`

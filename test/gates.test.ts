@@ -1596,6 +1596,82 @@ describe.skipIf(!existsSync(CLI))("etymd gates — a set-but-unusable override s
   })
 })
 
+describe.skipIf(!existsSync(CLI))("etymd gates — the push-time audit reads the pushed tips", () => {
+  /** An audit stand-in that reports where it ran, and fails only inside a tree carrying
+   * BLOCK=1 — so the fixture can plant the gap on the branch, the checkout, or neither. */
+  async function auditStub() {
+    await write(
+      ".stub-bin/etymd",
+      '#!/bin/sh\nprintf \'%s %s\\n\' "$1" "$(pwd)" >> "$ETYMD_RECORD"\nif [ "$1" = "audit" ] && [ "$(cat "$PWD/BLOCK" 2>/dev/null)" = "1" ]; then\n  echo "gap-level finding at $(pwd)"\n  exit 1\nfi\nexit 0\n',
+    )
+    await fs.chmod(path.join(dir, ".stub-bin/etymd"), 0o755)
+  }
+
+  async function pushEnv(): Promise<NodeJS.ProcessEnv> {
+    await auditStub()
+    const log = path.join(dir, "audit-paths.log")
+    return {
+      ...process.env,
+      PATH: `${path.join(dir, ".stub-bin")}${path.delimiter}${process.env.PATH}`,
+      ETYMD_RECORD: log,
+    }
+  }
+
+  it("PINNED: a gap in the pushing CHECKOUT cannot block a clean branch — the audit runs at the pushed tip", async () => {
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await commitAll("chore: script")
+    await gates()
+    const env = await pushEnv()
+    const base = await revParse("HEAD~1")
+    const head = await revParse("HEAD")
+    // The working tree carries the gap; the pushed commits do not.
+    await write("BLOCK", "1\n")
+
+    const { stdout } = await runPrePush(env, update("main", head, base))
+    expect(stdout).toContain("the pushed tip")
+    const lines = (await fs.readFile(path.join(dir, "audit-paths.log"), "utf8")).trim().split("\n")
+    const audits = lines.filter((l) => l.startsWith("audit "))
+    expect(audits).toHaveLength(1)
+    // The audit stood in a materialised worktree of the tip, not in the pushing checkout —
+    // where the gap lives and would have refused this clean branch.
+    expect(audits[0]?.endsWith(dir)).toBe(false)
+    expect(stdout).not.toContain("gap-level finding")
+  })
+
+  it("PINNED: a gap ON THE PUSHED BRANCH refuses the push even from a clean checkout", async () => {
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await write("BLOCK", "1\n")
+    await commitAll("chore: script and gap")
+    await gates()
+    const env = await pushEnv()
+    const base = await revParse("HEAD~1")
+    const head = await revParse("HEAD")
+    // The checkout is clean OF the gap (uncommitted edit only) — the old audit read exactly
+    // this tree and passed; the pushed tip still carries it.
+    await write("BLOCK", "0\n")
+
+    await expect(runPrePush(env, update("main", head, base))).rejects.toMatchObject({
+      code: 1,
+      stdout: expect.stringContaining("gap-level finding"),
+    })
+  })
+
+  it("a push that carries no commits audits nothing and says so", async () => {
+    await baseRepo()
+    await gates()
+    const env = await pushEnv()
+    const head = await revParse("HEAD")
+
+    const { stdout } = await runPrePush(env, update("main", head, head))
+    expect(stdout).toContain("nothing to audit")
+    // And the audit never ran (the content screen's call is the only etymd invocation).
+    const lines = (await fs.readFile(path.join(dir, "audit-paths.log"), "utf8")).trim().split("\n")
+    expect(lines.filter((l) => l.startsWith("audit "))).toEqual([])
+  })
+})
+
 describe.skipIf(!existsSync(CLI))("etymd gates — the hooks README", () => {
   it("writes .githooks/README.md saying how git reaches the hooks", async () => {
     await write("package.json", JSON.stringify({ name: "demo", private: true }) + "\n")
