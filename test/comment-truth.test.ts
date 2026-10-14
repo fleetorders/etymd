@@ -149,6 +149,9 @@ describe("comment-truth lens", () => {
         'const url = "https://cdn.example.com/x";',
         "// The input/output/ phrase and example.com/foo.ts stay prose.",
         "// A bare pnpm build mention is a phrase, not an invocation.",
+        "// Fetched from https://cdn.example.com/dump — see src/dump.ts.",
+        "// No CLAUDE.md exists here.",
+        "// The app:src/x.ts token belongs to another scope.",
       ].join("\n"),
     )
     await write("src/live/config.ts", "export const config = 1\n")
@@ -160,6 +163,15 @@ describe("comment-truth lens", () => {
     expect(report.disclosures.some((d) => /bare `pnpm X`/.test(d))).toBe(true)
     expect(report.disclosures.some((d) => /slash-joined phrase/.test(d))).toBe(true)
     expect(report.disclosures.some((d) => /host name/.test(d))).toBe(true)
+    // The skip classes the shared checks reach in comments are disclosed here too, never
+    // silently dropped — each line below names one the instruction lens already discloses.
+    expect(report.disclosures.some((d) => /beside the URL they are fetched from/.test(d))).toBe(
+      true,
+    )
+    expect(report.disclosures.some((d) => /only to say it deliberately does not exist/.test(d))).toBe(
+      true,
+    )
+    expect(report.disclosures.some((d) => /namespace label/.test(d))).toBe(true)
   })
 
   it("collapses many comments citing one dead decision into one finding with example lines", async () => {

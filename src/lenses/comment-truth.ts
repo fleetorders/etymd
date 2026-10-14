@@ -131,6 +131,7 @@ export const commentTruthLens: Lens = {
       proseScripts: 0,
       hostnameLike: 0,
       unrootedDirs: 0,
+      namespaced: 0,
     }
 
     const env = await buildTruthEnv(root, facts)
@@ -291,6 +292,24 @@ export const commentTruthLens: Lens = {
         `${counters.unresolvableRefs} decision reference(s) in comments could not be resolved — no decisions file with \`## D-NNN\` entries; skipped, not flagged.`,
       )
     }
+    // The three below are counted by the same shared checks the instruction lens runs; comment
+    // prose reaches them just as instruction files do, so they are disclosed here too — a skip
+    // class that is counted and never named is a silent coverage hole.
+    if (counters.filteredSkipped) {
+      disclosures.push(
+        `${counters.filteredSkipped} command mention(s) in comments were workspace-filtered before resolution — not read as script claims; skipped, not flagged.`,
+      )
+    }
+    if (counters.fetchedSkipped) {
+      disclosures.push(
+        `${counters.fetchedSkipped} path claim(s) in comments sit beside the URL they are fetched from — another tree's files, unverifiable here; skipped, not flagged.`,
+      )
+    }
+    if (counters.absenceSkipped) {
+      disclosures.push(
+        `${counters.absenceSkipped} well-known doc mention(s) in comments name the doc only to say it deliberately does not exist here (create-this or absence prose) — skipped, not flagged.`,
+      )
+    }
     if (promotionSkips.bareInvocations) {
       disclosures.push(
         `${promotionSkips.bareInvocations} bare \`pnpm X\` / \`yarn X\` / \`bun X\` mention(s) in comments were not read as scripts — in a sentence that shape is a phrase as often as an invocation; skipped, not flagged.`,
@@ -309,6 +328,11 @@ export const commentTruthLens: Lens = {
     if (promotionSkips.unrootedDirs) {
       disclosures.push(
         `${promotionSkips.unrootedDirs} slash-joined phrase(s) ending in \`/\` in comments start with no directory that exists here — read as prose; skipped, not flagged.`,
+      )
+    }
+    if (promotionSkips.namespaced) {
+      disclosures.push(
+        `${promotionSkips.namespaced} slash token(s) in comments carry a namespace label (\`app:src/x.ts\` shape) — the label names another scope's paths, not this repo's root; skipped, not flagged.`,
       )
     }
 
