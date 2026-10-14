@@ -168,9 +168,9 @@ describe("comment-truth lens", () => {
     expect(report.disclosures.some((d) => /beside the URL they are fetched from/.test(d))).toBe(
       true,
     )
-    expect(report.disclosures.some((d) => /only to say it deliberately does not exist/.test(d))).toBe(
-      true,
-    )
+    expect(
+      report.disclosures.some((d) => /only to say it deliberately does not exist/.test(d)),
+    ).toBe(true)
     expect(report.disclosures.some((d) => /namespace label/.test(d))).toBe(true)
   })
 
