@@ -783,7 +783,11 @@ if command -v shellcheck >/dev/null 2>&1; then
     # where $1 names a remote this clone has configured; a URL push keeps the wide bound and
     # its old residue. A remote sha this clone has never seen (the remote moved on since the
     # last fetch) cannot bound a range, so it takes the same new-branch rule instead of
-    # refusing a push the gate could have read. Enumeration failure refuses the push: a range
+    # refusing a push the gate could have read. The same subtraction bounds the EXISTING-branch
+    # range: a branch that merged the upstream drags commits a remote already holds into
+    # "$rsha..$lsha", and each was re-checked at its own tree, where later fixes do not exist —
+    # so that range is the local sha minus the remote sha AND the remote-tracking refs.
+    # Enumeration failure refuses the push: a range
     # the gate could not list is a range it did not read.
     # (pattern) with both parens: bash 3.2 (macOS /bin/sh) cannot parse an unbalanced )
     # in a case pattern.
@@ -801,7 +805,7 @@ if command -v shellcheck >/dev/null 2>&1; then
       case "$rsha" in
         (*[!0]*)
           if git cat-file -e "\${rsha}^{commit}" 2>/dev/null; then
-            git rev-list "$rsha..$lsha"
+            git rev-list "$lsha" --not "$rsha" "$bound"
           else
             git rev-list "$lsha" --not "$bound"
           fi ;;
@@ -830,9 +834,11 @@ if command -v shellcheck >/dev/null 2>&1; then
     # is checked whole — once, after the change, not on every push as the old gate did. A
     # missing stamp is a first adoption, not a change (the adopting push is covered by the
     # gate-install trigger below); a stamp that cannot be read is doubt, and doubt points at
-    # more checking. The stamp is rewritten before the checks run, so a push cut short cannot
-    # re-trigger the re-baseline, and a stamp that cannot be written only means the next push
-    # re-checks whole again — never less coverage.
+    # more checking. The new stamp is written only AFTER the checks pass: a refused or
+    # interrupted push leaves the prior stamp in place, so the next push re-runs the
+    # whole-tree read instead of trusting a re-baseline that never completed — a write that
+    # cannot happen at all only means the next push re-checks whole again — never less
+    # coverage.
     checker_stamp="$(git rev-parse --git-dir 2>/dev/null)/etymd-shellcheck-version"
     checker_ver=$(shellcheck --version 2>/dev/null | sed -n 's/^version: //p' | head -n 1)
     force_whole=0
@@ -843,7 +849,6 @@ if command -v shellcheck >/dev/null 2>&1; then
         echo "› shellcheck: the checker changed (\${checker_old:-unknown} → \${checker_ver:-unknown}) — re-checking the whole shell surface this push"
       fi
     fi
-    printf '%s\\n' "$checker_ver" > "$checker_stamp" 2>/dev/null || true
     # The verdict is parsed from gcc-format lines, so a format or severity override in
     # SHELLCHECK_OPTS would hand the gate output it cannot read while the exit status still
     # speaks: under '-f json' a real warning once sailed into the advice block and the push
@@ -1065,6 +1070,10 @@ if command -v shellcheck >/dev/null 2>&1; then
         exit 1
       }
     done
+    # The re-baseline stamp is written here, after every commit's checks passed: a refused or
+    # interrupted push never reaches this line, so the next push re-runs the whole-tree read
+    # rather than trusting a re-baseline that did not complete.
+    printf '%s\\n' "$checker_ver" > "$checker_stamp" 2>/dev/null || true
   ) || exit 1
 else
   echo "› shellcheck skipped (not on PATH) — install it to gate this repo's shell scripts"
@@ -1138,8 +1147,14 @@ export function generatePrePushHook(
 # The truth gate reads the bytes BEING PUSHED: each pushed tip is materialised as a detached
 # worktree of its own commit and audited there, the same subject rule the shell gate above
 # applies — and the same raw-blob rule: the worktree is added --no-checkout and populated
-# by git archive, because a checkout would run every tracked file's smudge filters and let an
-# unrelated one's failure refuse the push. hooksPath is neutralised for the materialisation
+# entry by entry from git's object store (\`git cat-file blob\`, one process per file — the
+# price of never converting). A checkout would run every tracked file's smudge filters and
+# let an unrelated one's failure refuse the push, and \`git archive\` is no way out either:
+# it honours export-ignore (a file so marked would leave the audit silently) and it runs
+# working-tree conversion — a required filter kills it mid-stream, a non-required one hands
+# the audit CONVERTED bytes — while its death inside a pipeline read as tar's status and the
+# audit ran over an empty tree. Symlinks are re-linked, the exec bit is kept, submodule
+# entries have no bytes of their own. hooksPath is neutralised for the materialisation
 # itself so no hook of the pushed tree runs as a side effect of this read; the audit inside
 # sees the repo's own config. It runs scrubbed (run_gate): a child git inheriting git's
 # exported names would ignore the worktree it stands in. A push that carries no commits
@@ -1161,11 +1176,30 @@ if command -v etymd >/dev/null 2>&1; then
     done || exit 1
     tips=$(sort -u "$audit_tmp/tips") || exit 1
     [ -n "$tips" ] || echo "› etymd audit: no commit in the pushed refs (deletes only, or nothing new) — nothing to audit"
+    tab=$(printf '\\t')
     for tip in $tips; do
       wt=$(mktemp -d "$audit_tmp/tip.XXXXXX") || exit 1
-      if ! git -c core.hooksPath=/dev/null worktree add --detach --no-checkout -q "$wt" "$tip" 2>/dev/null \
-        || ! git archive "$tip" | tar -xf - -C "$wt"; then
+      if ! git -c core.hooksPath=/dev/null worktree add --detach --no-checkout -q "$wt" "$tip" 2>/dev/null \\
+        || ! git ls-tree -r -z "$tip" > "$audit_tmp/audit-entries"; then
         echo "✗ etymd audit: could not materialise $(git rev-parse --short "$tip" 2>/dev/null || echo "$tip") for the audit — refusing the push rather than certifying bytes this gate did not read" >&2
+        exit 1
+      fi
+      st=0
+      xargs -0 sh -c 'wt=$1; tab=$2; shift 2; for record do
+          meta=\${record%%"$tab"*}
+          file=\${record#*"$tab"}
+          case \${meta%% *} in (160000) continue ;; esac
+          case $file in (*/*) dir=\${file%/*} ;; (*) dir=. ;; esac
+          mkdir -p -- "$wt/$dir" || exit 1
+          case \${meta%% *} in
+            (120000) ln -s -- "$(git cat-file blob "\${meta##* }")" "$wt/$file" || exit 1 ;;
+            (*)
+              git cat-file blob "\${meta##* }" > "$wt/$file" || exit 1
+              case \${meta%% *} in (100755) chmod +x "$wt/$file" || exit 1 ;; esac ;;
+          esac
+        done' sh "$wt" "$tab" < "$audit_tmp/audit-entries" || st=$?
+      if [ "$st" -ne 0 ]; then
+        echo "✗ etymd audit: could not materialise $(git rev-parse --short "$tip" 2>/dev/null || echo "$tip") for the audit — a tracked entry could not be written as its raw blob — refusing the push rather than certifying bytes this gate did not read" >&2
         exit 1
       fi
       echo "› etymd audit --no-ledger --fail-on ${failOn} (at $(git rev-parse --short "$tip" 2>/dev/null || echo "$tip"), the pushed tip)"

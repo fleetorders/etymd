@@ -168,4 +168,4 @@ for entry do
     (*) exit 1 ;;
   esac
 done
-# etymd:generated pack-v24 28ef73acfe6160b4
+# etymd:generated pack-v26 28ef73acfe6160b4

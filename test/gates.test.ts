@@ -648,6 +648,50 @@ describe.skipIf(!existsSync(CLI))(
       },
     )
 
+    it("PINNED: a branch that merged commits a remote already has does not re-check them", async () => {
+      // The defect this pins: the existing-branch range was "$rsha..$lsha" with no remote
+      // subtraction, so a branch that merged the upstream re-checked every upstream commit
+      // since its base — each at its own tree, where later fixes do not exist, so a push of
+      // a clean branch was refused on warnings a later commit had already fixed. A remote
+      // already gated those commits when they landed there; the same subtraction the
+      // new-branch case uses bounds this range too.
+      await baseRepo()
+      await write("tool/main-side.sh", "#!/bin/sh\necho main\n")
+      await commitAll("chore: main-side script")
+      const mainSide = await revParse("HEAD")
+      // The remote-tracking ref says a remote already has this commit.
+      await pExecFile("git", ["update-ref", "refs/remotes/origin/main", mainSide], { cwd: dir })
+      await pExecFile("git", ["checkout", "-q", "-b", "topic", "HEAD~1"], {
+        cwd: dir,
+        env: GIT_ENV,
+      })
+      await write("tool/topic-side.sh", "#!/bin/sh\necho topic\n")
+      await commitAll("chore: topic-side script")
+      const topicTip = await revParse("HEAD")
+      await pExecFile("git", ["merge", "-q", "--no-ff", mainSide, "-m", "merge the main side"], {
+        cwd: dir,
+        env: GIT_ENV,
+      })
+      const merged = await revParse("HEAD")
+      await gates()
+      await recordShellcheck()
+      const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+
+      const { stdout } = await runPrePush(env, update("topic", merged, topicTip))
+      // The old range said "2 commit(s)" — the merge AND the already-remote main commit,
+      // each re-checked at its own tree. One commit is left: the merge itself.
+      expect(stdout).toContain("1 commit(s) in the pushed range")
+      const calls = await recorded()
+      expect(calls.length).toBeGreaterThan(0)
+      for (const args of calls) {
+        // The merge's own first-parent diff still reads the merged side's script; the
+        // already-remote commit's separate re-read is gone, and the remote tip's script
+        // (checked when it landed there) never reaches the checker.
+        expect(args).toContain("./tool/main-side.sh")
+        expect(args).not.toContain("./tool/topic-side.sh")
+      }
+    })
+
     it.skipIf(!hasShellcheck)(
       "PINNED: a commit another remote already has is gated when pushed elsewhere — fetched is not gated",
       async () => {
@@ -858,7 +902,8 @@ process.stdout.write("      " + n + "\\n")
       // A checker release can flag bytes nobody touched; the per-commit read would leave the
       // finding waiting for each script's next edit. The hook stamps the checker's version
       // in the git dir and re-checks whole on the first push after it moves — and only that
-      // push: the stamp is rewritten before the checks run, so nothing re-triggers.
+      // push: the new stamp is written after the checks pass, so a refused or interrupted
+      // push re-runs the re-baseline instead of trusting one that never completed.
       await baseRepo()
       await write("tool/old.sh", "#!/bin/sh\necho old\n")
       await commitAll("chore: an existing script")
@@ -884,6 +929,68 @@ process.stdout.write("      " + n + "\\n")
       expect(stdout).toContain("the checker changed (1.0.0 → 2.0.0)")
       expect(stdout).toContain("whole tree")
       expect((await recorded()).some((args) => args.includes("./tool/old.sh"))).toBe(true)
+    })
+
+    it("PINNED: a refused push does not consume the checker-change re-baseline", async () => {
+      // The stamp used to be written before the checks ran, so a push the checker's new
+      // version refused still recorded the new version — the retry then read only touched
+      // paths and the whole-surface re-baseline never completed. The stamp moves only after
+      // the checks pass; a failed push leaves the prior stamp, and the retry re-runs it.
+      const cleanAt = (version: string) =>
+        stub(
+          "shellcheck",
+          `#!/usr/bin/env node
+if (process.argv.includes("--version")) {
+  process.stdout.write("version: ${version}\\n")
+  process.exit(0)
+}
+`,
+        )
+      const flaggingAt = (version: string) =>
+        stub(
+          "shellcheck",
+          `#!/usr/bin/env node
+if (process.argv.includes("--version")) {
+  process.stdout.write("version: ${version}\\n")
+  process.exit(0)
+}
+for (const arg of process.argv.slice(2)) {
+  if (arg.startsWith("./")) process.stdout.write(arg + ":1:1: warning: a fabricated finding [SC2034]\\n")
+}
+process.exit(1)
+`,
+        )
+      await baseRepo()
+      await write("tool/do.sh", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: a script")
+      await gates()
+      await cleanAt("1.0.0")
+      await runPrePush(
+        await stubEnv(),
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      )
+
+      await write("docs/notes.md", "# Notes\n")
+      await commitAll("docs: no script touched")
+      await flaggingAt("2.0.0")
+      const env = await stubEnv()
+      await expect(
+        runPrePush(env, update("main", await revParse("HEAD"), await revParse("HEAD~1"))),
+      ).rejects.toMatchObject({ code: 1 })
+
+      // Same push, retried: the refused attempt left 1.0.0 in the stamp, so the checker
+      // change is still news — the whole-surface re-baseline runs again, not the narrow read.
+      const { stdout } = await runPrePush(
+        env,
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      ).then(
+        () => {
+          throw new Error("the flagging checker must keep refusing this push")
+        },
+        (error) => error,
+      )
+      expect(stdout).toContain("the checker changed (1.0.0 → 2.0.0)")
+      expect(stdout).toContain("whole tree")
     })
     it("PINNED: a merge is diffed against its first parent, so the merged side's scripts are read", async () => {
       await baseRepo()
@@ -1540,6 +1647,38 @@ describe.skipIf(!existsSync(CLI))("etymd gates — the push-time audit reads the
     // where the gap lives and would have refused this clean branch.
     expect(audits[0]?.endsWith(dir)).toBe(false)
     expect(stdout).not.toContain("gap-level finding")
+  })
+
+  it("PINNED: the audit's worktree carries raw blobs — a converting checkout filter cannot change what is audited", async () => {
+    // git archive (the old materialiser) runs working-tree conversion: a required filter
+    // killed it mid-stream and its death inside the pipeline read as tar's status — the audit
+    // then ran over an EMPTY tree; a non-required one handed the audit CONVERTED bytes. Both
+    // are the same lie: the gate certifying bytes it never read. Every entry is now written
+    // as its raw blob, no filter ever runs, and a converting filter changes nothing seen.
+    await baseRepo()
+    await pExecFile("git", ["config", "filter.smudge.smudge", "sed s/payload/SMUDGED/"], {
+      cwd: dir,
+    })
+    await pExecFile("git", ["config", "filter.smudge.clean", "cat"], { cwd: dir })
+    await pExecFile("git", ["config", "filter.smudge.required", "true"], { cwd: dir })
+    await write(".gitattributes", "*.bin filter=smudge\n")
+    await write("data.bin", "payload\n")
+    await commitAll("chore: a filtered file")
+    await gates()
+    const env = await stubEnv()
+    // The audit stand-in fails unless it reads the committed bytes: present and unconverted.
+    await write(
+      ".stub-bin/etymd",
+      '#!/bin/sh\n[ "$(cat data.bin 2>/dev/null)" = "payload" ] || { echo "audit read: $(cat data.bin 2>/dev/null)"; exit 1; }\nexit 0\n',
+    )
+    await fs.chmod(path.join(dir, ".stub-bin", "etymd"), 0o755)
+
+    const { stdout, stderr } = await runPrePush(
+      env,
+      update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+    )
+    expect(stdout).toContain("the pushed tip")
+    expect(stderr).not.toContain("external filter")
   })
 
   it("PINNED: a gap ON THE PUSHED BRANCH refuses the push even from a clean checkout", async () => {
