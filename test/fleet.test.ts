@@ -994,12 +994,12 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
       via: "root-import",
     },
     {
-      name: "a prerelease of the fallback version reads as the fallback",
+      name: "a prerelease of the fallback predates it — the assertion is judged as given",
       build: async (root) => {
         await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
       },
       version: `${CLAUDE_AGENTS_FALLBACK_VERSION}-rc1`,
-      via: "native-fallback",
+      kind: "old-reader",
     },
     {
       name: "a version that does not parse fails closed",
