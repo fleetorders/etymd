@@ -11,9 +11,10 @@ The rules for anyone, person or coding agent, who changes this repository.
 ## What this repo is
 
 `etymd`, an npm CLI with one objective: **keep your agent instructions true**. It checks what a
-repository tells its coding agents (AGENTS.md, Claude Code instruction files, rules, skills, and
-on request the task an agent is handed) against the repository itself: command claims, path
-claims, cross-references, CI-versus-local gate parity, context economy, drift against a
+repository tells its coding agents (AGENTS.md, Claude Code instruction files, rules, skills, the
+source comments citing them, the dependency pins binding the tree, and on request the task an
+agent is handed) against the repository itself: command claims, path claims, decision
+references, cross-references, CI-versus-local gate parity, context economy, drift against a
 committed baseline, with a ledger that remembers findings between runs. This file is audited by
 the tool itself, so every claim here must stay true. The design record is `docs/decisions.md`.
 
@@ -25,8 +26,10 @@ the tool itself, so every claim here must stay true. The design record is `docs/
   the onboarding planner, idempotent writes.
 - `src/engine/` — findings, the ledger, lens composition, the fleet sweep, premise, propose,
   milestones.
-- `src/lenses/` — the checkers: `instruction-truth/` (claims and the shared checks),
-  `state-freshness.ts`, `gate-integrity/`, `context-economy.ts`.
+- `src/lenses/` — the checkers: `instruction-truth/` (claims, per-language comment extraction
+  and the shared checks), `comment-truth.ts` (the same checks over source comments, D-013),
+  `pin-integrity.ts` (offline lockfile arithmetic over dependency pins), `state-freshness.ts`,
+  `gate-integrity/`, `context-economy.ts`.
 - `src/pack/` — the generated files (hooks, the AGENTS.md scaffold) and their version.
 - `src/ui/` — rendering; every terminal line goes through `src/ui/render.ts`.
 - `test/` — vitest suites and their fixtures. `docs/` — the reference docs and the design
@@ -44,7 +47,7 @@ the tool itself, so every claim here must stay true. The design record is `docs/
   dressed as a fact; every skipped class is counted and named.
 - **Precision over recall.** A false "your file is lying" costs more than a missed lie.
 - **The shared checks live once**, in `src/lenses/instruction-truth/checks.ts`; files, state
-  documents and the task all call them (D-010).
+  documents, source comments and the task all call them (D-010, D-013).
 - **A template change is a pack change:** bump `PACK_VERSION` in `src/pack/version.ts` when the
   meaning of a generated file changes; nothing outside `src/pack/` hardcodes template content.
 - **`--json` schemas are stable.** Changing one is a breaking change. The fleet `--json` output,

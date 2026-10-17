@@ -245,6 +245,47 @@ describe("fleet loader — the registry shape", () => {
   })
 })
 
+describe("fleet loader — the legacy two-file shape", () => {
+  // sources.json + sources.local.json predates the registry pair, and the loader still resolves
+  // it so a fleet that never migrated keeps sweeping. Nothing else in the suite exercises this
+  // resolver — a regression here would surface as a silently empty fleet, far from its cause.
+  it("parses sources.json with local dirs winning, then declared paths, then same-named siblings", async () => {
+    await write(
+      "sources.json",
+      JSON.stringify(
+        {
+          sources: [
+            { name: "alpha-notes", shape: "docs-only" },
+            { name: "beta-tool", shape: "cli", path: "checkouts/beta" },
+            { name: "gamma-web", shape: "webapp", private: true },
+          ],
+        },
+        null,
+        2,
+      ) + "\n",
+    )
+    await write(
+      "sources.local.json",
+      JSON.stringify({ dirs: { "gamma-web": "machine-dirs/gamma" } }, null, 2) + "\n",
+    )
+    const manifest = await loadFleetManifest(path.join(dir, "sources.json"))
+    expect(manifest.shape).toBe("sources")
+    expect(manifest.problems).toEqual([])
+    expect(manifest.localPresent).toBe(true)
+    const byName = new Map(manifest.entries.map((e) => [e.name, e]))
+    // Resolution order, pinned: the machine's dir mapping over both others, the declared
+    // path over the fallback, and the same-named sibling of the manifest's parent last.
+    expect(byName.get("gamma-web")?.resolvedRoot).toBe(
+      path.resolve(dir, "..", "machine-dirs", "gamma"),
+    )
+    expect(byName.get("beta-tool")?.resolvedRoot).toBe(path.resolve(dir, "checkouts", "beta"))
+    expect(byName.get("alpha-notes")?.resolvedRoot).toBe(path.resolve(dir, "..", "alpha-notes"))
+    expect(byName.get("gamma-web")?.private).toBe(true)
+    expect(byName.get("alpha-notes")?.kind).toBe("docs-only")
+    expect(byName.get("alpha-notes")?.profile).toBe("personal")
+  })
+})
+
 describe("fleet sweep — pinned invariants", () => {
   it("PINNED: a sweep never creates .etymd anywhere, with and without --persist-ledgers", async () => {
     await initRepo("alpha", { stateAt: "2026-01-01T10:00:00Z" })
@@ -857,6 +898,22 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
       kind: "old-reader",
     },
     {
+      name: "bare AGENTS.md, prerelease Claude Code older than the fallback",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+      },
+      version: "2.1.276-beta.4",
+      kind: "old-reader",
+    },
+    {
+      name: "bare AGENTS.md, a version string that is not a version",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+      },
+      version: "latest",
+      kind: "undetermined",
+    },
+    {
       name: ".claude/CLAUDE.md without the import shadows AGENTS.md",
       build: async (root) => {
         await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
@@ -921,12 +978,12 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
       kind: "no-import",
     },
     {
-      name: "trailing garbage after the version is unparseable, and fails closed",
+      name: "trailing garbage after the triple establishes nothing — the triple is not assumed",
       build: async (root) => {
         await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
       },
       version: `${CLAUDE_AGENTS_FALLBACK_VERSION}garbage`,
-      kind: "old-reader",
+      kind: "undetermined",
     },
     {
       name: "an import indented by two spaces still loads",
@@ -937,7 +994,7 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
       via: "root-import",
     },
     {
-      name: "a prerelease of the fallback version predates it",
+      name: "a prerelease of the fallback predates it — the assertion is judged as given",
       build: async (root) => {
         await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
       },
@@ -950,7 +1007,7 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
         await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
       },
       version: "nightly",
-      kind: "old-reader",
+      kind: "undetermined",
     },
     {
       name: "an inline mention is not an import",
@@ -1007,6 +1064,19 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
     expect(current.findings.some((f) => f.id.includes("claude-pointer-missing"))).toBe(false)
   })
 
+  it("a version that cannot be established is disclosed, never counted as clean", async () => {
+    await initRepo("unknowable")
+    await write("unknowable/AGENTS.md", AGENTS)
+    const manifestPath = await writeHub([personal("unknowable")])
+
+    vi.stubEnv("ETYMD_CLAUDE_VERSION", "latest")
+    const { findings, disclosures } = await collectWallFindings(await manifestAt(manifestPath))
+    expect(findings.some((f) => f.id.includes("claude-pointer-missing"))).toBe(false)
+    expect(
+      disclosures.some((d) => d.includes("unknowable") && d.includes("ETYMD_CLAUDE_VERSION")),
+    ).toBe(true)
+  })
+
   it("emits nothing for the passing shapes — pointer, symlink, and no-contract repos", async () => {
     await initRepo("pointed")
     await write("pointed/AGENTS.md", AGENTS)
@@ -1052,6 +1122,21 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
     await add({
       cwd: path.dirname(manifestPath),
       target: path.join(dir, "bare-in"),
+      trust: "private",
+      yes: true,
+    })
+    const after = JSON.parse(await fs.readFile(manifestPath, "utf8")) as { projects: unknown[] }
+    expect(after.projects).toHaveLength(1)
+  })
+
+  it("`fleet add` registers under an undetermined version pin too — the note pins it, nothing refuses", async () => {
+    vi.stubEnv("ETYMD_CLAUDE_VERSION", "latest")
+    await initRepo("pinned-wrong")
+    await write("pinned-wrong/AGENTS.md", AGENTS)
+    const manifestPath = await writeHub([])
+    await add({
+      cwd: path.dirname(manifestPath),
+      target: path.join(dir, "pinned-wrong"),
       trust: "private",
       yes: true,
     })

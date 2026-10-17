@@ -51,6 +51,7 @@
     "ci": {
       "system": "github",
       "files": [
+        ".github/workflows/checks.yml",
         ".github/workflows/ci.yml"
       ]
     },
@@ -235,7 +236,11 @@
         },
         {
           "name": ".github",
-          "files": 1
+          "files": 2
+        },
+        {
+          "name": "media",
+          "files": 2
         },
         {
           "name": "scripts",
