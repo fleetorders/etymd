@@ -1681,6 +1681,49 @@ describe.skipIf(!existsSync(CLI))("etymd gates — the push-time audit reads the
     expect(stderr).not.toContain("external filter")
   })
 
+  it("PINNED: the audit worktree's index is filled and the checkout's node_modules is linked in", async () => {
+    // Two quiet gates in one materialisation: --no-checkout leaves a worktree's index EMPTY,
+    // so the audit's git-scoped enumeration (ls-files) listed nothing while every file sat on
+    // disk — the comment lens answered "nothing to check" and never gated a push. And a tree
+    // without node_modules degrades every command claim into "unverifiable, skipped" — dead
+    // commands are the main risk-tier finding. read-tree fills the index from the pushed
+    // commit; the checkout's install is linked in, because installed binaries belong to the
+    // checkout, not the commit.
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await commitAll("chore: script")
+    await gates()
+    const env = await pushEnv()
+    await fs.mkdir(path.join(dir, "node_modules", ".bin"), { recursive: true })
+    // Records what an etymd standing in the audit worktree would see: how many tracked files
+    // ls-files lists (0 was the defect), and whether node_modules resolves. The label keeps
+    // the audit call apart from the advisory content screen, which routes here too.
+    await stub(
+      "etymd",
+      [
+        "#!/bin/sh",
+        'if [ "$1" = "--version" ]; then printf "version: 0.0.0-stub\\n"; exit 0; fi',
+        'printf \'%s %s\\n\' "$1" "$(git ls-files | wc -l | tr -d "[:space:]")" >> "$ETYMD_RECORD"',
+        '[ "$1" = "audit" ] && [ -e node_modules/.bin ] && printf "audit-linked\\n" >> "$ETYMD_RECORD"',
+        "exit 0",
+      ].join("\n") + "\n",
+    )
+
+    const { stdout } = await runPrePush(
+      env,
+      update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+    )
+    expect(stdout).toContain("the pushed tip")
+    const log = await fs.readFile(path.join(dir, "audit-paths.log"), "utf8")
+    const auditCount = log
+      .split("\n")
+      .find((l) => /^audit \d+$/.test(l.trim()))
+      ?.trim()
+    expect(auditCount).toBeDefined()
+    expect(Number(auditCount?.split(" ")[1])).toBeGreaterThan(0)
+    expect(log).toContain("audit-linked")
+  })
+
   it("PINNED: a gap ON THE PUSHED BRANCH refuses the push even from a clean checkout", async () => {
     await baseRepo()
     await write("scripts/run", "#!/bin/sh\necho ok\n")

@@ -1154,7 +1154,14 @@ export function generatePrePushHook(
 # working-tree conversion — a required filter kills it mid-stream, a non-required one hands
 # the audit CONVERTED bytes — while its death inside a pipeline read as tar's status and the
 # audit ran over an empty tree. Symlinks are re-linked, the exec bit is kept, submodule
-# entries have no bytes of their own. hooksPath is neutralised for the materialisation
+# entries have no bytes of their own. --no-checkout leaves the worktree's index EMPTY, so the
+# audit's git-scoped enumeration (ls-files) would list nothing while every file sits on disk —
+# read-tree fills the index from the same commit directly: no checkout runs, no filter, the
+# raw-blob rule holds. Installed binaries belong to the checkout, not the commit: the checkout's
+# node_modules is linked into the audit tree (best effort — a committed node_modules path stays
+# the commit's), because a tree without it degrades every command claim the audit cannot resolve
+# to an installed binary into "unverifiable, skipped", and dead commands are exactly what this
+# gate exists to catch. hooksPath is neutralised for the materialisation
 # itself so no hook of the pushed tree runs as a side effect of this read; the audit inside
 # sees the repo's own config. It runs scrubbed (run_gate): a child git inheriting git's
 # exported names would ignore the worktree it stands in. A push that carries no commits
@@ -1180,6 +1187,7 @@ if command -v etymd >/dev/null 2>&1; then
     for tip in $tips; do
       wt=$(mktemp -d "$audit_tmp/tip.XXXXXX") || exit 1
       if ! git -c core.hooksPath=/dev/null worktree add --detach --no-checkout -q "$wt" "$tip" 2>/dev/null \\
+        || ! git -C "$wt" -c core.hooksPath=/dev/null read-tree "$tip" \\
         || ! git ls-tree -r -z "$tip" > "$audit_tmp/audit-entries"; then
         echo "✗ etymd audit: could not materialise $(git rev-parse --short "$tip" 2>/dev/null || echo "$tip") for the audit — refusing the push rather than certifying bytes this gate did not read" >&2
         exit 1
@@ -1202,6 +1210,11 @@ if command -v etymd >/dev/null 2>&1; then
         echo "✗ etymd audit: could not materialise $(git rev-parse --short "$tip" 2>/dev/null || echo "$tip") for the audit — a tracked entry could not be written as its raw blob — refusing the push rather than certifying bytes this gate did not read" >&2
         exit 1
       fi
+      # The checkout's installed binaries, linked in for the audit run (see the block comment):
+      # any failure here only restores the skip-with-disclosure behaviour, never blocks a push.
+      checkout_root=$(git rev-parse --show-toplevel 2>/dev/null) \\
+        && [ -d "$checkout_root/node_modules" ] \\
+        && ln -s "$checkout_root/node_modules" "$wt/node_modules" || :
       echo "› etymd audit --no-ledger --fail-on ${failOn} (at $(git rev-parse --short "$tip" 2>/dev/null || echo "$tip"), the pushed tip)"
       if ! (cd "$wt" && run_gate etymd audit --no-ledger --fail-on ${failOn}); then
         exit 1
