@@ -93,7 +93,7 @@ export interface PromotedText {
 
 const CODE_SPAN_RE = /(```[\s\S]*?```|`[^`\n]+`)/g
 // In prose only `<pm> run <script>` (and the `npm test` / `npm start` shorthands) reads as an
-// invocation. A bare `pnpm X` / `yarn X` / `bun X` is a phrase as often as a command ("the pnpm
+// invocation. A bare pnpm/yarn/bun plus a name is a phrase as often as a command ("the pnpm
 // workspace", "bun will …"), so it stays prose unless the author backticked it — the extractor's
 // bare form is for code spans, where the backtick itself was the author's signal.
 const RUN_RE = /\b(?:pnpm|yarn|npm|bun)\s+run\s+(?!-)([A-Za-z0-9:._-]+)|\bnpm\s+(?:test|start)\b/g
@@ -114,7 +114,7 @@ const TRAIL_RE = /[.,;:!?)\]}"']*$/
 
 /**
  * People do not backtick paths in a prompt. Promote the bare mentions the claim extractors would
- * otherwise treat as prose — `src/x.ts`, `docs/design/`, `npm run lint` — into code spans, leaving
+ * otherwise treat as prose — `src/x.ts`, `docs/design/`, `npm run typecheck` — into code spans, leaving
  * anything already in a code span untouched. Precision over recall: only what an instruction
  * file's extractor would accept is promoted, and every class left as prose is counted.
  */
@@ -136,7 +136,8 @@ export function promoteBareTokens(text: string, ctx: PromotionContext): Promoted
 function promoteProse(segment: string, ctx: PromotionContext, skips: PromotionSkips): string {
   skips.bareInvocations += segment.match(BARE_PM_RE)?.length ?? 0
   const withCommands = segment.replace(RUN_RE, (m, script?: string) => {
-    // A sentence-ending stop is not part of the script name: `npm run build.` names `build`.
+    // A sentence-ending stop is not part of the script name: `npm run build` then a period
+    // names `build`.
     const trail = TRAIL_RE.exec(m)?.[0] ?? ""
     const core = trail ? m.slice(0, -trail.length) : m
     if (script !== undefined) {

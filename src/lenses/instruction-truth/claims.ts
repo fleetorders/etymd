@@ -183,7 +183,7 @@ const PM_BUILTINS = new Set([
   "help",
 ])
 
-/** Script names referenced via `pnpm X` / `yarn X` / `npm run X` / `bun run X` / `npm test`. */
+/** Script names referenced via `<pm> run <script>` invocations, plus `npm test` and `npm start`. */
 export function extractCommandClaims(text: string): CommandClaims {
   const scripts = new Map<string, string>()
   let filteredSkipped = 0
@@ -202,7 +202,8 @@ export function extractCommandClaims(text: string): CommandClaims {
         filteredSkipped += 1
         continue
       }
-      // `npm X` only refers to a script via `npm run X` or the test/start shorthands.
+      // `npm` plus a bare name only refers to a script via the run form or the test/start
+      // shorthands.
       if (pm === "npm" && !ranExplicit && arg !== "test" && arg !== "start") continue
       if ((pm === "bun" || pm === "yarn" || pm === "pnpm") && !ranExplicit && PM_BUILTINS.has(arg))
         continue

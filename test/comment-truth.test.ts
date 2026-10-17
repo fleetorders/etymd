@@ -96,6 +96,54 @@ describe("comment extraction", () => {
     ])
   })
 
+  it("does not read a JS regex literal's pattern as a block comment", () => {
+    // `/^\\/*/` contains `\\/*` — a scanner without regex awareness opened a block comment there
+    // and swallowed the code after it, manufacturing claims from live code.
+    const source = [
+      'const p = s.replace(/^\\/*/, "")',
+      'const q = r.replace(/a[/]\\//, "x")',
+      "const ok = 1 // real comment",
+    ].join("\n")
+    const spans = extractComments(source, commentStyleFor("x.ts") as object)
+    expect(spans).toEqual([{ text: " real comment", line: 3 }])
+  })
+
+  it("keeps JS division as division — no phantom comments, none lost", () => {
+    const source = [
+      "const a = total / count",
+      "const b = half /2",
+      "// comment",
+      "const c = a / b",
+    ].join("\n")
+    const spans = extractComments(source, commentStyleFor("x.ts") as object)
+    expect(spans).toEqual([{ text: " comment", line: 3 }])
+  })
+
+  it("reads shell # comments only at the start of a word", () => {
+    // `${f#prefix}` strips a prefix — it is parameter expansion, not a comment, and reading it
+    // as one turned path-shaped pattern text into findings.
+    const source = [
+      "f=${f#src/app/legacy/}",
+      "n=$#",
+      "echo hi # real comment",
+      "echo a#b",
+      "echo a;# also a comment — new word after the metacharacter",
+    ].join("\n")
+    const spans = extractComments(source, commentStyleFor("x.sh") as object)
+    expect(spans).toEqual([
+      { text: " real comment", line: 3 },
+      { text: " also a comment — new word after the metacharacter", line: 5 },
+    ])
+  })
+
+  it("keeps YAML mid-word # (URL fragments) out of comments", () => {
+    const spans = extractComments(
+      "url: http://x.dev/a#frag\nkey: v # comment\n",
+      commentStyleFor("x.yml") as object,
+    )
+    expect(spans).toEqual([{ text: " comment", line: 2 }])
+  })
+
   it("maps Dockerfile and lockfile basenames", () => {
     expect(commentStyleFor("deploy/Dockerfile")).toBeTruthy()
     expect(commentStyleFor("pnpm-lock.yaml")).toBeNull()

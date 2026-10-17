@@ -102,7 +102,9 @@ export const commentTruthLens: Lens = {
       return skippedLens("not a git repository — tracked source files cannot be enumerated")
     }
     const listed = await git(root, ["ls-files", "-z"])
-    if (!listed)
+    // Empty output is zero tracked files (a freshly materialised tree can honestly have none —
+    // that is "checked nothing", not a failure); only null means git itself did not answer.
+    if (listed === null)
       return skippedLens("git ls-files failed — tracked source files cannot be enumerated")
 
     const tracked = listed.split("\0").filter(Boolean)

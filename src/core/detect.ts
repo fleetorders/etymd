@@ -601,7 +601,8 @@ export async function detectShellSurface(
 ): Promise<{ scripts: number }> {
   if (!isRepo) return { scripts: 0 }
   const listed = await git(root, ["ls-files", "-z"])
-  if (!listed) return { scripts: 0 }
+  // Empty output is zero tracked files, not a failure — only null means git did not answer.
+  if (listed === null) return { scripts: 0 }
 
   const files = listed.split("\0").filter(Boolean)
   const byExtension = files.filter((f) => SHELL_EXT.test(f))
