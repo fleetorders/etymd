@@ -193,6 +193,21 @@ describe("planWorkflow", () => {
     // A repo that never ran them in a hook does not suddenly gain a slow step.
     expect(derivedCommands(f, "npm run typecheck || exit 1")).not.toContain("test")
     expect(derivedCommands(f)).not.toContain("test")
+    // Comment lines do not count as the repo running anything: the generated hook's own
+    // comments (a wc-padding note reading "an integer test" once) wired `test` into every
+    // regeneration, so each run rewrote the hook and added the whole suite to every push.
+    expect(
+      derivedCommands(
+        f,
+        [
+          "count=$(wc -c < x)",
+          "# wc may pad its counts; an integer test on a padded read is unsafe",
+          "run_gate npm run typecheck || exit 1",
+        ].join("\n"),
+      ),
+    ).not.toContain("test")
+    // The wired step is code and survives the comment strip.
+    expect(derivedCommands(f, "run_gate npm run test || exit 1")).toContain("test")
   })
 
   it("honours an explicit allowWriting override for a command that would otherwise be refused", () => {

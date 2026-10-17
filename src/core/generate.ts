@@ -30,10 +30,15 @@ export function derivedCommands(facts: ProjectFacts, existingHook?: string): str
   const base = [c.formatCheck, c.typecheck, c.lint].filter(
     (k): k is string => Boolean(k) && isSafeGateCommand(c.raw[k as string]),
   )
-  // The scan sees the WHOLE hook file, comments included, so generated hook text must never
-  // contain a script key as a bare word — a comment saying "a pinned test command" would wire
-  // `test` into every regeneration ("tests" is safe: no boundary after the key).
-  if (c.test && existingHook && new RegExp(`\\b${c.test}\\b`).test(existingHook)) {
+  // The scan sees the WHOLE hook file, so comment lines are stripped before the test: comments
+  // are not the repo running anything, and a generated comment reading "an integer test" wired
+  // `test` into every regeneration once — the wired step (`run_gate … test`) survives the strip
+  // because it is code, and so does a hand-written `npm test` line.
+  const hookCode = existingHook
+    ?.split("\n")
+    .filter((l) => !/^\s*#/.test(l))
+    .join("\n")
+  if (c.test && hookCode && new RegExp(`\\b${c.test}\\b`).test(hookCode)) {
     base.push(c.test)
   }
   return base
