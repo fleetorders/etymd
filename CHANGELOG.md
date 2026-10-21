@@ -54,6 +54,131 @@
   with no checker ever reading them. They now land in the checked set; a CRLF-committed script
   is read and blocks on shellcheck's own SC1017 verdict instead of passing silently. Regenerate
   existing hooks with `etymd gates --yes` to apply the correction.
+- a5b4e5e: The pre-push audit worktree is now a tree git can enumerate, with binaries to check
+  commands against.
+  
+  `worktree add --no-checkout` leaves the worktree's index empty, so inside the
+  materialised tree `git ls-files` listed nothing while every file sat on disk: the
+  comment lens answered "could not run" and the shell-script count was zero — the
+  audit passed silently without ever running them. `read-tree` now fills the index
+  from the pushed commit directly — no checkout runs, no filter, the raw-blob rule
+  holds.
+  
+  And the audit tree had no `node_modules`, so every command claim matching no package
+  script was skipped as "unverifiable — node_modules is not installed"; a pushed
+  `npm run nope` in AGENTS.md passed the gate that exists to catch it. Installed
+  binaries belong to the checkout, not the commit, so the checkout's `node_modules`
+  is linked into the audit tree — best effort, and a committed `node_modules` path
+  stays the commit's.
+  
+  Regenerate existing hooks with `etymd gates --yes`.
+- 61e9faa: The release tooling moves to @changesets/cli 3.0.3. The 2.x line pulled in braces, which carries
+  a denial-of-service advisory (GHSA-vfj7-8cjw-p6xm) with no patched release; 3.x no longer depends
+  on it. It is a development-only dependency, so nothing changes for anyone installing etymd.
+- bdbea9a: A Claude Code version that cannot be read is disclosed, never silently clean. The version probe
+  behind `claude-pointer-missing` is three-state: ENOENT still means "no Claude Code" (a pass — no
+  reader to warn about), but a timeout, a broken shim, versionless output, or an
+  `ETYMD_CLAUDE_VERSION` pin that is not `X.Y.Z` is reported as undetermined — the sweep prints a
+  disclosure, `fleet add` prints a note naming the pin to set. Previously any probe failure read as
+  "no Claude Code", and a typo'd pin (`latest`, `2.1.x`) reached the version comparison as `NaN`,
+  which compares as current — both shapes silently disabled the old-reader check. `init` also
+  scaffolds the `CLAUDE.md` pointer only where the local reader needs one (a Claude Code older
+  than 2.1.277, or an undetermined one): on a current install AGENTS.md alone is the shape this
+  package's own repo wears, and init says why it skipped.
+- 7a24fb8: The comment scanner no longer reads code as comment text in two common shapes.
+  
+  In the JS family, a regex literal containing `/*` — `p.replace(/^\/*/, "")` is the
+  shape that fired — opened a block comment at the escaped slash and swallowed the code
+  after it, up to the next `*/`. Everything swallowed was read as one comment, so string
+  content inside it became path and command claims; a regex literal after an
+  expression-start token (`(`, `,`, `=`, a keyword like `return`) is now skipped whole,
+  escapes and character classes honored, and division after an expression is left as
+  division. Fixing this made the scanner see comments it had been blind to: a regex
+  literal's backticks previously desynced its string pairing and swallowed every comment
+  after it — in this repo, a sixty-line span of source documentation. Reading them is
+  correct; a few doc comments whose backticked examples are claim-shaped were reworded
+  so the tool does not flag its own grammar explanations as dead commands.
+  
+  In shell (and YAML, ini, Dockerfile), `#` now opens a comment only at the start of a
+  word: `${f#src/…}` is parameter expansion, not a comment, and reading it as one turned
+  pattern text into path findings. Languages where `#` comments start anywhere (Python,
+  Ruby, Perl, GraphQL, TOML, make) keep the old rule.
+  
+  Separately, an empty `git ls-files` answer is no longer read as a git failure: zero
+  tracked files is "checked nothing", not "could not run" — a freshly materialised tree
+  can honestly have none.
+- 13e5dd2: Source files past the comment-truth lens's 2000-file cap are now held out of scope, like any
+  other unexamined file. They were left out of both the findings and the out-of-scope set, so the
+  ledger could record a tracked finding inside one as fixed when nobody had looked.
+- 2537e17: The comment-truth lens now discloses every skip class its shared checks can reach:
+  workspace-filtered command mentions, path claims sitting beside the URL they are fetched
+  from, doc mentions named only to say they deliberately do not exist, and slash tokens
+  carrying a namespace label (`app:src/x.ts` shape). All four were counted by the same checks
+  the instruction-file lens runs and silently dropped from the comment report — a skip class
+  that is counted and never named is a silent coverage hole.
+- c440134: `etymd gates` no longer reads a hook's comment lines as the repo running a command.
+  The generated pre-push hook carries a comment about padded `wc` output that reads
+  "an integer test on a padded read" — the derivation matched the bare word `test`,
+  so the second `etymd gates --yes` in any repo wired `run_gate npm run test` into the
+  hook, every regeneration rewrote it, and the full test suite landed in every push.
+  Comment lines are now stripped before the test: the wired step (`run_gate … test`)
+  and a hand-written `npm test` line are code and still count.
+- 030bbcb: A fleet manifest's asserted Claude Code version is parsed strictly — a `X.Y.Z` triple plus
+  an optional prerelease suffix — and judged as given, instead of running the lenient triple
+  extraction meant for pins and probe output. `2.1.277-rc1` used to trim to `2.1.277` and read
+  as current; glued garbage passed as a version. Now a prerelease of the fallback reads old,
+  and a string that is not a version establishes nothing and reads as undetermined — the
+  fail-closed answer that kind exists for. Pins and probe output keep their lenient
+  extraction.
+- 1f7f679: The gate inventory now reads checks run through a wrapper function — a shell function that
+  forwards its positional parameters to the package manager (`run() { pnpm "$1"; }; run lint`),
+  an ordinary way to write a hook. Calls whose script name is a variable are counted and lower
+  the ci-only finding's confidence instead of asserting a gap this tool cannot see through.
+  The package-manager invocation scan also no longer leaks across newlines: a `pnpm "$1"` whose
+  arguments follow on later lines can no longer swallow unrelated tokens and hide a real gap.
+- 77cbec8: The pin-integrity lens no longer accuses pins when the lockfile cannot be parsed. A
+  `pnpm-lock.yaml` or `package-lock.json` that fails to parse used to index as empty, so every
+  override and patch looked dead; the lens now discloses the lockfile as unparsable and judges
+  nothing, as it does when no lockfile exists.
+- 7a2f839: Generated pre-push hooks run `etymd audit` at the TIP OF EACH PUSHED REF, materialised as a
+  detached worktree of that commit, instead of auditing the checkout the push happens to run
+  from — which was wrong in both directions: a clean branch was refused for a gap living only
+  in the pushing checkout's working tree, and a branch carrying a gap shipped because that
+  checkout happened to be clean. The worktree is populated from the commit's raw blobs, so a
+  repo whose checkout filters fail is still auditable. The audit runs scrubbed of git's exported
+  names so it stands in the materialised worktree, a push carrying no commits (deletes only) audits nothing and
+  says so, and a tip that cannot be materialised refuses the push rather than certifying bytes
+  the gate did not read. Regenerate existing hooks with `etymd gates --yes`.
+- c58af7e: Three pre-push gate defects fixed.
+  
+  The audit worktree is now populated entry by entry from git's object store
+  (`git cat-file blob`) instead of `git archive | tar`. `git archive` runs working-tree
+  conversion: a repo with a required checkout filter killed the archive mid-stream, the
+  pipeline read tar's status instead, and the audit then ran over an EMPTY tree — certifying
+  bytes the gate never read (on GNU tar the same death refused every push). A non-required
+  filter was worse: the audit silently read CONVERTED bytes. Raw blobs run no filter at all;
+  symlinks are re-linked, the exec bit is kept, a tip whose entries cannot be written refuses
+  the push.
+  
+  The existing-branch push range now subtracts remote-tracking refs (`rev-list <local> --not
+  <remote-sha> --remotes…`) like the new-branch case always did. A branch that merged the
+  upstream dragged every upstream commit into its push range, and each was re-checked at its
+  own tree — where later fixes do not exist — so a branch whose tip was clean was refused over
+  warnings a later commit had already fixed.
+  
+  The checker-version stamp is written only after the checks pass. It was written before, so
+  a push the upgraded checker refused still consumed the whole-surface re-baseline; the retry
+  then read only touched paths and the re-baseline never completed.
+  
+  Regenerate existing hooks with `etymd gates --yes`.
+- e05892d: The build tooling's source-map-js dependency moves to 1.2.2, the fix for a
+  denial-of-service advisory (GHSA-68fv-2mgg-jv7q) in parsing indexed source-map
+  sections. It is a build-time dependency reached through tsup and postcss, so
+  nothing changes for anyone installing etymd.
+- ee0f805: The test runner's vite dependency moves to 8.3.5, the fix for three launch-editor advisories
+  (GHSA-587h-7wmj-h5pm, GHSA-698v-4r3x-3vcv, GHSA-r825-w8mm-5pxw) affecting 8.2.0 through 8.2.2. It
+  is reached only through vitest, a development dependency, so nothing changes for anyone installing
+  etymd.
 
 ## 0.20.0
 
