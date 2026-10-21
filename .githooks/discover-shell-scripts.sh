@@ -1,16 +1,16 @@
 #!/usr/bin/env sh
-# etymd: shell script discovery for the pre-push shellcheck step. Three calls per commit:
+# etymd: shell script discovery for the pre-push shellcheck step. Four calls per commit:
 #   discover-shell-scripts.sh --config <scratch> <tree> <ls-tree record>...
 #   discover-shell-scripts.sh --skips <scratch> <ls-tree record>...
 #   discover-shell-scripts.sh --commit <scratch> <tree> <commit> <commit>:<path>...
-# The first writes the commit's .shellcheckrc files into the tree as raw blobs, so the checker
-# finds its config where it looks, and flags one that turns external-sources on. The second counts the changed paths that are symlinks or
-# submodule entries. The second reads
-# the candidates `git grep` found with a line starting `#!`, and classifies each by its FIRST
-# line. Verdicts land in the scratch: scripts (NUL-delimited matches) and one dot per decision
-# into count / zsh-count / skip-count, tallied by the hook after the pipeline. Each script found
-# is written into <tree> at its path, so the checker reads it there. With external-sources on,
 #   discover-shell-scripts.sh --context <scratch> <tree> <ls-tree record>...
+# --config writes the commit's .shellcheckrc files into the tree as raw blobs, so the checker
+# finds its config where it looks, and flags one that turns external-sources on. --skips counts
+# the changed paths that are symlinks or submodule entries. --commit reads the candidates
+# `git grep` found with a line starting `#!`, and classifies each by its FIRST line. Verdicts
+# land in the scratch: scripts (NUL-delimited matches) and one dot per decision into count /
+# zsh-count / other-count / skip-count, tallied by the hook after the pipeline. Each script found is written
+# into <tree> at its path, so the checker reads it there. With external-sources on, --context
 # then stages, as raw blobs, the files the staged scripts source.
 #
 # Every byte comes from git's object store as the raw blob — `git cat-file blob`, which
@@ -129,8 +129,11 @@ for entry do
     exit 1
   }
   head -n 1 "$work/head-bytes" > "$work/first-line" || exit 1
+  # Trailing whitespace after the interpreter name is still the interpreter: a tab before a
+  # flag (sh<TAB>-e) or a first line committed with a carriage return must classify, or the
+  # script leaves every bucket — unchecked, unexcluded, undisclosed.
   st=0
-  grep -qE "^#!.*[/ ](ba|da)?sh( |$)" "$work/first-line" || st=$?
+  grep -qE "^#!.*[/ ](ba|da)?sh([[:space:]].*)?$" "$work/first-line" || st=$?
   case $st in
     (0)
       case $file in
@@ -145,13 +148,24 @@ for entry do
       printf . >> "$work/count" || exit 1 ;;
     (1)
       st=0
-      grep -qE "^#!.*[/ ]zsh( |$)" "$work/first-line" || st=$?
+      grep -qE "^#!.*[/ ]zsh([[:space:]].*)?$" "$work/first-line" || st=$?
       case $st in
         (0) printf . >> "$work/zsh-count" || exit 1 ;;
-        (1) ;;
+        (1)
+          # Any other shebang (ksh, ash) is a script this gate cannot check; it gets its own
+          # bucket, announced by the hook like the zsh exclusion — a coverage hole that is
+          # silent is indistinguishable from coverage. A first line with no shebang at all is
+          # data, not a script, and lands in no bucket by design.
+          st=0
+          grep -qE "^#!" "$work/first-line" || st=$?
+          case $st in
+            (0) printf . >> "$work/other-count" || exit 1 ;;
+            (1) ;;
+            (*) exit 1 ;;
+          esac ;;
         (*) exit 1 ;;
       esac ;;
     (*) exit 1 ;;
   esac
 done
-# etymd:generated pack-v18 68db33594372f080
+# etymd:generated pack-v27 28ef73acfe6160b4

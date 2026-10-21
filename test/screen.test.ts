@@ -151,7 +151,7 @@ describe("allow-file records", () => {
 
   it("an orphan provenance line exempts nothing and creates no record", () => {
     // Fail-safe by design: an orphan can only under-exempt, and under-exemption reports
-    // its own gap at the door that sees the hit.
+    // its own gap at the hook that sees the hit.
     const { lines: entries } = compileAllow(
       ["reason no pattern above me", "pattern ^a$"].join("\n"),
     )
@@ -546,5 +546,20 @@ describe("generated-data exemption end to end (run)", () => {
     const blocked = process.exitCode
     process.exitCode = 0
     expect(blocked).toBe(1) // unsigned hole in the gate → refused, vocabulary applies
+  })
+
+  it("the older .artifact-check-allow name is not read — its records exempt nothing", async () => {
+    const { run } = await import("../src/commands/screen.js")
+    const { dir, stage, patterns } = await initStagedRepo()
+    await stage(
+      ".artifact-check-allow",
+      ["generated ^src/data/corpus\\.json$", "reason r", "date 2026-09-04", "author x"].join("\n"),
+    )
+    await stage("src/data/corpus.json", `${corpusLine}\n`)
+    process.exitCode = 0
+    await run({ cwd: dir, scope: "staged", patterns })
+    const blocked = process.exitCode
+    process.exitCode = 0
+    expect(blocked).toBe(1)
   })
 })

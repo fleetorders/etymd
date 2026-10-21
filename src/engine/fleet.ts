@@ -16,15 +16,15 @@ import { runAudit } from "./run.js"
 
 const pExecFile = promisify(execFile)
 
-// Fleet-scope findings — manifest truth, wall placement, coverage — have no single repo root,
+// Fleet-scope findings — manifest truth, entry placement, coverage — have no single repo root,
 // so they are constructed directly as Findings under one lens id. Deliberately NOT a Lens
 // implementation: no second finding family has earned a FleetLens abstraction yet.
 export const FLEET_LENS = "fleet-manifest"
 
-/** The fleet `--json` schema marker — EXPERIMENTAL through 0.2.x, declared in the output. */
+/** The fleet `--json` schema marker — may still change before 1.0, declared in the output. */
 export const FLEET_JSON_SCHEMA = "fleet-experimental-0.2"
 
-/** The wall artifacts a guarded WORKTREE must not carry at its root (they live beside the manifest). */
+/** The state files a guarded WORKTREE must not carry at its root (they live beside the manifest). */
 const GUARDED_WALL_ARTIFACTS = ["PROJECT_CONTEXT.md", "DECISIONS.md"]
 
 export interface FleetSweepOptions {
@@ -61,7 +61,7 @@ export interface FleetSweepResult {
   manifest: string
   sweptAt: string
   projects: FleetProjectSweep[]
-  /** Fleet-scope wall findings (`fleet-manifest`) — not ledger-quietable in 0.2. */
+  /** Fleet-scope findings (`fleet-manifest`), the manifest's own checks — not ledger-quietable. */
   wall: Finding[]
   wallDisclosures: string[]
   /** Entry names that could not be audited — named here, never silently dropped. */
@@ -85,7 +85,7 @@ export interface RecurringClass {
  * everything before the first `:` in a finding id) and keep the classes open in TWO OR MORE
  * projects. This is where a repo-local finding becomes visible as a fleet-level lesson: one
  * repo's heavy AGENTS.md is that repo's problem; the same class in four repos is a class-fix
- * candidate the per-repo view structurally cannot see. Wall findings are excluded — they are
+ * candidate the per-repo view structurally cannot see. Manifest findings are excluded — they are
  * fleet-scoped already. The class vocabulary is universal by construction (it ships with the
  * engine, versioned like any API surface); the sweep only groups, it never mints.
  */
@@ -422,7 +422,7 @@ export async function checkManifest(
 }
 
 // ---------------------------------------------------------------------------------------------
-// wall findings — fleet-scope checks with no single repo root
+// the manifest's own checks — fleet-scope, with no single repo root
 // ---------------------------------------------------------------------------------------------
 
 async function checkGuardedWallArtifacts(
@@ -440,7 +440,7 @@ async function checkGuardedWallArtifacts(
             `guarded entry \`${entry.name}\` carries ${artifact} inside its worktree`,
             [`${entry.resolvedRoot}/${artifact}`],
             "Agent artifacts for guarded repos live outside the repo by policy — an in-repo copy is one push away from colleagues' eyes and will diverge from the manifest-side truth.",
-            `Move it to the fleet's guarded/${entry.name}/ zone and leave a pointer if the harness needs one.`,
+            `Move it to the manifest's guarded/${entry.name}/ zone and leave a pointer if the harness needs one.`,
           ),
         )
       }
@@ -485,7 +485,7 @@ async function checkCoverage(
           "risk",
           `\`${d.name}\` under the fleet root has a guarded remote but is not registered`,
           [`${dir}: remote matches ${guardedRemote}`],
-          "The wall is only as good as its census — an unregistered guarded checkout is guarded material no sweep, wall check, or transfer plan knows exists.",
+          "The manifest's checks are only as good as its census — an unregistered guarded checkout is guarded material no sweep or manifest check knows exists.",
           "Register it as a guarded entry (opaque alias + local dirs mapping) or move it out of the fleet root.",
         ),
       )
@@ -519,7 +519,7 @@ async function checkManifestRepoMachinePaths(
         "risk",
         `${file} (tracked in the manifest's repo) contains an absolute /Users/ path`,
         [file],
-        "The manifest repo is the fleet's publishable surface — a tracked home-directory path ships the machine's identity in it.",
+        "The manifest repo is published — a tracked home-directory path ships the machine's identity in it.",
         "Replace with `~` or a relative path; machine paths belong only in gitignored local files.",
       ),
     )
@@ -535,7 +535,7 @@ async function checkHygieneNeedles(
   if (!publicEntries.length) return
   if (!manifest.localPresent) {
     disclosures.push(
-      "Hygiene-needle check skipped — the local manifest (needle source) is absent on this machine.",
+      "Private-identifier check skipped — the local manifest (the identifier source) is absent on this machine.",
     )
     return
   }
@@ -549,7 +549,9 @@ async function checkHygieneNeedles(
     ),
   ]
   if (!needles.length) {
-    disclosures.push("Hygiene-needle check skipped — the local manifest carries no needles.")
+    disclosures.push(
+      "Private-identifier check skipped — the local manifest carries no identifiers.",
+    )
     return
   }
   for (const entry of publicEntries) {
@@ -558,23 +560,23 @@ async function checkHygieneNeedles(
       const files = await gitGrepFiles(entry.resolvedRoot as string, needle)
       if (files === null) {
         disclosures.push(
-          `Hygiene-needle check could not run in \`${entry.name}\` — undetermined, not clean.`,
+          `Private-identifier check could not run in \`${entry.name}\` — undetermined, not clean.`,
         )
         break
       }
       for (const file of files) {
         if (flagged.has(file)) continue
         flagged.add(file)
-        // The needle stays OUT of the id and claim — a dismissed finding's ledger entry lives
+        // The identifier stays OUT of the id and claim — a dismissed finding's ledger entry lives
         // in the public repo, and must not itself become the leak. Evidence renders locally only.
         findings.push(
           finding(
             `${FLEET_LENS}/hygiene-needle:${entry.name}:${file}`,
             "risk",
-            `${file} in public-repo \`${entry.name}\` carries a needle from the fleet's private local manifest`,
+            `${file} in public-repo \`${entry.name}\` carries a private identifier from the local manifest`,
             [`${file}: contains "${needle}"`],
             "A public repo that names a private label, guarded directory, or guarded host joins the public and guarded identities for anyone who greps.",
-            "Scrub the needle from the tracked file (rewrite history if it already shipped).",
+            "Scrub the identifier from the tracked file (rewrite history if it already shipped).",
           ),
         )
       }
@@ -603,7 +605,7 @@ async function checkGuardedEmails(
     const emails = await git(entry.resolvedRoot, ["log", "-30", "--format=%ae"])
     if (emails === null) {
       // Not a repo / no commits / git absent — this check did not run. The per-repo audit only
-      // discloses git absence when dated artifacts exist, so the wall must say so itself.
+      // discloses git absence when dated artifacts exist, so the manifest check must say so itself.
       disclosures.push(
         `Guarded-email check could not run in \`${entry.name}\` (no readable commit history) — undetermined, not clean.`,
       )
@@ -634,9 +636,9 @@ async function checkGuardedEmails(
  *
  * A per-repo lens cannot ask this. It can see that a hook exists, but not that a hook exists in
  * every OTHER repo and is missing here — and the missing one is the dangerous case, because a
- * gap is invisible from inside the repo that has it. The motivating case was a repo fully wired
- * for content screening whose commit-msg door had simply never been installed: every other gate
- * present, that one absent, and nothing to notice it until someone compared by hand.
+ * gap is invisible from inside the repo that has it: a repo wired for content screening whose
+ * commit-msg hook was never installed has every other gate present and nothing to notice the
+ * absent one until someone compares by hand.
  *
  * Expected variation is not drift. A pnpm repo generates `pnpm typecheck` where an npm repo
  * generates `npm run typecheck`, and both are correct — so the comparison regenerates from each
@@ -660,8 +662,8 @@ async function checkGateDrift(
     // different hook path entirely, and `git` runs exactly one. Reporting either would be noise
     // that never resolves.
     if (entry.profile === "guarded" || entry.private) continue
-    // A declared absence is a state, not a gap. Wall findings are deliberately not
-    // ledger-quietable (004), which is right for leak and partition conditions — their only
+    // A declared absence is a state, not a gap. Manifest findings are deliberately not
+    // ledger-quietable (docs/decisions.md, D-004), which is right for leak and partition conditions — their only
     // honest resolution is fixing them — but wrong for a repo that legitimately has nothing to
     // gate, or gates itself by hand. Without honoring the declaration, a settled decision is
     // re-reported on every sweep until the whole report is ignored.
@@ -739,16 +741,28 @@ async function checkGateDrift(
  * The pointer contract (`checkClaudePointer`, the one definition) must hold in every resolved
  * repo, or the repo believes every agent reads a contract Claude Code never receives. A
  * CLAUDE.md that does not import AGENTS.md hides it on every version (risk); a bare AGENTS.md
- * hides it only from a Claude Code older than the fallback (gap). Runs on every profile: guarded
- * worktrees are read here, never written. Not exempted by `contract.placement: "none"` — that
- * declares instruction files legitimately ABSENT, not present-but-invisible to a reader.
+ * hides it only from a Claude Code older than the fallback (gap); a version that could not be
+ * established is disclosed, never counted as clean. Runs on every profile: guarded worktrees
+ * are read here, never written. Not exempted by `contract.placement: "none"` — that declares
+ * instruction files legitimately ABSENT, not present-but-invisible to a reader.
  */
-async function checkClaudePointers(manifest: FleetManifest, findings: Finding[]): Promise<void> {
+async function checkClaudePointers(
+  manifest: FleetManifest,
+  findings: Finding[],
+  disclosures: string[],
+): Promise<void> {
   for (const entry of manifest.entries) {
     const root = entry.resolvedRoot
     if (!root || !(await isDirectory(root))) continue
     const check = await checkClaudePointer(root)
     if (check.ok) continue
+    if (check.kind === "undetermined") {
+      // A check that cannot run says so — undetermined, not clean.
+      disclosures.push(
+        `${entry.name}: ${check.detail}. Pin \`ETYMD_CLAUDE_VERSION\` (X.Y.Z, or "none") to make the check exact.`,
+      )
+      continue
+    }
     findings.push(
       check.kind === "no-import"
         ? finding(
@@ -771,7 +785,7 @@ async function checkClaudePointers(manifest: FleetManifest, findings: Finding[])
   }
 }
 
-/** All fleet-scope wall checks. Each check that cannot run says so — undetermined, not clean. */
+/** All of the manifest's own checks. Each check that cannot run says so — undetermined, not clean. */
 export async function collectWallFindings(
   manifest: FleetManifest,
 ): Promise<{ findings: Finding[]; disclosures: string[] }> {
@@ -783,7 +797,7 @@ export async function collectWallFindings(
   await checkHygieneNeedles(manifest, findings, disclosures)
   await checkGuardedEmails(manifest, findings, disclosures)
   await checkGateDrift(manifest, findings, disclosures)
-  await checkClaudePointers(manifest, findings)
+  await checkClaudePointers(manifest, findings, disclosures)
   return { findings, disclosures }
 }
 
@@ -940,7 +954,7 @@ async function sweepEntry(
 }
 
 /**
- * The fleet sweep: one read-only audit per resolved entry + the fleet-scope wall checks.
+ * The fleet sweep: one read-only audit per resolved entry + the manifest's own checks.
  * Invariants (each pinned by test): never creates `.etymd` anywhere; never writes into a guarded
  * worktree regardless of flags or a stray `.etymd` there; unresolvable entries land in
  * `outOfScope` with a disclosure, never a silent skip.
@@ -971,7 +985,7 @@ export async function sweepFleet(
   const wall = await collectWallFindings(manifest)
   // Guarded findings are ledger-dismissible at the guarded persistence root; the sweep must honor
   // those resolutions even though it never persists (visibleFindings inside runAudit already
-  // filtered per entry via ledgerRoot). Wall findings are deliberately not quietable in 0.2 —
+  // filtered per entry via ledgerRoot). Manifest findings are deliberately not quietable —
   // they name leak/partition conditions whose only honest resolution is fixing them.
 
   return {
@@ -992,7 +1006,7 @@ export async function sweepFleet(
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Resolve where a named entry's findings persist, honoring the wall: personal entries own
+ * Resolve where a named entry's findings persist, honoring the profile split: personal entries own
  * their repo's `.etymd`; guarded entries persist beside the manifest under `guarded/<name>/`,
  * and their worktree is never touched.
  */

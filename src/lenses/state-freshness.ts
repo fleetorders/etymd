@@ -23,7 +23,9 @@ export const DECISIONS_FORMAT_MARKER = "<!-- decisions-format: 1 -->"
 /** The version this build understands; a higher one is honoured as v1 and disclosed, never guessed at. */
 const KNOWN_FORMAT_VERSION = 1
 
-const MARKER_RE = /<!--\s*decisions-format:\s*(\d+)([^>]*?)-->/
+// On a line of its own: a file that merely mentions the marker in prose or inline code (as a
+// decisions file documenting the convention does) has not opted in.
+const MARKER_RE = /^[ \t]*<!--\s*decisions-format:\s*(\d+)([^>]*?)-->[ \t]*$/m
 
 /** Declarable field names. Narrow on purpose: no regex metacharacters can reach the matcher. */
 const FIELD_NAME_RE = /^[A-Za-z0-9 _-]+$/
@@ -320,7 +322,7 @@ export const stateFreshnessLens: Lens = {
       }
     }
 
-    // ---- state char budget (session-injection hooks truncate around 10,000 chars) ----
+    // ---- state char budget (some agent harnesses truncate a loaded file around 10,000 chars) ----
     for (const a of stateArtifacts) {
       const text = await readText(path.join(ctx.root, a.path))
       if (text === null) {
@@ -335,7 +337,7 @@ export const stateFreshnessLens: Lens = {
           tier: "gap",
           claim: `${a.path} is ${text.length} chars — over the ${budgets.maxChars}-char state budget`,
           evidence: [`${a.path}: ${text.length} chars`],
-          why: "Session-injection hooks truncate state around 10,000 chars — an over-budget state doc gets cut mid-sentence, and every session pays its full weight before the task begins.",
+          why: "Some agent harnesses truncate a loaded file around 10,000 chars — an over-budget state doc gets cut mid-sentence, and every session pays its full weight before the task begins.",
           action: "Trim to budget; move overflow into decisions/docs and keep a pointer.",
           effort: "M",
           confidence: "high",
@@ -347,7 +349,7 @@ export const stateFreshnessLens: Lens = {
     for (const a of decisionArtifacts) {
       const text = await readText(path.join(ctx.root, a.path))
       if (text === null) {
-        // Directory conventions (docs/adr/ …): recognized and age-exempt; not parsed per entry.
+        // Directory conventions (the adr-dir spec): recognized and age-exempt; not parsed per entry.
         disclosures.push(
           `${a.path} recognized as a decisions convention (directory) — age-exempt; per-entry format checks apply only to marker-carrying decisions files.`,
         )

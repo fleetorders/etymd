@@ -25,7 +25,7 @@ function finding(partial: Omit<Finding, "lens">): Finding {
   return { lens: LENS_ID, ...partial }
 }
 
-// ---- baseline drift (carried over from the former contract-drift lens) ----
+// ---- baseline drift ----
 
 function compareCommands(baseline: ProjectFacts, fresh: ProjectFacts): Finding[] {
   const out: Finding[] = []
@@ -251,6 +251,11 @@ export const instructionTruthLens: Lens = {
     if (counters.tildeSkipped) {
       disclosures.push(
         `${counters.tildeSkipped} well-known doc mention(s) sit inside \`~/\` home paths (e.g. \`~/.claude/CLAUDE.md\`) — machine-global files, not this repo's; skipped, not flagged.`,
+      )
+    }
+    if (counters.absenceSkipped) {
+      disclosures.push(
+        `${counters.absenceSkipped} well-known doc mention(s) name the doc only to say it deliberately does not exist here (create-this or absence prose) — skipped, not flagged.`,
       )
     }
     if (stateDocs.length) {

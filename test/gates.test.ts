@@ -1,4 +1,4 @@
-import { execFile, execSync } from "node:child_process"
+import { execFile, execSync, spawnSync } from "node:child_process"
 import { existsSync, promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -72,6 +72,17 @@ async function runPrePush(env: NodeJS.ProcessEnv, ...refLines: string[]) {
   return pExecFile("sh", ["-c", '".githooks/pre-push" < "$1"', "sh", refsFile], { cwd: dir, env })
 }
 
+/** The same run, with the remote git would pass as $1 — a name for a configured remote, a
+ * URL for an anonymous push. The range bound is chosen from this argument. */
+async function runPrePushRemote(env: NodeJS.ProcessEnv, remote: string, ...refLines: string[]) {
+  const refsFile = path.join(dir, ".pushed-refs")
+  await fs.writeFile(refsFile, refLines.join("\n") + (refLines.length ? "\n" : ""), "utf8")
+  return pExecFile("sh", ["-c", '".githooks/pre-push" "$1" < "$2"', "sh", remote, refsFile], {
+    cwd: dir,
+    env,
+  })
+}
+
 /** The base every fixture builds on: a manifest, an instruction file, one commit for HEAD. */
 async function baseRepo() {
   await write("package.json", JSON.stringify({ name: "demo", private: true }) + "\n")
@@ -96,11 +107,17 @@ async function stubEnv(extra: Record<string, string> = {}): Promise<NodeJS.Proce
 }
 
 /** A recording checker stand-in. The hook runs it inside the materialised tree, so the log
- * path travels by environment, never by relative filename. */
-async function recordShellcheck() {
+ * path travels by environment, never by relative filename. `--version` answers like the real
+ * checker (optionally a chosen one) and is never recorded: the hook probes it once per push
+ * for the re-baseline stamp, not as a check. */
+async function recordShellcheck(version = "") {
   await stub(
     "shellcheck",
     `#!/usr/bin/env node
+if (process.argv.includes("--version")) {
+  process.stdout.write("version: ${version}\\n")
+  process.exit(0)
+}
 require("node:fs").appendFileSync(process.env.ETYMD_RECORD, JSON.stringify(process.argv.slice(2)) + "\\n")
 `,
   )
@@ -286,7 +303,7 @@ describe.skipIf(!existsSync(CLI))("etymd gates — shell discovery fails closed"
     },
   )
 
-  it("passes whitespace, quotes and leading hyphens unchanged to both checker passes", async () => {
+  it("passes whitespace, quotes and leading hyphens unchanged to the checker", async () => {
     const names = [
       "-leading",
       "tools/a 'single' \"double\" $(false) `false`",
@@ -308,15 +325,16 @@ describe.skipIf(!existsSync(CLI))("etymd gates — shell discovery fails closed"
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as string[])
-    expect(calls).toHaveLength(2)
-    for (const args of calls) {
-      // ./ also prevents a filename from being interpreted as an option by the checker.
-      expect(args.filter((arg) => arg.startsWith("./")).sort()).toEqual(
-        [...names, "scripts/run"].map((name) => `./${name}`).sort(),
-      )
-    }
-    expect(calls[0]).toContain("warning")
-    expect(calls[1]).toContain("style")
+    // One invocation carries every name (was two: a blocking pass, then the same files again
+    // for advice) — the verdict and the advice come from the same run now.
+    expect(calls).toHaveLength(1)
+    const only = calls[0] as string[]
+    expect(only).toContain("style")
+    expect(only).toContain("gcc")
+    // ./ also prevents a filename from being interpreted as an option by the checker.
+    expect(only.filter((arg) => arg.startsWith("./")).sort()).toEqual(
+      [...names, "scripts/run"].map((name) => `./${name}`).sort(),
+    )
   })
 
   it("PINNED: a tracked name carrying $(…) reaches the scan as data, never as code", async () => {
@@ -388,7 +406,7 @@ exit 23
   })
 
   it("PINNED: the pushed commit is the read — a deleted working-tree copy neither dodges the gate nor blocks it", async () => {
-    // The 2026-09-15 shape inverted: the working tree was never the right read. Deleting the
+    // The earlier shape inverted this: the working tree was never the right read. Deleting the
     // only working-tree copy of a script must not skip the commit's copy — and must not break
     // an unrelated push the way a tree-reading gate did.
     await baseRepo()
@@ -473,11 +491,121 @@ exit 23
       expect(args).not.toContain("./docs/example.md")
     }
   })
+
+  it("the classifier header states the interface the hook actually invokes", async () => {
+    // The header is the spec the next pack maintainer reads: the 2026-09-28 review caught it
+    // numbering a mode as "the second" twice. This pins header and invocation to the same
+    // claim — every mode the hook dispatches appears in the header's call list, and every
+    // mode the header names is one the hook actually invokes — so neither can drift.
+    await baseRepo()
+    await write("tool/run.sh", "#!/bin/sh\necho ok\n")
+    await pExecFile("git", ["add", "."], { cwd: dir })
+    await gates()
+    const hook = await prePush()
+    const classifier = await fs.readFile(
+      path.join(dir, ".githooks", "discover-shell-scripts.sh"),
+      "utf8",
+    )
+    expect(classifier).toContain("Four calls per commit")
+    for (const mode of ["--config", "--skips", "--commit", "--context"]) {
+      expect(hook).toContain(`"$discover" ${mode}`)
+      expect(classifier).toContain(mode)
+    }
+  })
+
+  // Merge 2026-10-02: the branch's "repointing a symlink classifies the bytes the link now
+  // ships" pin was dropped — the merged gate keeps the shipped design where a symlink is a
+  // disclosed skip and its target is checked under its own path ("skips symlink and submodule
+  // entries, and says so" below). The narrower coverage gap (a repointed link whose target
+  // otherwise changes nothing) is named in the merge commit for a deliberate follow-up.
+  // Merge 2026-10-02: the branch's "sourced helpers resolve through the checker, not a
+  // hook-side parser" pin was dropped — the merged gate keeps the shipped staging pipeline
+  // (source lines read from staged files, helpers staged as raw blobs until nothing new is
+  // sourced), pinned by the external-sources series in "the range being pushed" below. The
+  // checker-resolves alternative stays recorded in the merge commit as a direction to weigh.
+
+  // The one-run verdict tests below were rewritten for this branch's per-commit ranges —
+  // the originals drove the gate over the working tree. The quiet-set case was not ported:
+  // "a delete-only push has nothing to check and says so" below pins the same behaviour
+  // where the range design actually decides it.
+  it.skipIf(!hasShellcheck)(
+    "one run is both verdict and advice: a warning blocks, a style note does not",
+    async () => {
+      await write("scripts/warn", "#!/bin/sh\nnever_used=1\necho ok\n")
+      await write("scripts/style", '#!/bin/sh\nx=`date`\necho "$x"\n')
+      const env = await fixture()
+      const pushed = await commitFixture()
+
+      const failure = await runPrePush(env, pushed).then(
+        () => {
+          throw new Error("expected the warning to block the push")
+        },
+        (error) => error,
+      )
+      expect(failure.code).toBe(1)
+      // The blocking verdict names its finding; the advice block is never reached, so the
+      // verdict is not reprinted below the bar it already enforced.
+      expect(failure.stdout).toContain("SC2034")
+      expect(failure.stdout).not.toContain("style/info (not blocking)")
+    },
+  )
+
+  it.skipIf(!hasShellcheck)(
+    "a SHELLCHECK_OPTS format override cannot soften the verdict",
+    async () => {
+      // The environment's -f replaces the gate's own format flag, and the one-run parser reads
+      // gcc lines: under '-f json' a warning-level finding reached the advice block and the
+      // push passed. The override is stripped from the gate's run, and the strip is said.
+      await write("scripts/warn", "#!/bin/sh\nnever_used=1\necho ok\n")
+      const env = await fixture()
+      const pushed = await commitFixture()
+
+      const failure = await runPrePush({ ...env, SHELLCHECK_OPTS: "-f json" }, pushed).then(
+        () => {
+          throw new Error("expected the warning to block the push under a format override")
+        },
+        (error) => error,
+      )
+      expect(failure.code).toBe(1)
+      expect(failure.stdout).toContain("SC2034")
+      expect(failure.stdout).toContain("SHELLCHECK_OPTS")
+    },
+  )
+
+  it.skipIf(!hasShellcheck)(
+    "a style-only script passes the push and keeps its advice",
+    async () => {
+      await write("scripts/style", '#!/bin/sh\nx=`date`\necho "$x"\n')
+      const env = await fixture()
+      const pushed = await commitFixture()
+
+      const { stdout } = await runPrePush(env, pushed)
+      expect(stdout).toContain("style/info (not blocking)")
+      expect(stdout).toMatch(/SC\d{4}/)
+    },
+  )
+
+  it("a shebang-only file with no trailing newline is still a script", async () => {
+    // The first-line read must yield the partial line even without its newline — a
+    // final-line-only shebang is a script like any other, not a silent coverage hole.
+    await write("scripts/eol-less", "#!/bin/sh")
+    const env = await fixture()
+    await recordShellcheck()
+    const pushed = await commitFixture()
+
+    await runPrePush(env, pushed)
+    const calls = await recorded()
+    expect(calls.length).toBeGreaterThan(0)
+    for (const args of calls) expect(args).toContain("./scripts/eol-less")
+  })
 })
 
 describe.skipIf(!existsSync(CLI))(
   "etymd gates — the range being pushed, not the tree or the tip",
   () => {
+    // Merge 2026-10-02: the branch's "a refusal over an unresolved source names the source"
+    // pin was dropped with the checker-resolves design it tested; the merged gate stages what
+    // resolves and refuses on the finding that remains, per the external-sources series below.
     it.skipIf(!hasShellcheck)(
       "PINNED: a bad middle commit under a clean tip refuses the push",
       async () => {
@@ -520,6 +648,115 @@ describe.skipIf(!existsSync(CLI))(
       },
     )
 
+    it("PINNED: a branch that merged commits a remote already has does not re-check them", async () => {
+      // The defect this pins: the existing-branch range was "$rsha..$lsha" with no remote
+      // subtraction, so a branch that merged the upstream re-checked every upstream commit
+      // since its base — each at its own tree, where later fixes do not exist, so a push of
+      // a clean branch was refused on warnings a later commit had already fixed. A remote
+      // already gated those commits when they landed there; the same subtraction the
+      // new-branch case uses bounds this range too.
+      await baseRepo()
+      await write("tool/main-side.sh", "#!/bin/sh\necho main\n")
+      await commitAll("chore: main-side script")
+      const mainSide = await revParse("HEAD")
+      // The remote-tracking ref says a remote already has this commit.
+      await pExecFile("git", ["update-ref", "refs/remotes/origin/main", mainSide], { cwd: dir })
+      await pExecFile("git", ["checkout", "-q", "-b", "topic", "HEAD~1"], {
+        cwd: dir,
+        env: GIT_ENV,
+      })
+      await write("tool/topic-side.sh", "#!/bin/sh\necho topic\n")
+      await commitAll("chore: topic-side script")
+      const topicTip = await revParse("HEAD")
+      await pExecFile("git", ["merge", "-q", "--no-ff", mainSide, "-m", "merge the main side"], {
+        cwd: dir,
+        env: GIT_ENV,
+      })
+      const merged = await revParse("HEAD")
+      await gates()
+      await recordShellcheck()
+      const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+
+      const { stdout } = await runPrePush(env, update("topic", merged, topicTip))
+      // The old range said "2 commit(s)" — the merge AND the already-remote main commit,
+      // each re-checked at its own tree. One commit is left: the merge itself.
+      expect(stdout).toContain("1 commit(s) in the pushed range")
+      const calls = await recorded()
+      expect(calls.length).toBeGreaterThan(0)
+      for (const args of calls) {
+        // The merge's own first-parent diff still reads the merged side's script; the
+        // already-remote commit's separate re-read is gone, and the remote tip's script
+        // (checked when it landed there) never reaches the checker.
+        expect(args).toContain("./tool/main-side.sh")
+        expect(args).not.toContain("./tool/topic-side.sh")
+      }
+    })
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: a commit another remote already has is gated when pushed elsewhere — fetched is not gated",
+      async () => {
+        // The failure being fixed: the new-branch rule negated EVERY remote's tracking refs,
+        // so a commit merely fetched from a second remote (git fetch coworker, then push here)
+        // counted as already gated although no gate ever read it — it shipped unchecked. The
+        // bound is the remote being pushed TO, so the fetched commit stays in the range.
+        await baseRepo()
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: bad script")
+        const bad = await revParse("HEAD")
+        await write("docs/notes.md", "# Notes\n")
+        await commitAll("docs: clean tip")
+        await gates()
+        const env = await stubEnv()
+        // origin is configured but holds nothing; a second remote's tracking ref already
+        // carries the bad commit, exactly as a fetch would have left it.
+        await pExecFile("git", ["remote", "add", "origin", path.join(dir, "origin.git")], {
+          cwd: dir,
+        })
+        await pExecFile("git", ["update-ref", "refs/remotes/other/main", bad], { cwd: dir })
+        const head = await revParse("HEAD")
+
+        // origin negates nothing of this history, so the whole of it is the push: 3 commits,
+        // bad one included, and its script refuses the push.
+        await expect(
+          runPrePushRemote(env, "origin", update("main", head, ZERO)),
+        ).rejects.toMatchObject({
+          code: 1,
+          stdout: expect.stringContaining("3 commit(s) in the pushed range"),
+        })
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "a URL-targeted push keeps the wide bound — no configured remote to narrow by",
+      async () => {
+        // $1 as a URL matches no configured remote, and --remotes=<url> would negate nothing —
+        // a fresh clone's entire history checked on its first push. The hook falls back to
+        // every remote-tracking ref, so the fetched commit stays excluded exactly as before
+        // the bound was narrowed.
+        await baseRepo()
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
+        await commitAll("chore: bad script")
+        const bad = await revParse("HEAD")
+        await write("docs/notes.md", "# Notes\n")
+        await commitAll("docs: clean tip")
+        await gates()
+        const env = await stubEnv()
+        await pExecFile("git", ["remote", "add", "origin", path.join(dir, "origin.git")], {
+          cwd: dir,
+        })
+        await pExecFile("git", ["update-ref", "refs/remotes/other/main", bad], { cwd: dir })
+        const head = await revParse("HEAD")
+
+        const { stdout } = await runPrePushRemote(
+          env,
+          path.join(dir, "origin.git"),
+          update("main", head, ZERO),
+        )
+        expect(stdout).toContain("1 commit(s) in the pushed range")
+        expect(stdout).not.toContain("SC2034")
+      },
+    )
+
     it("PINNED: each pushed commit is checked for the scripts it changes, not its whole tree", async () => {
       // The cost being fixed: every script in every pushed commit, so the step grew with the range
       // length times the script count. An untouched script carries its parent's bytes,
@@ -546,6 +783,12 @@ describe.skipIf(!existsSync(CLI))(
       }
     })
 
+    // Merge 2026-10-02: the branch's "the narrow path probes the tree root" pin was dropped —
+    // it guarded the empty-extraction probe of the deleted materialise-and-read design. The
+    // invariant it served (the narrow path checks the changed scripts, never the whole tree as
+    // the checked set) stays pinned by "each pushed commit is checked for the scripts it
+    // changes" above; the whole-tree listing the merged hook does run feeds .shellcheckrc and
+    // source staging, never the checked set.
     it("a commit that changes no shell script says so, never a silent pass", async () => {
       await baseRepo()
       await write("tool/old.sh", "#!/bin/sh\necho old\n")
@@ -560,6 +803,37 @@ describe.skipIf(!existsSync(CLI))(
       const { stdout } = await runPrePush(env, update("main", head, await revParse("HEAD~1")))
       expect(stdout).toContain(`no shell script changed in ${head.slice(0, 7)}`)
       expect(existsSync(path.join(dir, "shellcheck.jsonl"))).toBe(false)
+    })
+
+    it("POSIX-padded wc counts still gate — the tallies are read whitespace-safe", async () => {
+      // POSIX permits wc to pad its counts with leading blanks, and an integer test on a padded
+      // read is implementation-defined. The shim pads every count the hook takes — bytes and
+      // lines alike — so both reads prove their tolerance: the tallies fold through arithmetic,
+      // the upfront commit count already strips. A rejecting [ would turn the gate branches
+      // false and silently skip the checker; here it must still run and report one script.
+      await baseRepo()
+      await write("tool/one.sh", "#!/bin/sh\necho one\n")
+      await commitAll("chore: one script")
+      await gates()
+      await recordShellcheck()
+      await stub(
+        "wc",
+        `#!/usr/bin/env node
+// A POSIX-legal hostile wc: every count padded with leading blanks.
+const s = require("node:fs").readFileSync(0, "utf8")
+const n = process.argv.includes("-c") ? Buffer.byteLength(s) : (s.match(/\\n/g) || []).length
+process.stdout.write("      " + n + "\\n")
+`,
+      )
+      const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+
+      const { stdout } = await runPrePush(
+        env,
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      )
+      expect(stdout).toContain("1 commit(s) in the pushed range")
+      expect(stdout).toContain("shellcheck (1 scripts")
+      expect((await recorded()).length).toBeGreaterThan(0)
     })
 
     it("a commit changing a .shellcheckrc is checked whole — the verdict moved for every script", async () => {
@@ -600,6 +874,124 @@ describe.skipIf(!existsSync(CLI))(
       for (const args of await recorded()) expect(args).toContain("./tool/old.sh")
     })
 
+    it.skipIf(!hasShellcheck)(
+      "a .shellcheckrc-only change is honoured without touching scripts",
+      async () => {
+        // The commit's whole tree is materialised (checkout-index writes every tracked blob,
+        // config included), so the whole-tree check after a config-only change runs under the
+        // repo's own checker config: the disabled finding stays disabled. Without the config
+        // being read, shellcheck blocks this push on SC2034 — that it passes is the pin.
+        await baseRepo()
+        await write("tool/legacy.sh", "#!/bin/sh\nunused=1\n")
+        await commitAll("chore: a script the checker would flag")
+        await write(".shellcheckrc", "disable=SC2034\n")
+        await commitAll("chore: silence it in the checker config")
+        await gates()
+        const env = await stubEnv()
+
+        const { stdout } = await runPrePush(
+          env,
+          update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+        )
+        expect(stdout).toContain("whole tree")
+        expect(stdout).toContain("1 scripts")
+      },
+    )
+
+    it("a shellcheck upgrade re-checks the whole shell surface once", async () => {
+      // A checker release can flag bytes nobody touched; the per-commit read would leave the
+      // finding waiting for each script's next edit. The hook stamps the checker's version
+      // in the git dir and re-checks whole on the first push after it moves — and only that
+      // push: the new stamp is written after the checks pass, so a refused or interrupted
+      // push re-runs the re-baseline instead of trusting one that never completed.
+      await baseRepo()
+      await write("tool/old.sh", "#!/bin/sh\necho old\n")
+      await commitAll("chore: an existing script")
+      await write("tool/new.sh", "#!/bin/sh\necho new\n")
+      await commitAll("chore: one new script")
+      await gates()
+      await recordShellcheck("1.0.0")
+      let env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+      await runPrePush(env, update("main", await revParse("HEAD"), await revParse("HEAD~1")))
+      for (const args of await recorded()) {
+        expect(args).toContain("./tool/new.sh")
+        expect(args).not.toContain("./tool/old.sh")
+      }
+
+      await write("docs/notes.md", "# Notes\n")
+      await commitAll("docs: no script touched")
+      await recordShellcheck("2.0.0")
+      env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+      const { stdout } = await runPrePush(
+        env,
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      )
+      expect(stdout).toContain("the checker changed (1.0.0 → 2.0.0)")
+      expect(stdout).toContain("whole tree")
+      expect((await recorded()).some((args) => args.includes("./tool/old.sh"))).toBe(true)
+    })
+
+    it("PINNED: a refused push does not consume the checker-change re-baseline", async () => {
+      // The stamp used to be written before the checks ran, so a push the checker's new
+      // version refused still recorded the new version — the retry then read only touched
+      // paths and the whole-surface re-baseline never completed. The stamp moves only after
+      // the checks pass; a failed push leaves the prior stamp, and the retry re-runs it.
+      const cleanAt = (version: string) =>
+        stub(
+          "shellcheck",
+          `#!/usr/bin/env node
+if (process.argv.includes("--version")) {
+  process.stdout.write("version: ${version}\\n")
+  process.exit(0)
+}
+`,
+        )
+      const flaggingAt = (version: string) =>
+        stub(
+          "shellcheck",
+          `#!/usr/bin/env node
+if (process.argv.includes("--version")) {
+  process.stdout.write("version: ${version}\\n")
+  process.exit(0)
+}
+for (const arg of process.argv.slice(2)) {
+  if (arg.startsWith("./")) process.stdout.write(arg + ":1:1: warning: a fabricated finding [SC2034]\\n")
+}
+process.exit(1)
+`,
+        )
+      await baseRepo()
+      await write("tool/do.sh", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: a script")
+      await gates()
+      await cleanAt("1.0.0")
+      await runPrePush(
+        await stubEnv(),
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      )
+
+      await write("docs/notes.md", "# Notes\n")
+      await commitAll("docs: no script touched")
+      await flaggingAt("2.0.0")
+      const env = await stubEnv()
+      await expect(
+        runPrePush(env, update("main", await revParse("HEAD"), await revParse("HEAD~1"))),
+      ).rejects.toMatchObject({ code: 1 })
+
+      // Same push, retried: the refused attempt left 1.0.0 in the stamp, so the checker
+      // change is still news — the whole-surface re-baseline runs again, not the narrow read.
+      const { stdout } = await runPrePush(
+        env,
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      ).then(
+        () => {
+          throw new Error("the flagging checker must keep refusing this push")
+        },
+        (error) => error,
+      )
+      expect(stdout).toContain("the checker changed (1.0.0 → 2.0.0)")
+      expect(stdout).toContain("whole tree")
+    })
     it("PINNED: a merge is diffed against its first parent, so the merged side's scripts are read", async () => {
       await baseRepo()
       await pExecFile("git", ["checkout", "-q", "-b", "side"], { cwd: dir })
@@ -618,10 +1010,10 @@ describe.skipIf(!existsSync(CLI))(
       const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
 
       await runPrePush(env, update("main", await revParse("HEAD"), mainTip))
-      // Two passes (blocking, then advice) for the side commit, and two more for the merge.
-      // Diffed against the wrong parent, the merge would show only main's docs change.
+      // One checker run per pushed commit: the side commit's and the merge's. Diffed against
+      // the wrong parent, the merge would show only main's docs change.
       const withSide = (await recorded()).filter((args) => args.includes("./tool/side.sh"))
-      expect(withSide).toHaveLength(4)
+      expect(withSide).toHaveLength(2)
     })
 
     it("the commit that installs the gate is checked whole — scripts no gate ever read", async () => {
@@ -755,6 +1147,48 @@ describe.skipIf(!existsSync(CLI))(
   },
 )
 
+// `script` gives the hook a pty on stdin — the exact condition a hand run from a terminal
+// creates. BSD script (macOS) takes the command as trailing arguments; util-linux (Linux)
+// wants -c. Elsewhere there is no portable pty, so the behaviour is untested there.
+const bsdScript = process.platform === "darwin"
+describe.skipIf(!existsSync(CLI) || !(bsdScript || process.platform === "linux"))(
+  "etymd gates — a hand run of the push gate",
+  () => {
+    it("PINNED: a terminal stdin reads no refs and says so — it never waits on the keyboard", async () => {
+      // The failure being fixed: `refs=$(cat)` on a terminal stdin blocks forever with no
+      // prompt — a long silent hook reads as a hung one. The capture reads only when stdin
+      // is NOT a terminal; a manual run is told why it sees no refs, and the gate completes.
+      await baseRepo()
+      await write("scripts/run", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: script")
+      await gates()
+      // A checker on PATH (the recording stub) so the shell step exists and its nothing-to-
+      // check line can prove the empty-refs path completed; the real checker is never run.
+      await recordShellcheck()
+      const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+      const hook = path.join(dir, ".githooks", "pre-push")
+      const args = bsdScript
+        ? ["-q", "/dev/null", "sh", hook, "origin", "url"]
+        : ["-q", "-c", `sh '${hook}' origin url`, "/dev/null"]
+      // Before the guard, the run blocks on the pty and is killed here by the timeout.
+      // script's own stdin is /dev/null: it allocates the child's pty itself, and probing a
+      // socket stdin (the harness) makes BSD script abort before the hook ever runs.
+      const res = spawnSync("script", args, {
+        cwd: dir,
+        env,
+        timeout: 10000,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      })
+      expect(res.error).toBeUndefined()
+      expect(res.status).toBe(0)
+      const out = `${res.stdout ?? ""}${res.stderr ?? ""}`.replaceAll("\r\n", "\n")
+      expect(out).toContain("no pushed refs")
+      expect(out).toContain("nothing to check")
+    })
+  },
+)
+
 describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's reach", () => {
   it("the shebang scan hands only sh/bash/dash to shellcheck, and the hook says why", async () => {
     await write("package.json", JSON.stringify({ name: "zshy", private: true }, null, 2) + "\n")
@@ -777,6 +1211,108 @@ describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's r
     expect(hook).toContain("SC1071")
     expect(hook).toContain("zsh script(s) excluded")
   })
+
+  it("a tab or carriage return after the interpreter still lands the script in the sh bucket", async () => {
+    // `( |$)` matched a literal space or end-of-line only, so `#!/bin/sh<TAB>-e` and any
+    // CRLF-committed first line matched NO bucket: not checked, not excluded, not disclosed —
+    // the silent coverage shrink the fail-closed rules promise cannot happen.
+    await pExecFile("git", ["config", "core.autocrlf", "false"], { cwd: dir })
+    await baseRepo()
+    await write("tool/tab.sh", "#!/bin/sh\t-e\nexit 0\n")
+    await write("tool/crlf.sh", "#!/bin/sh\r\nexit 0\r\n")
+    await write("tool/run.zsh", "#!/bin/zsh\necho hi\n")
+    await commitAll("chore: shebang edge cases")
+    await gates()
+    await recordShellcheck()
+    const log = path.join(dir, "shellcheck.jsonl")
+    const env = await stubEnv({ ETYMD_RECORD: log })
+    const base = await revParse("HEAD~1")
+    const head = await revParse("HEAD")
+
+    const { stdout } = await runPrePush(env, update("main", head, base))
+    const calls = (await fs.readFile(log, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[])
+    expect(calls).toHaveLength(1)
+    for (const args of calls) {
+      expect(args.filter((arg) => arg.startsWith("./")).sort()).toEqual([
+        "./tool/crlf.sh",
+        "./tool/tab.sh",
+      ])
+    }
+    expect(stdout).toContain("2 scripts")
+    // The zsh twin keeps its disclosed exclusion — widening sh must not swallow it.
+    expect(stdout).toContain("1 zsh script(s) excluded")
+  })
+
+  it("PINNED: a ksh script is counted and announced, never silently unread", async () => {
+    // The classifier had two arms — sh-family and zsh; every other shebang (ksh, ash) matched
+    // neither: no bucket, no check, no disclosure. The third bucket counts it and the hook
+    // says so at run time, the same honesty as the zsh exclusion.
+    await baseRepo()
+    await write("tool/run.ksh", "#!/bin/ksh\necho hi\n")
+    await write("tool/do.sh", "#!/bin/sh\necho ok\n")
+    await commitAll("chore: ksh and sh tools")
+    await gates()
+    await recordShellcheck()
+    const log = path.join(dir, "shellcheck.jsonl")
+    const env = await stubEnv({ ETYMD_RECORD: log })
+    const base = await revParse("HEAD~1")
+    const head = await revParse("HEAD")
+
+    const { stdout } = await runPrePush(env, update("main", head, base))
+    const calls = (await fs.readFile(log, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[])
+    // The one run sees only the sh script — the ksh one is never handed to the checker.
+    expect(calls).toHaveLength(1)
+    for (const args of calls) {
+      expect(args.filter((arg) => arg.startsWith("./"))).toEqual(["./tool/do.sh"])
+    }
+    // …and the exclusion is disclosed at run time, not silent.
+    expect(stdout).toContain("1 script(s) under another interpreter")
+    expect(stdout).toContain("not checked, not failed")
+  })
+
+  it.skipIf(!hasShellcheck)(
+    "PINNED: a shebang with a tab before its flag pushes clean through real shellcheck",
+    async () => {
+      await baseRepo()
+      await write("tool/tab.sh", "#!/bin/sh\t-e\nexit 0\n")
+      await commitAll("chore: tab shebang")
+      await gates()
+      const env = await stubEnv()
+      const base = await revParse("HEAD~1")
+      const head = await revParse("HEAD")
+      // Before the fix this push said nothing at all about the script — no bucket, no check.
+      const { stdout } = await runPrePush(env, update("main", head, base))
+      expect(stdout).toContain("shellcheck (1 scripts")
+    },
+  )
+
+  it.skipIf(!hasShellcheck)(
+    "PINNED: a CRLF-committed sh script is checked and blocks naming SC1017",
+    async () => {
+      await pExecFile("git", ["config", "core.autocrlf", "false"], { cwd: dir })
+      await baseRepo()
+      await write("tool/crlf.sh", "#!/bin/sh\r\nexit 0\r\n")
+      await commitAll("chore: crlf script")
+      await gates()
+      const env = await stubEnv()
+      const base = await revParse("HEAD~1")
+      const head = await revParse("HEAD")
+      let blocked: { stdout?: string; stderr?: string } | undefined
+      await runPrePush(env, update("main", head, base)).catch((e) => {
+        blocked = e
+      })
+      // SC1017 is shellcheck's own carriage-return verdict: the script was read, named and
+      // blocked. The old class checked nothing and the push sailed through — the hole this
+      // pins shut.
+      expect(blocked?.stdout ?? "").toContain("SC1017")
+    },
+  )
 
   it.skipIf(!hasShellcheck)(
     "PINNED: a repo whose surface is zsh pushes clean through the fresh hook",
@@ -836,7 +1372,7 @@ describe.skipIf(!existsSync(CLI))(
 
       await gates()
 
-      // Every door that resolves a screener, not just the one the failure was noticed at.
+      // Every hook that resolves a screener, not just the one the failure was noticed at.
       for (const rel of [".githooks/pre-commit", ".githooks/pre-push"]) {
         const hook = await fs.readFile(path.join(dir, rel), "utf8")
         expect(hook, rel).toContain('GATE="${CONTENT_GATE:-$(command -v etymd || true)}"')
@@ -901,7 +1437,7 @@ describe.skipIf(!existsSync(CLI))(
 )
 
 describe.skipIf(!existsSync(CLI))(
-  "etymd gates — a screen door that explains its own failure",
+  "etymd gates — a screening hook that explains its own failure",
   () => {
     it("PINNED: a runner that does not understand `screen` gets a self-explaining line, not a bare error", async () => {
       // `screen` needs etymd 0.11+. Against an older one the runner answers with its own
@@ -981,45 +1517,271 @@ describe.skipIf(!existsSync(CLI))(
 describe.skipIf(!existsSync(CLI))(
   "etymd gates — the generated hooks pass the checker they run",
   () => {
-    it("PINNED: every generated hook is shellcheck-clean at warning", async () => {
-      // A hook that gates on shellcheck must survive shellcheck itself. The specific trap this
-      // pins: any comment whose first word is the checker's own name is parsed as a DIRECTIVE, so
-      // prose explaining why a shell dialect is skipped can itself become a parse error — a
-      // generated gate breaking the tool it exists to run.
-      const hasShellcheck = await pExecFile("command", ["-v", "shellcheck"], { shell: true }).then(
-        () => true,
-        () => false,
-      )
-      if (!hasShellcheck) return
+    it.skipIf(!hasShellcheck)(
+      "PINNED: every generated hook is shellcheck-clean at warning",
+      async () => {
+        // A hook that gates on shellcheck must survive shellcheck itself. The specific trap this
+        // pins: any comment whose first word is the checker's own name is parsed as a DIRECTIVE, so
+        // prose explaining why a shell dialect is skipped can itself become a parse error — a
+        // generated gate breaking the tool it exists to run.
+        await write("package.json", JSON.stringify({ name: "demo", private: true }, null, 2) + "\n")
+        await write("AGENTS.md", "# AGENTS.md\n")
+        await write("scripts/thing.sh", "#!/usr/bin/env sh\necho hi\n")
+        await gates()
 
-      await write("package.json", JSON.stringify({ name: "demo", private: true }, null, 2) + "\n")
-      await write("AGENTS.md", "# AGENTS.md\n")
-      await write("scripts/thing.sh", "#!/usr/bin/env sh\necho hi\n")
-      await gates()
+        const targets = [
+          ".githooks/pre-commit",
+          ".githooks/pre-push",
+          ".githooks/commit-msg",
+          ".githooks/discover-shell-scripts.sh",
+        ].filter((rel) => existsSync(path.join(dir, rel)))
+        expect(targets.length).toBeGreaterThan(0)
 
-      const targets = [
-        ".githooks/pre-commit",
-        ".githooks/pre-push",
-        ".githooks/commit-msg",
-        ".githooks/discover-shell-scripts.sh",
-      ].filter((rel) => existsSync(path.join(dir, rel)))
-      expect(targets.length).toBeGreaterThan(0)
-
-      const result = await pExecFile("shellcheck", ["-S", "warning", ...targets], {
-        cwd: dir,
-      }).then(
-        () => ({ ok: true, out: "" }),
-        (e: { stdout?: string; stderr?: string }) => ({
-          ok: false,
-          out: (e.stdout ?? "") + (e.stderr ?? ""),
-        }),
-      )
-      expect(result.out).toBe("")
-      expect(result.ok).toBe(true)
-    })
+        const result = await pExecFile("shellcheck", ["-S", "warning", ...targets], {
+          cwd: dir,
+        }).then(
+          () => ({ ok: true, out: "" }),
+          (e: { stdout?: string; stderr?: string }) => ({
+            ok: false,
+            out: (e.stdout ?? "") + (e.stderr ?? ""),
+          }),
+        )
+        expect(result.out).toBe("")
+        expect(result.ok).toBe(true)
+      },
+    )
   },
 )
 
+describe.skipIf(!existsSync(CLI))("etymd gates — a set-but-unusable override says so", () => {
+  /** Deterministic doors: no ambient etymd, no shell surface — only the override under test. */
+  async function bareFixture() {
+    await write("package.json", JSON.stringify({ name: "demo", private: true }) + "\n")
+    await write("AGENTS.md", "# AGENTS.md\n")
+    await pExecFile("git", ["add", "."], { cwd: dir })
+    await gates()
+  }
+
+  it("pre-push: CONTENT_GATE naming a missing path is announced on stderr, not silent", async () => {
+    await bareFixture()
+
+    const env = { ...process.env, CONTENT_GATE: path.join(dir, "no-such-checker") }
+    // stdin must reach EOF: the hook reads the pushed refs from it, and execFile leaves its
+    // pipe open — without /dev/null the read blocks forever (git itself always closes stdin).
+    const { stderr } = await pExecFile("sh", ["-c", '".githooks/pre-push" < /dev/null', "sh"], {
+      cwd: dir,
+      env,
+    })
+    expect(stderr).toContain("pre-push: CONTENT_GATE is set but not usable")
+    expect(stderr).toContain("no-such-checker")
+  })
+
+  it("pre-commit and commit-msg announce their broken overrides too", async () => {
+    await bareFixture()
+
+    const staged = { ...process.env, CONTENT_GATE: path.join(dir, "no-such-checker") }
+    const { stderr: pcErr } = await pExecFile("sh", [".githooks/pre-commit"], {
+      cwd: dir,
+      env: staged,
+    })
+    expect(pcErr).toContain("pre-commit: CONTENT_GATE is set but not usable")
+
+    const msg = path.join(dir, "msg.txt")
+    await fs.writeFile(msg, "chore: gate\n", "utf8")
+    const msgEnv = { ...process.env, COMMIT_MSG_GATE: path.join(dir, "no-such-checker") }
+    const { stderr: cmErr } = await pExecFile("sh", [".githooks/commit-msg", msg], {
+      cwd: dir,
+      env: msgEnv,
+    })
+    expect(cmErr).toContain("commit-msg: COMMIT_MSG_GATE is set but not usable")
+  })
+
+  it("an unset gate stays a silent no-op — the line is for misconfiguration, not absence", async () => {
+    await bareFixture()
+
+    const { stderr } = await pExecFile("sh", ["-c", '".githooks/pre-push" < /dev/null', "sh"], {
+      cwd: dir,
+    })
+    expect(stderr).not.toContain("is set but not usable")
+  })
+})
+
+describe.skipIf(!existsSync(CLI))("etymd gates — the push-time audit reads the pushed tips", () => {
+  /** An audit stand-in that reports where it ran, and fails only inside a tree carrying
+   * BLOCK=1 — so the fixture can plant the gap on the branch, the checkout, or neither. */
+  async function auditStub() {
+    await write(
+      ".stub-bin/etymd",
+      '#!/bin/sh\nprintf \'%s %s\\n\' "$1" "$(pwd)" >> "$ETYMD_RECORD"\nif [ "$1" = "audit" ] && [ "$(cat "$PWD/BLOCK" 2>/dev/null)" = "1" ]; then\n  echo "gap-level finding at $(pwd)"\n  exit 1\nfi\nexit 0\n',
+    )
+    await fs.chmod(path.join(dir, ".stub-bin/etymd"), 0o755)
+  }
+
+  async function pushEnv(): Promise<NodeJS.ProcessEnv> {
+    await auditStub()
+    const log = path.join(dir, "audit-paths.log")
+    return {
+      ...process.env,
+      PATH: `${path.join(dir, ".stub-bin")}${path.delimiter}${process.env.PATH}`,
+      ETYMD_RECORD: log,
+    }
+  }
+
+  it("PINNED: a gap in the pushing CHECKOUT cannot block a clean branch — the audit runs at the pushed tip", async () => {
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await commitAll("chore: script")
+    await gates()
+    const env = await pushEnv()
+    const base = await revParse("HEAD~1")
+    const head = await revParse("HEAD")
+    // The working tree carries the gap; the pushed commits do not.
+    await write("BLOCK", "1\n")
+
+    const { stdout } = await runPrePush(env, update("main", head, base))
+    expect(stdout).toContain("the pushed tip")
+    const lines = (await fs.readFile(path.join(dir, "audit-paths.log"), "utf8")).trim().split("\n")
+    const audits = lines.filter((l) => l.startsWith("audit "))
+    expect(audits).toHaveLength(1)
+    // The audit stood in a materialised worktree of the tip, not in the pushing checkout —
+    // where the gap lives and would have refused this clean branch.
+    expect(audits[0]?.endsWith(dir)).toBe(false)
+    expect(stdout).not.toContain("gap-level finding")
+  })
+
+  it("PINNED: the audit's worktree carries raw blobs — a converting checkout filter cannot change what is audited", async () => {
+    // git archive (the old materialiser) runs working-tree conversion: a required filter
+    // killed it mid-stream and its death inside the pipeline read as tar's status — the audit
+    // then ran over an EMPTY tree; a non-required one handed the audit CONVERTED bytes. Both
+    // are the same lie: the gate certifying bytes it never read. Every entry is now written
+    // as its raw blob, no filter ever runs, and a converting filter changes nothing seen.
+    await baseRepo()
+    await pExecFile("git", ["config", "filter.smudge.smudge", "sed s/payload/SMUDGED/"], {
+      cwd: dir,
+    })
+    await pExecFile("git", ["config", "filter.smudge.clean", "cat"], { cwd: dir })
+    await pExecFile("git", ["config", "filter.smudge.required", "true"], { cwd: dir })
+    await write(".gitattributes", "*.bin filter=smudge\n")
+    await write("data.bin", "payload\n")
+    await commitAll("chore: a filtered file")
+    await gates()
+    const env = await stubEnv()
+    // The audit stand-in fails unless it reads the committed bytes: present and unconverted.
+    await write(
+      ".stub-bin/etymd",
+      '#!/bin/sh\n[ "$(cat data.bin 2>/dev/null)" = "payload" ] || { echo "audit read: $(cat data.bin 2>/dev/null)"; exit 1; }\nexit 0\n',
+    )
+    await fs.chmod(path.join(dir, ".stub-bin", "etymd"), 0o755)
+
+    const { stdout, stderr } = await runPrePush(
+      env,
+      update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+    )
+    expect(stdout).toContain("the pushed tip")
+    expect(stderr).not.toContain("external filter")
+  })
+
+  it("PINNED: the audit worktree's index is filled and the checkout's node_modules is linked in", async () => {
+    // Two quiet gates in one materialisation: --no-checkout leaves a worktree's index EMPTY,
+    // so the audit's git-scoped enumeration (ls-files) listed nothing while every file sat on
+    // disk — the comment lens answered "nothing to check" and never gated a push. And a tree
+    // without node_modules degrades every command claim into "unverifiable, skipped" — dead
+    // commands are the main risk-tier finding. read-tree fills the index from the pushed
+    // commit; the checkout's install is linked in, because installed binaries belong to the
+    // checkout, not the commit.
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await commitAll("chore: script")
+    await gates()
+    const env = await pushEnv()
+    await fs.mkdir(path.join(dir, "node_modules", ".bin"), { recursive: true })
+    // Records what an etymd standing in the audit worktree would see: how many tracked files
+    // ls-files lists (0 was the defect), and whether node_modules resolves. The label keeps
+    // the audit call apart from the advisory content screen, which routes here too.
+    await stub(
+      "etymd",
+      [
+        "#!/bin/sh",
+        'if [ "$1" = "--version" ]; then printf "version: 0.0.0-stub\\n"; exit 0; fi',
+        'printf \'%s %s\\n\' "$1" "$(git ls-files | wc -l | tr -d "[:space:]")" >> "$ETYMD_RECORD"',
+        '[ "$1" = "audit" ] && [ -e node_modules/.bin ] && printf "audit-linked\\n" >> "$ETYMD_RECORD"',
+        "exit 0",
+      ].join("\n") + "\n",
+    )
+
+    const { stdout } = await runPrePush(
+      env,
+      update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+    )
+    expect(stdout).toContain("the pushed tip")
+    const log = await fs.readFile(path.join(dir, "audit-paths.log"), "utf8")
+    const auditCount = log
+      .split("\n")
+      .find((l) => /^audit \d+$/.test(l.trim()))
+      ?.trim()
+    expect(auditCount).toBeDefined()
+    expect(Number(auditCount?.split(" ")[1])).toBeGreaterThan(0)
+    expect(log).toContain("audit-linked")
+  })
+
+  it("PINNED: a gap ON THE PUSHED BRANCH refuses the push even from a clean checkout", async () => {
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await write("BLOCK", "1\n")
+    await commitAll("chore: script and gap")
+    await gates()
+    const env = await pushEnv()
+    const base = await revParse("HEAD~1")
+    const head = await revParse("HEAD")
+    // The checkout is clean OF the gap (uncommitted edit only) — the old audit read exactly
+    // this tree and passed; the pushed tip still carries it.
+    await write("BLOCK", "0\n")
+
+    await expect(runPrePush(env, update("main", head, base))).rejects.toMatchObject({
+      code: 1,
+      stdout: expect.stringContaining("gap-level finding"),
+    })
+  })
+
+  it("a push that carries no commits audits nothing and says so", async () => {
+    await baseRepo()
+    await gates()
+    const env = await pushEnv()
+    const head = await revParse("HEAD")
+
+    const { stdout } = await runPrePush(env, update("main", head, head))
+    expect(stdout).toContain("nothing to audit")
+    // And the audit never ran (the content screen's call is the only etymd invocation).
+    const lines = (await fs.readFile(path.join(dir, "audit-paths.log"), "utf8")).trim().split("\n")
+    expect(lines.filter((l) => l.startsWith("audit "))).toEqual([])
+  })
+})
+
+describe.skipIf(!existsSync(CLI))("etymd gates — the hooks README", () => {
+  it("writes .githooks/README.md saying how git reaches the hooks", async () => {
+    await write("package.json", JSON.stringify({ name: "demo", private: true }) + "\n")
+    await write("AGENTS.md", "# AGENTS.md\n")
+    await pExecFile("git", ["add", "."], { cwd: dir })
+
+    await gates()
+    const readme = await fs.readFile(path.join(dir, ".githooks/README.md"), "utf8")
+    expect(readme).toContain("core.hooksPath")
+    expect(readme).toContain("machine-local")
+    // Pack-owned and stamped, so regeneration can tell its own file from a stranger's.
+    expect(readme).toContain("etymd:generated")
+  })
+
+  it("keeps a hand-written README — unstamped files are never clobbered", async () => {
+    await write("package.json", JSON.stringify({ name: "demo", private: true }) + "\n")
+    await write("AGENTS.md", "# AGENTS.md\n")
+    await write(".githooks/README.md", "# Our hooks\n")
+    await pExecFile("git", ["add", "."], { cwd: dir })
+
+    await gates()
+    const readme = await fs.readFile(path.join(dir, ".githooks/README.md"), "utf8")
+    expect(readme).toBe("# Our hooks\n")
+  })
+})
 /**
  * The staged tree against a full checkout, case by case from shellcheck's own documentation
  * (the man page's RC FILES and DIRECTIVES sections): every input the checker reads from the
@@ -1030,7 +1792,8 @@ describe.skipIf(!existsSync(CLI))(
  * The reference is shellcheck itself, run at the blocking bar on a real checkout of the same
  * commit. HOME and XDG_CONFIG_HOME point at an empty directory in both runs, so a personal
  * config can never make two different reads agree. A row marked `gap` is a known difference,
- * recorded in ROADMAP.md: it runs as an expected failure, and turns red the day it is fixed.
+ * recorded in docs/limitations.md: it runs as an expected failure, and turns red the day it is
+ * fixed.
  */
 describe.skipIf(!existsSync(CLI) || !hasShellcheck)(
   "etymd gates — the staged tree reads like a checkout, for every input shellcheck documents",
@@ -1048,7 +1811,7 @@ describe.skipIf(!existsSync(CLI) || !hasShellcheck)(
         name: "a root shellcheckrc (no dot) governs every script",
         files: { shellcheckrc: "disable=SC2034\n", "tool/do.sh": unused },
         scripts: ["tool/do.sh"],
-        gap: "ROADMAP.md: the pre-push hook stages only .shellcheckrc",
+        gap: "docs/limitations.md: the pre-push hook stages only .shellcheckrc",
       },
       {
         name: "a nested .shellcheckrc governs only its own subtree",
@@ -1072,7 +1835,7 @@ describe.skipIf(!existsSync(CLI) || !hasShellcheck)(
           "tool/do.sh": uses(". ./tool/lib.inc"),
         },
         scripts: ["tool/do.sh"],
-        gap: "ROADMAP.md: the pre-push hook reads only an unquoted external-sources=true",
+        gap: "docs/limitations.md: the pre-push hook reads only an unquoted external-sources=true",
       },
       {
         name: "a helper's own helper is followed",
@@ -1127,9 +1890,11 @@ describe.skipIf(!existsSync(CLI) || !hasShellcheck)(
       },
     ]
 
-    /** The blocking verdict as a reader sees it: exit status, and each finding with its place. */
+    /** The blocking verdict as a reader sees it: exit status, and each finding with its place.
+     * Both runs speak gcc format — the hook's one run prints blocking and advice lines alike, so
+     * the verdict keeps only the blocking severities (warning, error) to compare. */
     function verdict(code: number, stdout: string) {
-      const lines = stdout.split("\n").filter((l) => /^In \.\/.* line \d+:$|SC\d{4} \(/.test(l))
+      const lines = stdout.split("\n").filter((l) => /^\.\/.*:\d+:\d+: (warning|error): /.test(l))
       return { failed: code !== 0, findings: lines.map((l) => l.trim()).sort() }
     }
 
@@ -1157,7 +1922,7 @@ describe.skipIf(!existsSync(CLI) || !hasShellcheck)(
         })
         const reference = await pExecFile(
           "shellcheck",
-          ["-S", "warning", "--", ...row.scripts.map((s) => `./${s}`)],
+          ["-S", "warning", "-f", "gcc", "--", ...row.scripts.map((s) => `./${s}`)],
           { cwd: checkout, env },
         ).then(
           (r) => verdict(0, r.stdout),

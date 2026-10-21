@@ -11,12 +11,12 @@ briefing `brief` emits, and the brief `premise` writes where `.etymd/` already e
 
 ## The `.etymd` directory — two lifecycles
 
-| Path                   | Lifecycle                            | Role                                                                              |
-| ---------------------- | ------------------------------------ | --------------------------------------------------------------------------------- |
-| `.etymd/cache/`        | **gitignored** (init adds the entry) | transient scan cache, re-derivable                                                |
-| `.etymd/baseline.json` | **committed**                        | the approved reckoning drift is measured against                                  |
-| `.etymd/ledger.json`   | **committed**                        | the findings memory: statuses, diffs, dismissals                                  |
-| `.etymd/config.json`   | **committed**, optional              | audit scope (include/exclude) + context budgets — see the README's config section |
+| Path                   | Lifecycle                            | Role                                                                       |
+| ---------------------- | ------------------------------------ | -------------------------------------------------------------------------- |
+| `.etymd/cache/`        | **gitignored** (init adds the entry) | transient scan cache, re-derivable                                         |
+| `.etymd/baseline.json` | **committed**                        | the approved reckoning drift is measured against                           |
+| `.etymd/ledger.json`   | **committed**                        | the findings memory: statuses, diffs, dismissals                           |
+| `.etymd/config.json`   | **committed**, optional              | audit scope (include/exclude) + context budgets, see docs/configuration.md |
 
 ## `etymd audit` — the command
 
@@ -65,7 +65,7 @@ committer dates only, never mtime:
 - **Relative staleness**: a state doc is flagged only when the repo moved past it
   (`staleAfterDays`, default 30; 3x escalates to risk) — a dormant repo's old state is current,
   and a tracked file with uncommitted edits is treated fresh-now with a disclosure.
-- **Char budget**: state docs over 9,500 chars (session-injection hooks truncate ~10,000).
+- **Char budget**: state docs over 9,500 chars (some agent harnesses truncate a loaded file near 10,000 characters).
   Override both under `state` in `.etymd/config.json`.
 - **Decisions format checks** (`Scope:` presence, past `Revisit:` dates): opt in by adding the
   literal marker `<!-- decisions-format: 1 -->` anywhere in the decisions file — forward-only,
@@ -82,6 +82,21 @@ committer dates only, never mtime:
 **`context-economy`** — the always-loaded footprint as findings: any single file ≥ 4000 words,
 total ≥ 8000 words (defaults; override under `context` in `.etymd/config.json`). Only genuinely
 `alwaysApply` Cursor rules count.
+
+**`comment-truth`** (truth) — the same four claim checks (command, path, doc-reference,
+decision id) over comments in tracked source files, extracted per language (JS/TS, C-family,
+shell/Python/Ruby-style `#`, CSS, markup, SQL) with a string-aware scanner — string content is
+never read as a comment. Findings name the file and line. Comments are prose, so bare mentions are
+promoted with the premise surface's stricter rules; test/fixture/vendor files and
+mixed-language templates (`.vue`/`.svelte`/`.astro`) are skipped, counted, and disclosed, and
+skipped files are held out of scope so the ledger never reads them as fixed.
+
+**`pin-integrity`** (truth) — dependency pins judged by lockfile arithmetic alone: an
+`overrides` / `resolutions` / `pnpm.overrides` entry whose package nothing in the lock (or any
+manifest, workspace included) requests any more, and a `patchedDependencies` target the lock no
+longer carries at the named version (either key direction; `pnpm-workspace.yaml` too). No
+registry, no network, no tool run; unverifiable shapes (no lockfile, nested-path override keys,
+range selectors — verified by name only) are disclosed, never flagged.
 
 ## `etymd premise` — is this the right task?
 
@@ -104,8 +119,8 @@ would be. A bare `pnpm X` in a sentence, a scheme-less URL (`github.com/…`), a
 disclosed, never flagged; backtick one to have it checked.
 
 A task routinely quotes other people's trees, so for the task surface a path is only accused of
-missing when it is plausibly repo-relative: the mention carries no namespace prefix (`pc:`,
-`lk:`, a repo shorthand — another repo's tree, skipped and disclosed), and the path's first
+missing when it is plausibly repo-relative: the mention carries no namespace prefix (`app:`,
+`lib:`, a short name for another repo — another repo's tree, skipped and disclosed), and the path's first
 segment starts where a directory of this repo does. A path that starts elsewhere is outside this
 repo — reported as unverifiable, never as a missing file here.
 
@@ -122,8 +137,10 @@ Flags: `--file <path>` (`-` = stdin) · `--json` (schema `premise/1`) · `--no-b
 ## `etymd init` — onboarding
 
 Reckon → confirm the workflow profile (solo/team, detected from recent commit authors) → scaffold
-a minimal AGENTS.md **only if none exists**, with its `CLAUDE.md` pointer (Claude Code
-before 2.1.277 loads only `CLAUDE.md`; later versions read `AGENTS.md` themselves) → offer local gates **only if no hook
+a minimal AGENTS.md **only if none exists**, with its `CLAUDE.md` pointer **only where the local
+reader needs one** (Claude Code before 2.1.277 loads only `CLAUDE.md`; later versions read
+`AGENTS.md` themselves, and a machine with no Claude Code has no reader to serve — on both the
+pointer is skipped and init says so) → offer local gates **only if no hook
 system exists** → write the **committed baseline** + gitignore the cache. Never overwrites
 anything. `-y` accepts defaults.
 
@@ -152,12 +169,13 @@ the result to account.
 - **`etymd accept <id>`** — acknowledge a finding as accepted reality (e.g. a known trade-off);
   visible in the ledger, out of the report.
 
-## `etymd fleet` — the truth guard across your repositories (EXPERIMENTAL through 0.2.x)
+## `etymd fleet` — the truth guard across your repositories
 
-One manifest, `registry.json`, registers every repo you work in (format in the README's
-"fleet manifest" section; decision record in `docs/decisions/004-fleet-truth-guard.md`). The sweep
-runs a read-only audit per resolved entry and checks the manifest itself plus the placement
-wall between personal and guarded entries.
+One manifest, `registry.json`, registers every repo you work in (format in
+[the fleet manifest](https://github.com/fleetorders/etymd/blob/main/docs/fleet.md); design in
+[the design record](https://github.com/fleetorders/etymd/blob/main/docs/decisions.md), D-004).
+The registry and fleet `--json` schemas may still change before 1.0. The sweep runs a read-only
+audit per resolved entry and checks the manifest itself plus its own entries.
 
 ```bash
 cd ~/projects/my-fleet-hub            # the dir holding registry.json …
@@ -192,14 +210,18 @@ Walkthrough of the pieces:
   only (`HEAD --not --remotes=origin`) — merged upstream traffic cannot make the fork's state
   look stale, and a pure mirror reads as dormant. A missing remote falls back to the full clock
   with a disclosure.
-- **Wall findings** (lens id `fleet-manifest`, all risk-tier): guarded contract files inside a guarded
+- **Findings on the manifest's own entries** (lens id `fleet-manifest`): guarded contract files inside a guarded
   worktree; unregistered guarded-remote checkouts under the fleet root; tracked `/Users/` paths in
-  the manifest's own repo; private needles in `trust: "public-repo"` entries; guarded-host commit
+  the manifest's own repo; private identifiers in `trust: "public-repo"` entries; guarded-host commit
   emails on personal entries; and repos whose `AGENTS.md` Claude Code cannot see (`claude-pointer-missing`: a risk when
   a `CLAUDE.md` exists without importing `@AGENTS.md`, since Claude Code then reads only that file
   and `etymd fleet add` refuses the repo; a gap when there is no `CLAUDE.md` and the installed
   Claude Code predates the 2.1.277 `AGENTS.md` fallback; `ETYMD_CLAUDE_VERSION` pins the version
-  checked, `none` for a machine without Claude Code). These are not ledger-quietable in 0.2 — the only honest resolution
+  checked, `none` for a machine without Claude Code — pin it wherever a sweep must not depend on
+  the machine, CI above all, because a box with no readable `claude` counts as no reader and
+  passes bare `AGENTS.md` repos. A probe that fails some other way — timeout, broken shim, and
+  on Windows npm's `claude.cmd`, which Node will not launch without a shell — and a pin that is
+  not `X.Y.Z` are both disclosed as undetermined, never silently clean). These are not ledger-quietable; the only honest resolution
   is fixing them. Every check that cannot run says so.
 
 ## CI recipe

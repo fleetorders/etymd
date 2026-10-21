@@ -45,7 +45,7 @@ describe("expandScriptRefs / matchTools", () => {
     expect(() => expandScriptRefs("yarn a", cyclic)).not.toThrow()
   })
 
-  // Every shape below was found live in real repos. The previous
+  // Every shape below occurs in real repos. The previous
   // positional regex handled only `npm run x`, `yarn x` and `pnpm x`; the rest expanded to
   // nothing, so a hook running `pnpm run typecheck` reported as having no typecheck at all.
   const SCRIPTS = {
@@ -210,7 +210,7 @@ describe("buildGateInventory (legacy CRA-shaped fixture)", () => {
     expect(ids).toContain("gate-integrity/ci-only-lint")
     expect(ids).toContain("gate-integrity/ci-only-test")
 
-    // The motivating legacy-repo case, phrased humbly about the server-side threshold.
+    // The older-repo case, phrased humbly about the server-side threshold.
     const coverage = findings.find((f) => f.id === "gate-integrity/coverage-no-local-threshold")
     expect(coverage).toBeDefined()
     expect(coverage?.claim).toContain("server-side")
@@ -315,6 +315,36 @@ npm test || exit 1
     return buildGateInventory(dir, facts)
   }
 
+  it("reads the companion of a hooks directory OUTSIDE the repo", async () => {
+    // core.hooksPath can point anywhere git can read, and the companion beside that hook is
+    // wired the same way — welding the absolute directory onto the scan root lost it.
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-hooks-"))
+    try {
+      await write("package.json", PACKAGE)
+      await write(".github/workflows/ci.yml", CI)
+      await fs.writeFile(path.join(outside, "pre-push"), HOOK, "utf8")
+      await fs.chmod(path.join(outside, "pre-push"), 0o755)
+      await fs.writeFile(path.join(outside, "pre-push.local"), COMPANION, "utf8")
+      await fs.chmod(path.join(outside, "pre-push.local"), 0o755)
+      const { execFile } = await import("node:child_process")
+      const { promisify } = await import("node:util")
+      const run = async (args: string[]) => await promisify(execFile)("git", args, { cwd: dir })
+      await run(["init"])
+      await run(["config", "user.email", "t@example.com"])
+      await run(["config", "user.name", "t"])
+      await run(["config", "commit.gpgsign", "false"])
+      await run(["config", "core.hooksPath", outside])
+
+      const facts = await scanProject(dir)
+      const inv = await buildGateInventory(dir, facts)
+
+      expect(inv.local.source).toBe("custom")
+      expect(inv.local.prePush).toContain("test")
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true })
+    }
+  })
+
   it("counts a check that lives in the companion as locally enforced", async () => {
     const inv = await fixture({ companion: COMPANION, executable: true })
     expect(inv.local.prePush).toContain("test")
@@ -410,7 +440,7 @@ npm test || exit 1
 describe("hook wiring is a developer-machine fact, not a CI one", () => {
   // A CI checkout never has git config, so core.hooksPath is ALWAYS unset there. Accusing it
   // would fail the very `etymd audit --fail-on risk` gate the README tells users to add — in
-  // every repo with tracked hooks. Caught by etymd's own first CI run.
+  // every repo with tracked hooks.
   const inv = {
     local: { source: "githooks", wired: false, preCommit: [], prePush: [], commitMsg: [] },
     ci: { system: "none", jobs: [], inheritedIncludes: [], parseErrors: [] },
@@ -445,5 +475,80 @@ describe("hook wiring is a developer-machine fact, not a CI one", () => {
     const ids = withCi(true, () => deriveGateFindings(inv, disclosures)).map((f) => f.id)
     expect(ids).not.toContain("gate-integrity/hooks-not-wired")
     expect(disclosures.some((d) => d.includes("Running in CI"))).toBe(true)
+  })
+})
+
+describe("checks run through a wrapper function", () => {
+  // The hook avoids repeating itself: one shell function wraps the manager call, and the script
+  // name reaches the manager only as $1. Unexpanded, a hook written this way reads as running
+  // none of its checks, so already-wired gates surface as ci-only findings.
+  const PACKAGE = JSON.stringify({
+    name: "wrapped",
+    scripts: {
+      "format:check": "prettier --check .",
+      typecheck: "tsc --noEmit",
+      lint: "eslint .",
+    },
+  })
+  const CI = `on: push
+jobs:
+  check:
+    steps:
+      - run: pnpm format:check
+      - run: pnpm lint
+`
+  const WRAPPED_HOOK = `#!/usr/bin/env sh
+repo_root=$(git rev-parse --show-toplevel)
+run() {
+  echo "correctness gate: pnpm $1"
+  if ! (cd "$repo_root" && pnpm "$1"); then
+    echo "failed: pnpm $1"
+    exit 1
+  fi
+}
+run format:check
+run typecheck
+run lint
+exit 0
+`
+
+  async function fixture(hook: string) {
+    await write("package.json", PACKAGE)
+    await write(".github/workflows/ci.yml", CI)
+    await write(".githooks/pre-push", hook)
+    await fs.chmod(path.join(dir, ".githooks/pre-push"), 0o755)
+    const facts = await scanProject(dir)
+    const inv = await buildGateInventory(dir, facts)
+    return { inv, findings: deriveGateFindings(inv) }
+  }
+
+  it("counts the checks a wrapper runs — no ci-only finding for a gate already wired", async () => {
+    const { inv, findings } = await fixture(WRAPPED_HOOK)
+    expect(inv.local.prePush).toEqual(expect.arrayContaining(["format-check", "typecheck", "lint"]))
+    const ids = findings.map((f) => f.id)
+    expect(ids).not.toContain("gate-integrity/ci-only-format-check")
+    expect(ids).not.toContain("gate-integrity/ci-only-lint")
+  })
+
+  it("a hook that genuinely omits lint through the same wrapper still yields ci-only-lint", async () => {
+    const { findings } = await fixture(WRAPPED_HOOK.replace("run lint\n", ""))
+    const lint = findings.find((f) => f.id === "gate-integrity/ci-only-lint")
+    expect(lint).toBeDefined()
+    expect(lint?.confidence).toBe("high")
+  })
+
+  it("a wrapper called with a variable drops the finding's confidence instead of asserting a gap", async () => {
+    const dynamic = WRAPPED_HOOK.replace(
+      "run format:check\nrun typecheck\nrun lint\n",
+      'for check in format:check typecheck lint; do\n  run "$check"\ndone\n',
+    )
+    const { inv, findings } = await fixture(dynamic)
+    expect(inv.local.unresolvedWrapperCalls).toBe(1)
+    const lint = findings.find((f) => f.id === "gate-integrity/ci-only-lint")
+    // Every script arrives through a variable now: the gap may exist, but not as a certainty
+    // built on invocations that were never read.
+    expect(lint).toBeDefined()
+    expect(lint?.confidence).toBe("medium")
+    expect(lint?.evidence.join(" ")).toContain("cannot resolve")
   })
 })

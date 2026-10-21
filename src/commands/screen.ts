@@ -14,7 +14,7 @@ import { glyph, theme } from "../ui/theme.js"
  * else and a leak for whoever wrote it. The user supplies a pattern file; without one this
  * command is inert and says so.
  *
- * Four doors, because a leak walks through whichever is unguarded:
+ * Four hooks, because a leak walks through whichever is unguarded:
  *
  *   --staged   what a commit is about to add       (pre-commit)
  *   --message  the commit message itself           (commit-msg — the staged scan cannot see it)
@@ -55,7 +55,7 @@ export interface ScreenOptions {
   /** Message file (commit-msg hook `$1`) or the directory to walk, per scope. */
   target?: string
   patterns?: string
-  /** Report without failing — the pre-push door is advisory by default. */
+  /** Report without failing — the pre-push hook is advisory by default. */
   advisory?: boolean
   /**
    * The name of this repo's upstream remote (a fork). When set, a staged/tree file whose content
@@ -130,8 +130,8 @@ const ALLOW_MARKER = "allow-published-string"
  * it exempts).
  */
 const ALLOW_FILE = ".etymd-screen-allow"
-/** The previous tool's filename, still honoured so a migrated repo keeps its exceptions. */
-const LEGACY_ALLOW_FILE = ".artifact-check-allow"
+/** An older name for the allow file. It is no longer read; its presence only prints a rename hint. */
+const OLD_ALLOW_FILE = ".artifact-check-allow"
 
 export interface ScreenHit {
   file: string
@@ -190,7 +190,7 @@ function compileLooseRegex(source: string): RegExp {
  * An orphan provenance line (no open record) is dropped without a warning, deliberately: it
  * exempts nothing, and the dangerous direction for an allow file is over-exemption, not
  * under-exemption — a pattern nobody wrote simply never matches, and the hit it would have
- * covered is still reported at the door that sees it.
+ * covered is still reported at the hook that sees it.
  */
 export function compileAllow(raw: string): AllowFile {
   const lines: AllowEntry[] = []
@@ -234,16 +234,6 @@ export function compileAllow(raw: string): AllowFile {
   return { lines, generated }
 }
 
-/** Compile one pattern line, matching malformed input literally rather than dropping it. */
-function compileOnePattern(l: string): RegExp {
-  try {
-    return new RegExp(l, "i")
-  } catch {
-    // A malformed pattern must never be silently dropped — match it literally instead.
-    return new RegExp(l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")
-  }
-}
-
 /**
  * Compile pattern file (not allow-file) into classed patterns. Exported for tests.
  *
@@ -263,7 +253,7 @@ export function compilePatterns(raw: string): ScreenPattern[] {
       continue
     }
     if (l.startsWith("#")) continue
-    out.push({ re: compileOnePattern(l), cls })
+    out.push({ re: compileLooseRegex(l), cls })
   }
   return out
 }
@@ -405,7 +395,7 @@ export function screenText(
 
 /**
  * Every blob object-id at the tips of the upstream remote's refs. A fork copies upstream files
- * verbatim — sometimes to a DIFFERENT path (an adapter lifted from `upstream/channels` into an
+ * verbatim — sometimes to a DIFFERENT path (an adapter lifted from an upstream directory into an
  * `add-*` skill) — so ownership is decided by CONTENT identity (the blob sha) across ALL upstream
  * refs, not by path: a byte-identical copy shares the blob wherever it sits. Returns null when no
  * upstream refs can be read, so the caller exempts nothing and says so — a fork whose upstream
@@ -525,26 +515,19 @@ export async function run(opts: ScreenOptions): Promise<void> {
   }
 
   // Repo-level exceptions, read from the repo being screened.
-  const usingLegacy =
+  const oldFileOnly =
     !(await pathExists(path.join(opts.cwd, ALLOW_FILE))) &&
-    (await pathExists(path.join(opts.cwd, LEGACY_ALLOW_FILE)))
-  const allowRaw = usingLegacy
-    ? await readText(path.join(opts.cwd, LEGACY_ALLOW_FILE))
-    : await readText(path.join(opts.cwd, ALLOW_FILE))
+    (await pathExists(path.join(opts.cwd, OLD_ALLOW_FILE)))
+  const allowRaw = await readText(path.join(opts.cwd, ALLOW_FILE))
   const allowFile = allowRaw ? compileAllow(allowRaw) : { lines: [], generated: [] }
 
   // Validate provenance and self-name exemptions
   const selves = await selfIdentities(opts.cwd)
-  const validatedEntries = allowFile.lines.filter((entry) => {
-    if (entry.isSelfName) return true // Self-name marked during compilation check
-
-    // Check if this is a self-name exemption
+  const allow = allowFile.lines.filter((entry) => {
     if (isSelfName(entry.pattern, selves)) {
       entry.isSelfName = true
       return true
     }
-
-    // Non-self-name entries require provenance
     if (!entry.reason || !entry.date || !entry.author) {
       print(
         `  ${glyph.partial} ${theme.warn(`Missing provenance for exemption pattern`)} ${theme.dim(String(entry.pattern))}`,
@@ -557,8 +540,6 @@ export async function run(opts: ScreenOptions): Promise<void> {
 
     return true
   })
-
-  const allow = validatedEntries
 
   // Generated-data paths carry no self-name shorthand — exempting a PATH is never a repo naming
   // itself — so provenance is unconditional, and a record missing it is reported and does not
@@ -590,7 +571,7 @@ export async function run(opts: ScreenOptions): Promise<void> {
   // A fork opts into the exemption with `--upstream <remote>` or, persistently,
   // `git config etymd.upstream <remote>`. The config is the better signal: it survives a rebuild
   // that drops the remote, so the fork still KNOWS it is a fork and reports the missing ref rather
-  // than silently skipping the exemption — the exact "vanished for a week, nobody noticed" gap.
+  // than silently skipping the exemption — a gap that otherwise goes unnoticed.
   const upstreamRemote =
     hasVocab && (opts.scope === "staged" || opts.scope === "tree")
       ? (opts.upstream ?? (await git(opts.cwd, ["config", "--get", "etymd.upstream"])) ?? undefined)
@@ -614,10 +595,9 @@ export async function run(opts: ScreenOptions): Promise<void> {
     return !!sha && upstreamBlobs.has(sha)
   }
 
-  // Warn about legacy allow file usage
-  if (usingLegacy) {
+  if (oldFileOnly) {
     print(
-      `  ${glyph.partial} ${theme.warn(`Using legacy ${LEGACY_ALLOW_FILE} file — rename to ${ALLOW_FILE} and add provenance`)}`,
+      `  ${glyph.partial} ${theme.warn(`${OLD_ALLOW_FILE} is no longer read — rename it to ${ALLOW_FILE} and add provenance`)}`,
     )
     print(
       `    ${theme.dim("New format: a `pattern` line, then `reason`, `date`, `author` lines per entry")}`,
@@ -672,7 +652,7 @@ export async function run(opts: ScreenOptions): Promise<void> {
     for (const rel of files) {
       // The allowlist necessarily contains every string it exempts, so screening it would flag
       // each entry against itself — the same reason a scanner is exempt from its own patterns.
-      if (rel === ALLOW_FILE || rel === LEGACY_ALLOW_FILE) continue
+      if (rel === ALLOW_FILE) continue
       const abs = path.join(opts.cwd, rel)
       if (!(await pathExists(abs))) continue
       const raw = await readScreenable(abs)

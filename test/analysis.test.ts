@@ -130,6 +130,7 @@ describe("planWorkflow", () => {
       ".githooks/pre-commit",
       ".githooks/commit-msg",
       ".githooks/pre-push",
+      ".githooks/README.md",
     ])
     expect(plan.every((p) => p.exists === false)).toBe(true)
   })
@@ -148,7 +149,7 @@ describe("planWorkflow", () => {
     expect(published.map((p) => p.path)).toContain("scripts/artifact-check.sh")
 
     // An explicit option overrides the derivation both ways — a repo can publish by a route
-    // npm cannot see, or decline the door entirely.
+    // npm cannot see, or decline the hook entirely.
     const forcedOff = await planWorkflow("/nonexistent-root", facts({ publishable: true }), {
       agents: false,
       gates: true,
@@ -172,13 +173,14 @@ describe("planWorkflow", () => {
     })
     expect(plan.map((p) => p.path)).not.toContain("scripts/artifact-check.sh")
     const prePush = plan.find((p) => p.path === ".githooks/pre-push")?.contents ?? ""
-    expect(prePush).toContain("typecheck")
-    expect(prePush).not.toContain("lint")
+    // Wired steps, not bare words: the hook's own comments name every candidate command.
+    expect(prePush).toContain("run_gate pnpm typecheck")
+    expect(prePush).not.toContain("run_gate pnpm lint")
     expect(prePush).toContain("--fail-on gap")
   })
 
   it("PINNED: regeneration keeps a test step the existing hook already ran", async () => {
-    // Found by migrating a real repo: the derived set is format/typecheck/lint, so a repo whose
+    // The derived set is format/typecheck/lint, so a repo whose
     // hook ran tests lost that check on regeneration — a silent downgrade, and the reason a
     // generator that drops working checks cannot be trusted to regenerate anything. `test` is
     // still not in the DEFAULT set (a slow suite in a push gate teaches people --no-verify);
@@ -191,6 +193,21 @@ describe("planWorkflow", () => {
     // A repo that never ran them in a hook does not suddenly gain a slow step.
     expect(derivedCommands(f, "npm run typecheck || exit 1")).not.toContain("test")
     expect(derivedCommands(f)).not.toContain("test")
+    // Comment lines do not count as the repo running anything: the generated hook's own
+    // comments (a wc-padding note reading "an integer test" once) wired `test` into every
+    // regeneration, so each run rewrote the hook and added the whole suite to every push.
+    expect(
+      derivedCommands(
+        f,
+        [
+          "count=$(wc -c < x)",
+          "# wc may pad its counts; an integer test on a padded read is unsafe",
+          "run_gate npm run typecheck || exit 1",
+        ].join("\n"),
+      ),
+    ).not.toContain("test")
+    // The wired step is code and survives the comment strip.
+    expect(derivedCommands(f, "run_gate npm run test || exit 1")).toContain("test")
   })
 
   it("honours an explicit allowWriting override for a command that would otherwise be refused", () => {
@@ -216,7 +233,7 @@ describe("planWorkflow", () => {
   it("PINNED: every generated hook calls a repo-owned companion it never generates", () => {
     // The seam that makes regeneration safe. Without it, a repo with its own guards had to
     // choose between accepting the pack (losing them) and hand-maintaining the file (losing
-    // regeneration) — and a trial migration of real repos destroyed working checks proving it.
+    // regeneration) — and regenerating over them destroys working checks.
     const hooks: [string, string][] = [
       ["pre-commit", generatePreCommitHook()],
       ["commit-msg", generateCommitMsgHook()],
@@ -350,7 +367,7 @@ describe("commit-message format gate", () => {
     for (const config of [undefined, gates, { ...gates, commitFormat: false }]) {
       const hook = generateCommitMsgHook(config)
       expect(hook).not.toContain("expected '<type>")
-      // What is absent is the format step — never the screen, which is the leak door.
+      // What is absent is the format step — never the screen, which is the leak gate.
       expect(hook).toContain('"$GATE" screen --message "$1"')
     }
     // An explicit true, and only that, installs it.
@@ -619,7 +636,7 @@ describe("preservation is a property of generation, not of the command", () => {
 describe("shell correctness gate — the surface package.json cannot see", () => {
   it("writes a shellcheck step for a repo with a shell surface", () => {
     const hook = generatePrePushHook(facts({ shell: { scripts: 12 } }))
-    expect(hook).toContain("shellcheck -S warning")
+    expect(hook).toContain("shellcheck -S style -f gcc")
     // Discovery happens IN the hook, at push time, over the commits being pushed. A baked-in
     // file list is correct the day it is generated and silently wrong the first time someone
     // adds a script; a working-tree read certifies bytes that never ship.
@@ -634,7 +651,7 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
     // Step-precise marker: every hook now MENTIONS shellcheck (the scrub helper's disable
     // directive), so the bare word can no longer prove the step's presence or absence.
     expect(hook).not.toContain("command -v shellcheck")
-    expect(hook).not.toContain("shellcheck -S warning")
+    expect(hook).not.toContain("shellcheck -S style -f gcc")
   })
 
   it("treats an absent `shell` fact as not-measured, not as zero", () => {
@@ -642,7 +659,7 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
     // crash, and must not claim a surface it never looked for.
     const hook = generatePrePushHook(facts({ shell: undefined }))
     expect(hook).not.toContain("command -v shellcheck")
-    expect(hook).not.toContain("shellcheck -S warning")
+    expect(hook).not.toContain("shellcheck -S style -f gcc")
   })
 
   it("PINNED: a missing shellcheck binary skips LOUDLY and never blocks", () => {
@@ -657,18 +674,17 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
     // A high false-positive gate does not make a repo careful — it teaches --no-verify, and that
     // flag is shared with the content screen, which must never be bypassed.
     const hook = generatePrePushHook(facts({ shell: { scripts: 3 } }))
-    // Only the warning pass may end the push. Asserting style is never MENTIONED pins the wrong
-    // property — and did: it is what let 0.4.0 ship with the advisory pass missing entirely,
-    // while the docs promised it.
-    // The warning pass is the only one wired to a failure branch...
-    expect(hook).toMatch(/-S warning[^\n]* \|\| \{[^}]*exit 1/)
-    // ...while the style pass is captured into a variable and explicitly tolerated with
-    // `|| true`, so it has no path to the exit code at all.
-    expect(hook).toMatch(/advice=\$\([\s\S]*?-S style[\s\S]*?\|\| true\)/)
+    // One run at the widest severity produces verdict and advice together; only its
+    // error/warning lines are wired to a failure branch...
+    expect(hook).toMatch(/blocking=\$\([\s\S]*?grep -E ':\[0-9\]\+:\[0-9\]\+: \(warning\|error\):'/)
+    expect(hook).toMatch(/\[ -n "\$blocking" \][\s\S]*?exit 1/)
+    // ...while the advice is derived by EXCLUDING those severities and explicitly tolerated
+    // with `|| true`, so it has no path to the exit code at all.
+    expect(hook).toMatch(/advice=\$\([\s\S]*?grep -Ev[\s\S]*?\|\| true\)/)
   })
 
   it("stops claiming 'no correctness commands detected' when shell IS the surface", () => {
-    // The contradiction that motivated this: a repo of shell scripts was told it had nothing to
+    // The contradiction: a repo of shell scripts was told it had nothing to
     // check, one line above a step that checks it.
     const hook = generatePrePushHook(facts({ commands: { raw: {} }, shell: { scripts: 9 } }))
     expect(hook).not.toContain("no correctness commands detected")
@@ -690,19 +706,20 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
 })
 
 describe("shell gate — sub-warning findings are shown, never enforced", () => {
-  it("emits an advisory pass, and it cannot change the exit code", () => {
+  it("emits the advice, and it cannot change the exit code", () => {
     // The published 0.4.0 documented this and did not do it: style findings were discarded
     // entirely. A doc claiming behaviour the code lacks is the exact defect etymd's own
     // instruction-truth lens exists to catch.
     const hook = generatePrePushHook(facts({ shell: { scripts: 5 } }))
     expect(hook).toContain("-S style")
     expect(hook).toContain("style/info (not blocking)")
-    // `|| true` keeps a failing advisory pass from leaking a non-zero status into the hook.
-    expect(hook).toMatch(/-S style[\s\S]*\|\| true/)
+    // The advice grep EXCLUDES the blocking severities and is explicitly tolerated with
+    // `|| true`, so a style finding has no route to a non-zero exit.
+    expect(hook).toMatch(/advice=\$\([\s\S]*?grep -Ev[\s\S]*?\|\| true\)/)
   })
 
-  it("orders the advisory pass AFTER the blocking one, so a real defect reports first", () => {
+  it("derives the advice after the verdict, so a real defect reports first", () => {
     const hook = generatePrePushHook(facts({ shell: { scripts: 5 } }))
-    expect(hook.indexOf("-S warning")).toBeLessThan(hook.indexOf("-S style"))
+    expect(hook.indexOf("blocking=$(printf")).toBeLessThan(hook.indexOf("advice=$(printf"))
   })
 })

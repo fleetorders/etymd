@@ -131,10 +131,10 @@ describe("promoteBareTokens", () => {
 
   it("never promotes a namespace-prefixed path — attached, separated, or before a code span", () => {
     const { text: out, skips } = promoteBareTokens(
-      "Compare pc:src/other-kit/services/stt_service.py and lk: Sources/OtherKit/x.swift, but the note: src/real.ts line stays ours.",
+      "Compare app:src/other-kit/services/stt_service.py and lib: Sources/OtherKit/x.swift, but the note: src/real.ts line stays ours.",
       ctx,
     )
-    expect(out).not.toContain("`pc:src/other-kit")
+    expect(out).not.toContain("`app:src/other-kit")
     expect(out).not.toContain("`src/other-kit")
     expect(out).not.toContain("`Sources/OtherKit")
     // A prose introducer is not a namespace — the path after it is still this repo's.
@@ -176,7 +176,7 @@ describe("runPremise", () => {
     await noSrcFixture()
     const result = await runPremise({
       root: dir,
-      task: "Port the gate from src/other-kit/services/stt_service.py (see pc:src/other-kit/services/stt_service.py and oc: `docs/gateway/protocol.md`) to bootstrap/does-not-exist.sh.",
+      task: "Port the gate from src/other-kit/services/stt_service.py (see app:src/other-kit/services/stt_service.py and svc: `docs/gateway/protocol.md`) to bootstrap/does-not-exist.sh.",
     })
     // Only the path rooted in THIS repo is accused; the quoted ones are not missing here.
     expect(result.findings.map((f) => f.id)).toEqual([

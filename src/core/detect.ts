@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process"
-import { promises as fs } from "node:fs"
+import { promises as fs, realpathSync } from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
 
@@ -207,8 +208,7 @@ type Pattern = (key: string, value: string) => boolean
 const isMeta = (value: string) => /npm-run-all|run-s\b|run-p\b|concurrently|&&/.test(value)
 
 // Per-role priority ladders, most specific first. Checked against ALL scripts per rung, so a
-// bare meta `test` declared first can no longer shadow the real `test:unit(:local)` — the
-// corpus failure that motivated this shape.
+// bare meta `test` declared first cannot shadow the narrower `test:unit(:local)`.
 const ROLE_LADDERS: { role: CommandRole; exclude?: RegExp; ladder: Pattern[] }[] = [
   {
     role: "formatCheck",
@@ -347,49 +347,103 @@ async function hasLintStagedConfig(root: string, pkg: PackageJson | null): Promi
   return false
 }
 
+function outsideOf(base: string, target: string): boolean {
+  const rel = path.relative(base, target)
+  return path.isAbsolute(rel) || rel === ".." || rel.startsWith(`..${path.sep}`)
+}
+
 /**
- * `core.hooksPath` the way git reads it: relative to the worktree root, or absolute — two
- * spellings of one directory, identical in effect. The DIRECTORY is the fact and the spelling is
- * not: an absolute path to the tracked `.githooks/` is the tracked-githooks setup, and comparing
- * the literal string reported it as a custom one — a gap that does not exist. Returns the
- * repo-relative form for a directory inside the worktree (which is also what a committed baseline
- * may carry — a machine-absolute path never belongs in a tracked file), and the resolved absolute
- * path for one outside it.
+ * The ONE weld of a hooks directory onto the scan root: `resolve`, never `join` — a directory
+ * recorded absolute (it sits outside the repo) must stay where git runs it, while `join` would
+ * weld it onto the scan root and read a path that does not exist. Every reader of `hooks.dir`
+ * goes through here; a hand-rolled join at a call site is how the outside-repo case regressed.
  */
-export function normalizeHooksPath(root: string, raw: string): string {
-  const abs = path.resolve(root, raw)
-  const rel = path.relative(root, abs)
-  const outside = path.isAbsolute(rel) || rel === ".." || rel.startsWith(`..${path.sep}`)
-  return outside ? abs : normalizeRelPath(rel) || "."
+export function hooksDirAbs(root: string, dir: string): string {
+  return path.resolve(root, dir)
+}
+
+/**
+ * `core.hooksPath` the way git reads it: a worktree-top-relative path, an absolute path and a `~`
+ * path can all name one directory, and the directory is the fact. The TOP is git's reference
+ * frame (a relative path resolves against it wherever git is invoked from, so a scan of a
+ * subdirectory still reads the directory git actually runs); the RESULT is stated in the scan
+ * root's frame, because that is the frame every reader of `hooks.dir` resolves against — `../…`
+ * segments when the directory sits above the scan root, repo-structural and still not a machine
+ * path. Absolute only for a directory outside the repo.
+ */
+export function normalizeHooksPath(root: string, raw: string, hooksTop: string = root): string {
+  return hooksFrames(root, raw, hooksTop).recorded
+}
+
+/**
+ * The recorded spelling plus git's own frame of the same directory, from one resolution. One
+ * frame for every spelling: `rev-parse --show-toplevel` and a `--type=path` value come back
+ * through the REAL path (symlinks resolved — macOS `/var` vs `/private/var`), while the scan
+ * root may be spelled through the symlink, and `path.relative` across the two frames produces
+ * garbage. Realpaths where they exist; a target that does not exist classifies on spellings
+ * (built from the top, so it already shares the top's).
+ */
+function hooksFrames(
+  root: string,
+  raw: string,
+  hooksTop: string,
+): { relTop: string; recorded: string } {
+  // `git config --type=path` expands `~` itself; the plain-read fallback for older gits cannot,
+  // so the expansion lives here and both reads resolve identically.
+  const spelled = raw === "~" || raw.startsWith("~/") ? path.join(os.homedir(), raw.slice(1)) : raw
+  const abs = path.resolve(hooksTop, spelled)
+  // The real frame whenever the target exists (its spelling may be unchanged yet the top's
+  // may not be); a target that does not exist keeps the spellings as passed — a relative raw
+  // was built from the top and shares its spelling, so the pair stays consistent.
+  let topFrame = hooksTop
+  let rootFrame = root
+  let target = abs
+  try {
+    target = realpathSync(abs)
+    topFrame = realpathSync(hooksTop)
+    rootFrame = realpathSync(root)
+  } catch {
+    /* classify on the spellings as passed */
+  }
+  const relTop = normalizeRelPath(path.relative(topFrame, target))
+  const insideTop = !outsideOf(topFrame, target)
+  return {
+    relTop,
+    recorded: insideTop ? normalizeRelPath(path.relative(rootFrame, target)) || "." : abs,
+  }
 }
 
 export async function detectHooks(
   root: string,
   hooksPath: string | undefined,
   pkg: PackageJson | null,
+  /** The worktree top git resolves a relative `core.hooksPath` against — the scan root only
+   *  when it IS the top. The frames coincide except in a subdirectory scan. */
+  hooksTop: string = root,
 ): Promise<HookFacts> {
   const lintStaged = await hasLintStagedConfig(root, pkg)
 
   // A custom core.hooksPath wins: git actually runs those hooks, wherever they live.
   if (hooksPath) {
-    const dir = normalizeHooksPath(root, hooksPath)
+    const { relTop, recorded: dir } = hooksFrames(root, hooksPath, hooksTop)
     // husky v9's `prepare` wires core.hooksPath to `.husky/_` (its shim dir); the user's real
-    // hooks live one level up in `.husky/` — that is husky, not a custom hook setup.
-    if (dir === ".husky/_") {
-      const base = path.join(root, ".husky")
+    // hooks live one level up in `.husky/` — that is husky, not a custom hook setup. The shim is
+    // recognised in git's frame (the top), whatever frame `dir` is recorded in.
+    if (relTop === ".husky/_") {
+      const huskyDir = normalizeHooksPath(root, ".husky", hooksTop)
+      const base = hooksDirAbs(root, huskyDir)
       return {
         source: "husky",
-        dir: ".husky",
+        dir: huskyDir,
         preCommit: await pathExists(path.join(base, "pre-commit")),
         prePush: await pathExists(path.join(base, "pre-push")),
         commitMsg: await pathExists(path.join(base, "commit-msg")),
         lintStaged,
       }
     }
-    // `resolve`, not `join`: a directory outside the repo stays where git runs it.
-    const base = path.resolve(root, dir)
+    const base = hooksDirAbs(root, dir)
     return {
-      source: dir === ".githooks" ? "githooks" : "custom",
+      source: relTop === ".githooks" ? "githooks" : "custom",
       dir,
       preCommit: await pathExists(path.join(base, "pre-commit")),
       prePush: await pathExists(path.join(base, "pre-push")),
@@ -453,6 +507,12 @@ const ARTIFACT_SPECS: Omit<DetectedArtifact, "exists">[] = [
     id: "decisions",
     label: "DECISIONS.md (decision record)",
     path: "DECISIONS.md",
+    kind: "decisions",
+  },
+  {
+    id: "decisions-doc",
+    label: "docs/decisions.md (decision record)",
+    path: "docs/decisions.md",
     kind: "decisions",
   },
   { id: "adr-dir", label: "ADR directory (docs/adr)", path: "docs/adr", kind: "decisions" },
@@ -541,7 +601,8 @@ export async function detectShellSurface(
 ): Promise<{ scripts: number }> {
   if (!isRepo) return { scripts: 0 }
   const listed = await git(root, ["ls-files", "-z"])
-  if (!listed) return { scripts: 0 }
+  // Empty output is zero tracked files, not a failure — only null means git did not answer.
+  if (listed === null) return { scripts: 0 }
 
   const files = listed.split("\0").filter(Boolean)
   const byExtension = files.filter((f) => SHELL_EXT.test(f))
@@ -565,8 +626,8 @@ export async function detectArtifacts(root: string): Promise<DetectedArtifact[]>
     })),
   )
   // Existing ADR conventions are recognized, never required: NNNN-*.md files directly under
-  // docs/ are a native decision record (the classic ADR naming), same slot as docs/adr/ and
-  // docs/decisions/ — detection, not scaffolding, so no pack change rides on this.
+  // docs/ are a native decision record (the classic ADR naming), same slot as the adr-dir and
+  // decisions-dir specs above — detection, not scaffolding, so no pack change rides on this.
   let adrFiles = false
   try {
     adrFiles = (await fs.readdir(path.join(root, "docs"))).some((f) => /^\d{4}-.+\.md$/.test(f))
@@ -622,8 +683,18 @@ function withoutFencedCode(text: string): string {
   return kept.join("\n")
 }
 
-/** The first Claude Code release that reads `AGENTS.md` when a directory has no `CLAUDE.md`. */
+/**
+ * The first Claude Code release that reads `AGENTS.md` when a directory has no `CLAUDE.md`.
+ * Source: the Claude Code changelog, entry for 2.1.277 — "Added AGENTS.md support: in a project
+ * with no CLAUDE.md, Claude Code reads AGENTS.md instead" —
+ * https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md
+ */
 export const CLAUDE_AGENTS_FALLBACK_VERSION = "2.1.277"
+
+/** True when that Claude Code release reads a bare `AGENTS.md` with no pointer beside it. */
+export function readsAgentsNatively(version: string): boolean {
+  return !mayPredate(version, CLAUDE_AGENTS_FALLBACK_VERSION)
+}
 
 export type ClaudePointerResult =
   | {
@@ -635,29 +706,69 @@ export type ClaudePointerResult =
       /**
        * `no-import`: a CLAUDE.md exists and does not import AGENTS.md, so Claude Code reads it
        * instead of AGENTS.md on every version. `old-reader`: no CLAUDE.md, and the installed
-       * Claude Code predates the AGENTS.md fallback.
+       * Claude Code predates the AGENTS.md fallback. `undetermined`: no CLAUDE.md, and the
+       * Claude Code version could not be established — the check could not run, which callers
+       * disclose rather than count as a pass.
        */
-      kind: "no-import" | "old-reader"
+      kind: "no-import" | "old-reader" | "undetermined"
       /** What the repo actually looks like, for the finding's evidence line. */
       detail: string
     }
 
+/** What a probe of the local Claude Code established — three answers, not two. */
+export type ClaudeVersion =
+  | { state: "version"; version: string }
+  | { state: "absent" }
+  | { state: "undetermined"; reason: string }
+
+const VERSION_RE = /(\d+\.\d+\.\d+)/
 const pExecFile = promisify(execFile)
-let claudeVersionMemo: Promise<string | null> | undefined
+let claudeVersionMemo: Promise<ClaudeVersion> | undefined
 
 /**
- * The installed Claude Code version, or null when none can be read. `ETYMD_CLAUDE_VERSION`
- * overrides the probe: a version string pins it, `none` means "no Claude Code here". Read once
- * per process, since a fleet sweep asks for every repo.
+ * The installed Claude Code version, when it can be established. `ETYMD_CLAUDE_VERSION`
+ * overrides the probe: a version string pins it (`2.1.276-beta` reads as `2.1.276` — the numeric
+ * triple is the comparable fact), `none` means "no Claude Code here", and anything else is a
+ * broken pin, returned as undetermined rather than quietly ignored — a typo'd `latest` used to
+ * compare as "current" and silently disable the old-reader check. A probe that fails reads as
+ * absent ONLY for ENOENT (no binary); timeouts, broken shims and versionless output are
+ * undetermined, because a check that cannot run says so. Read once per process, since a fleet
+ * sweep asks for every repo.
  */
-export function detectClaudeCodeVersion(): Promise<string | null> {
+export function detectClaudeCodeVersion(): Promise<ClaudeVersion> {
   const override = process.env.ETYMD_CLAUDE_VERSION
   if (override !== undefined) {
-    return Promise.resolve(override === "none" || override === "" ? null : override)
+    if (override === "" || override === "none") return Promise.resolve({ state: "absent" })
+    const pinned = VERSION_RE.exec(override)?.[1]
+    return Promise.resolve(
+      pinned
+        ? { state: "version", version: pinned }
+        : {
+            state: "undetermined",
+            reason: `ETYMD_CLAUDE_VERSION=${override} is not a version — want X.Y.Z, or "none"`,
+          },
+    )
   }
-  claudeVersionMemo ??= pExecFile("claude", ["--version"], { timeout: 5000 })
-    .then(({ stdout }) => /(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?=\s|$)/.exec(stdout)?.[1] ?? null)
-    .catch(() => null)
+  claudeVersionMemo ??= pExecFile("claude", ["--version"], { timeout: 5000 }).then(
+    ({ stdout }) => {
+      const version = VERSION_RE.exec(stdout)?.[1]
+      return version
+        ? { state: "version", version }
+        : {
+            state: "undetermined",
+            reason: `\`claude --version\` printed no version (${JSON.stringify(stdout.trim().slice(0, 80))})`,
+          }
+    },
+    (err: unknown) => {
+      if ((err as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+        return { state: "absent" }
+      }
+      return {
+        state: "undetermined",
+        reason: `\`claude --version\` failed: ${err instanceof Error ? err.message : String(err)}`,
+      }
+    },
+  )
   return claudeVersionMemo
 }
 
@@ -694,14 +805,16 @@ function mayPredate(a: string, b: string): boolean {
  * Passes when `AGENTS.md` is absent; either name is a symlink to the other (stat follows
  * links, so same dev:ino covers chains in both directions); the root `CLAUDE.md` carries a
  * full-line `@AGENTS.md` import; `.claude/CLAUDE.md` carries `@../AGENTS.md`; or there is no
- * `CLAUDE.md` in either place and the Claude Code version is at or past the fallback, or cannot
- * be read (a machine without Claude Code has no reader to warn about). A declared
+ * `CLAUDE.md` in either place and the Claude Code version is at or past the fallback, or no
+ * Claude Code is installed (a machine without it has no reader to warn about — genuinely
+ * absent, ENOENT, is a pass; a probe that failed any other way returns `undetermined`, which
+ * callers must disclose rather than count as a pass). A declared
  * `contract.placement: "none"` does not exempt a repo that HAS an `AGENTS.md` — the declaration
  * covers absent instruction files, not one a whole harness cannot see.
  */
 export async function checkClaudePointer(
   root: string,
-  claudeVersion?: string | null,
+  claudeVersion?: string | null | ClaudeVersion,
 ): Promise<ClaudePointerResult> {
   const agentsAbs = path.join(root, "AGENTS.md")
   const claudeAbs = path.join(root, "CLAUDE.md")
@@ -738,6 +851,9 @@ export async function checkClaudePointer(
   }
 
   if (rootClaude !== null || dotClaude !== null) {
+    // `.claude/CLAUDE.md` alone also shadows AGENTS.md — the fallback does not fire beside it.
+    // Observed on Claude Code 2.1.283 (headless, markers planted one per file): a project with
+    // AGENTS.md and `.claude/CLAUDE.md` but no root CLAUDE.md loaded ONLY the `.claude/CLAUDE.md`.
     return {
       ok: false,
       kind: "no-import",
@@ -748,12 +864,35 @@ export async function checkClaudePointer(
     }
   }
 
-  const version = claudeVersion === undefined ? await detectClaudeCodeVersion() : claudeVersion
-  if (version !== null && mayPredate(version, CLAUDE_AGENTS_FALLBACK_VERSION)) {
+  let resolved: ClaudeVersion
+  if (claudeVersion === undefined) resolved = await detectClaudeCodeVersion()
+  else if (claudeVersion === null) resolved = { state: "absent" }
+  else if (typeof claudeVersion === "string") {
+    // An asserted version is parsed strictly — a triple plus an optional prerelease suffix —
+    // and judged as given, never trimmed to its numeric triple the way a pin or probe output
+    // is: the caller vouches for the whole string, so a prerelease of the fallback predates
+    // it. A string that is not a version establishes nothing and reads as undetermined — the
+    // fail-closed answer this kind exists for; the old-reader lean is for versions that parse.
+    const strict = /^(\d+\.\d+\.\d+)(-[0-9A-Za-z.-]+)?$/.exec(claudeVersion.trim())
+    resolved = strict
+      ? { state: "version", version: strict[0] }
+      : { state: "undetermined", reason: `version ${claudeVersion} is not X.Y.Z` }
+  } else resolved = claudeVersion
+  if (resolved.state === "undetermined") {
+    return {
+      ok: false,
+      kind: "undetermined",
+      detail: `AGENTS.md present, no CLAUDE.md, and the Claude Code version could not be established — ${resolved.reason}`,
+    }
+  }
+  if (
+    resolved.state === "version" &&
+    mayPredate(resolved.version, CLAUDE_AGENTS_FALLBACK_VERSION)
+  ) {
     return {
       ok: false,
       kind: "old-reader",
-      detail: `AGENTS.md present, no CLAUDE.md, and Claude Code ${version} predates the AGENTS.md fallback (${CLAUDE_AGENTS_FALLBACK_VERSION})`,
+      detail: `AGENTS.md present, no CLAUDE.md, and Claude Code ${resolved.version} predates the AGENTS.md fallback (${CLAUDE_AGENTS_FALLBACK_VERSION})`,
     }
   }
   return { ok: true, via: "native-fallback" }

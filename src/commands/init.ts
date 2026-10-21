@@ -4,7 +4,7 @@ import path from "node:path"
 import { cancel, confirm, intro, isCancel, outro, select, spinner } from "@clack/prompts"
 
 import { applyFiles } from "../core/apply.js"
-import { checkClaudePointer } from "../core/detect.js"
+import { checkClaudePointer, detectClaudeCodeVersion, readsAgentsNatively } from "../core/detect.js"
 import { CACHE_DIR, deriveProfile, writeBaseline, writeCachedFacts } from "../core/facts.js"
 import { planWorkflow } from "../core/generate.js"
 import { scanProject } from "../core/scan.js"
@@ -102,7 +102,29 @@ export async function run(opts: InitOptions): Promise<void> {
         ) as boolean)
   }
 
-  const files = await planWorkflow(opts.cwd, facts, { agents: scaffoldAgents, gates })
+  // The pointer exists exactly where a reader needs it: a Claude Code at or past the fallback
+  // reads AGENTS.md natively, and a machine with no Claude Code has no reader to serve. Older
+  // or undetermined readers get the pointer — undetermined is conservative, not optimistic,
+  // because a pointer is harmless where it is unneeded and load-bearing where it is.
+  let agentsPointer = true
+  let pointerNote = ""
+  if (scaffoldAgents) {
+    const claude = await detectClaudeCodeVersion()
+    if (claude.state === "absent") {
+      agentsPointer = false
+      pointerNote = "no Claude Code on this machine — skipping the CLAUDE.md pointer"
+    } else if (claude.state === "version" && readsAgentsNatively(claude.version)) {
+      agentsPointer = false
+      pointerNote = `Claude Code ${claude.version} reads AGENTS.md natively — skipping the CLAUDE.md pointer`
+    }
+  }
+
+  const files = await planWorkflow(opts.cwd, facts, {
+    agents: scaffoldAgents,
+    agentsPointer,
+    gates,
+  })
+  if (pointerNote) print(`  ${theme.dim(`◦ ${pointerNote}`)}`)
   if (files.length) {
     renderPlan(files)
     if (!opts.yes) {
@@ -123,8 +145,7 @@ export async function run(opts: InitOptions): Promise<void> {
   // The approved reckoning becomes the committed drift baseline; the cache stays out of git.
   // Re-scan first: `facts` predates the scaffold, so baselining it would approve a repo that no
   // longer exists — the contract and hooks init just wrote would be absent from the baseline, and
-  // deleting them later would never register as drift. (Caught by the first live `approve` pass,
-  // which reported them as additions in every scaffolded repo.)
+  // deleting them later would never register as drift.
   const approved = result.written.length ? await scanProject(opts.cwd) : facts
   await writeBaseline(opts.cwd, {
     packVersion: PACK_VERSION,

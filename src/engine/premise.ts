@@ -23,15 +23,15 @@ import {
 } from "../lenses/instruction-truth/claims.js"
 import { rankFindings, type Finding } from "./finding.js"
 
-// `etymd premise` — the task an agent is about to be handed is an instruction too (decision 010).
+// `etymd premise` — the task an agent is about to be handed is an instruction too (docs/decisions.md, D-010).
 // Before anything acts on it, the things it NAMES are checked against the repo with the same
 // precision rules instruction files get — except that a task routinely QUOTES other people's
-// trees (a scratchpad clone, a legend-prefixed token), so a path is only accused of missing when
+// trees (a clone elsewhere, a namespace-prefixed token), so a path is only accused of missing when
 // it is plausibly repo-relative: no namespace prefix on the mention, and a first segment that
 // starts where a directory of this repo does. The premises only an agent can verify — that the
 // named things are the ones meant, that the mechanism the task assumes actually runs, that the
 // state it assumes holds — are handed over in a brief, never guessed at here. Reading files is
-// the whole of what this command does (decision 005: anything beyond that is out of scope by
+// the whole of what this command does (docs/decisions.md, D-005: anything beyond that is out of scope by
 // construction).
 
 export const PREMISE_LENS = "premise"
@@ -69,15 +69,15 @@ export interface PremiseOptions {
 
 /** What the prose promotion declined to read as a claim — counted, then disclosed. */
 export interface PromotionSkips {
-  /** `pnpm X` / `yarn X` / `bun X` in prose without `run` — a phrase as often as an invocation. */
+  /** A pm-plus-name mention in prose without `run` — a phrase as often as an invocation. */
   bareInvocations: number
   /** `… run the`, `… run X` — a function word or a one-letter stand-in where a script would be. */
   proseScripts: number
   /** `github.com/org/repo/…` — a scheme-less URL, not a repo path. */
   hostnameLike: number
-  /** `input/output/` — a slash-joined phrase whose first segment is no directory here. */
+  /** input/output/ — a slash-joined phrase whose first segment is no directory here. */
   unrootedDirs: number
-  /** `pc:src/x.ts`, `lk: src/x.ts` — a namespace-prefixed mention of ANOTHER repo's tree. */
+  /** `app:src/x.ts`, `lib: src/x.ts` — a namespace-prefixed mention of ANOTHER repo's tree. */
   namespaced: number
 }
 
@@ -93,7 +93,7 @@ export interface PromotedText {
 
 const CODE_SPAN_RE = /(```[\s\S]*?```|`[^`\n]+`)/g
 // In prose only `<pm> run <script>` (and the `npm test` / `npm start` shorthands) reads as an
-// invocation. A bare `pnpm X` / `yarn X` / `bun X` is a phrase as often as a command ("the pnpm
+// invocation. A bare pnpm/yarn/bun plus a name is a phrase as often as a command ("the pnpm
 // workspace", "bun will …"), so it stays prose unless the author backticked it — the extractor's
 // bare form is for code spans, where the backtick itself was the author's signal.
 const RUN_RE = /\b(?:pnpm|yarn|npm|bun)\s+run\s+(?!-)([A-Za-z0-9:._-]+)|\bnpm\s+(?:test|start)\b/g
@@ -114,7 +114,7 @@ const TRAIL_RE = /[.,;:!?)\]}"']*$/
 
 /**
  * People do not backtick paths in a prompt. Promote the bare mentions the claim extractors would
- * otherwise treat as prose — `src/x.ts`, `docs/design/`, `npm run lint` — into code spans, leaving
+ * otherwise treat as prose — `src/x.ts`, `docs/design/`, `npm run typecheck` — into code spans, leaving
  * anything already in a code span untouched. Precision over recall: only what an instruction
  * file's extractor would accept is promoted, and every class left as prose is counted.
  */
@@ -136,7 +136,8 @@ export function promoteBareTokens(text: string, ctx: PromotionContext): Promoted
 function promoteProse(segment: string, ctx: PromotionContext, skips: PromotionSkips): string {
   skips.bareInvocations += segment.match(BARE_PM_RE)?.length ?? 0
   const withCommands = segment.replace(RUN_RE, (m, script?: string) => {
-    // A sentence-ending stop is not part of the script name: `npm run build.` names `build`.
+    // A sentence-ending stop is not part of the script name: `npm run build` then a period
+    // names `build`.
     const trail = TRAIL_RE.exec(m)?.[0] ?? ""
     const core = trail ? m.slice(0, -trail.length) : m
     if (script !== undefined) {
@@ -148,7 +149,7 @@ function promoteProse(segment: string, ctx: PromotionContext, skips: PromotionSk
     }
     return `\`${core}\`${trail}`
   })
-  // Token-wise with one token of lookback: a legend prefix (`pc:`) reaches the path AFTER it.
+  // Token-wise with one token of lookback: a namespace prefix (`app:`) reaches the path AFTER it.
   const parts = withCommands.split(/(\s+)/)
   for (let i = 0; i < parts.length; i += 2) {
     parts[i] = promoteToken(parts[i] as string, i >= 2 ? (parts[i - 2] as string) : "", ctx, skips)
@@ -156,8 +157,8 @@ function promoteProse(segment: string, ctx: PromotionContext, skips: PromotionSk
   return parts.join("")
 }
 
-// The namespace label on a path mention — attached to it (`pc:src/x.ts`) or in the previous
-// token (`pc: src/x.ts`). Prose introducers ("note:", "see:") are not namespaces (claims.ts).
+// The namespace label on a path mention — attached to it (`app:src/x.ts`) or in the previous
+// token (`app: src/x.ts`). Prose introducers ("note:", "see:") are not namespaces (claims.ts).
 function namespaceOf(core: string, prev: string): string | null {
   const ns =
     new RegExp(`^(${NAMESPACE_IDENT}):`).exec(core)?.[1] ??
@@ -205,7 +206,7 @@ function promoteToken(
 }
 
 /** Directory names a prose dir claim may start with — mirrors where `pathResolves` looks. */
-async function listRootedDirs(env: TruthEnv): Promise<Set<string>> {
+export async function listRootedDirs(env: TruthEnv): Promise<Set<string>> {
   const dirs = new Set<string>()
   for (const base of env.bases) {
     for (const sub of ["", "src", "scripts"]) {
@@ -310,17 +311,17 @@ export async function runPremise(opts: PremiseOptions): Promise<PremiseResult> {
   }
   if (skips.namespaced) {
     disclosures.push(
-      `${skips.namespaced} path mention(s) in prose carry a namespace prefix (\`pc:src/x.ts\`, \`lk: src/x.ts\`) — another repo's tree, never this one; skipped, not flagged.`,
+      `${skips.namespaced} path mention(s) in prose carry a namespace prefix (\`app:src/x.ts\`, \`lib: src/x.ts\`) — another repo's tree, never this one; skipped, not flagged.`,
     )
   }
   if (counters.namespacedSkipped) {
     disclosures.push(
-      `${counters.namespacedSkipped} backticked path mention(s) sit directly after a namespace prefix (\`pc: \`src/x.ts\`\`) — another repo's tree, not this one; skipped, not flagged.`,
+      `${counters.namespacedSkipped} backticked path mention(s) sit directly after a namespace prefix (\`app: \`src/x.ts\`\`) — another repo's tree, not this one; skipped, not flagged.`,
     )
   }
   if (counters.outsideRepoSkipped) {
     disclosures.push(
-      `${counters.outsideRepoSkipped} path(s) the task names start at no directory of this repo — typical of a path quoted from another repository or a scratchpad clone; outside this repo, not missing here. Skipped, not flagged.`,
+      `${counters.outsideRepoSkipped} path(s) the task names start at no directory of this repo — typical of a path quoted from another repository or a clone elsewhere on the machine; outside this repo, not missing here. Skipped, not flagged.`,
     )
   }
   if (counters.unverifiableCommands) {
@@ -361,6 +362,11 @@ export async function runPremise(opts: PremiseOptions): Promise<PremiseResult> {
   if (counters.tildeSkipped) {
     disclosures.push(
       `${counters.tildeSkipped} well-known doc mention(s) sit inside \`~/\` home paths (e.g. \`~/.claude/CLAUDE.md\`) — machine-global files, not this repo's; skipped, not flagged.`,
+    )
+  }
+  if (counters.absenceSkipped) {
+    disclosures.push(
+      `${counters.absenceSkipped} well-known doc mention(s) name the doc only to say it deliberately does not exist here (create-this or absence prose) — skipped, not flagged.`,
     )
   }
   if (counters.qualifiedRefsSkipped) {

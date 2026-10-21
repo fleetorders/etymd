@@ -33,7 +33,7 @@ export interface TruthEnv {
    * references the way an agent reading it resolves them: against its siblings.
    */
   pathResolves(claim: string, fromDir?: string): Promise<boolean>
-  /** `yarn X` / `pnpm X` may legitimately run an installed node_modules/.bin binary. */
+  /** A pm-plus-name invocation may legitimately run an installed node_modules/.bin binary. */
   binResolves(name: string): Promise<boolean>
 }
 
@@ -96,6 +96,8 @@ export async function buildTruthEnv(root: string, facts: ProjectFacts): Promise<
 export interface ClaimCounters {
   filteredSkipped: number
   tildeSkipped: number
+  /** Doc mentions whose own line says the doc deliberately does not exist here — skipped, counted. */
+  absenceSkipped: number
   binaryResolved: number
   unverifiableCommands: number
   gitignoredSkipped: number
@@ -107,7 +109,7 @@ export interface ClaimCounters {
   qualifiedRefsSkipped: number
   /** Decision references with no `## D-NNN` ledger to resolve against. */
   unresolvableRefs: number
-  /** Path claims whose every mention sits behind a namespace prefix (`pc:`) — another repo's. */
+  /** Path claims whose every mention sits behind a namespace prefix (`app:`) — another repo's. */
   namespacedSkipped: number
   /** Missing paths starting at no directory of this repo — quoted from elsewhere (task only). */
   outsideRepoSkipped: number
@@ -117,6 +119,7 @@ export function emptyCounters(): ClaimCounters {
   return {
     filteredSkipped: 0,
     tildeSkipped: 0,
+    absenceSkipped: 0,
     binaryResolved: 0,
     unverifiableCommands: 0,
     gitignoredSkipped: 0,
@@ -166,13 +169,13 @@ export interface TextClaimsOptions {
   /**
    * Directories a missing path may start from and still be plausibly repo-relative — the root,
    * workspace packages, and their src/ scripts/. Supplied by the task surface (`etymd premise`)
-   * only: a task quoting a path from ANOTHER repository (a clone in a scratchpad) starts where
+   * only: a task quoting a path from ANOTHER repository (a clone elsewhere on the machine) starts where
    * no directory of this repo does, and its absence here proves nothing. Instruction files keep
    * the stricter reading — their references are written against this repo.
    */
   rootedFirstSegments?: ReadonlySet<string>
   /**
-   * Read namespace-prefixed path mentions (`pc: `src/x.ts``) as another repo's tree — the task
+   * Read namespace-prefixed path mentions (`app: `src/x.ts``) as another repo's tree — the task
    * surface only; instruction files keep every backticked span as a claim of this repo.
    */
   treatNamespacedPrefixes?: boolean
@@ -354,8 +357,9 @@ export async function checkDocRefs(
 ): Promise<RefsResult> {
   const findings: Finding[] = []
   const examined: ExaminedClaim[] = []
-  const { refs, tildeSkipped } = extractDocRefs(file.text)
+  const { refs, tildeSkipped, absenceSkipped } = extractDocRefs(file.text)
   counters.tildeSkipped += tildeSkipped
+  counters.absenceSkipped += absenceSkipped
   for (const ref of refs) {
     const exists = await pathExists(path.join(env.root, ref))
     examined.push({ kind: "doc", value: ref, exists })

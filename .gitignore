@@ -8,16 +8,13 @@ coverage/
 .env.*
 !.env.example
 .etymd/cache/
-# Local-only map from a legacy corpus manifest entry's name to its directory.
+# Local-only map from a manifest entry's name to its directory (older two-file manifest format).
 sources.local.json
 # Fleet sweep delta baselines are local-only (the README tells manifest repos the same).
 *.fleet.json
-# Machine-local notes. Operating detail — release mechanics above all — attracts account and
-# environment specifics, which a public repo must never carry. The pattern is the guard: the
-# runbook has a home that is not a tracked file, so the detail stops reaching for one.
+# Machine-local notes: never tracked, so machine and account detail has a home outside the repo.
 *.local.md
 
 # Machine-local companion hooks and scratch; never tracked. Root-anchored so a nested `local/`
-# stays trackable. Expendable by design: `git clean -fdx` and a fresh clone both drop it —
-# keep anything precious outside the tree.
+# stays trackable. Expendable by design: `git clean -fdx` and a fresh clone both drop it.
 /local/
