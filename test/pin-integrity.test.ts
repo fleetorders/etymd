@@ -104,6 +104,27 @@ describe("pin-integrity lens (npm locks)", () => {
     expect(report.findings).toEqual([])
     expect(report.disclosures.some((d) => /no lockfile/.test(d))).toBe(true)
   })
+
+  // An unparsable lock indexes nothing, so judging against it would call every pin dead.
+  it.each([
+    ["package-lock.json", "{ not json"],
+    ["pnpm-lock.yaml", "packages: [unclosed"],
+    ["pnpm-lock.yaml", "just a sentence, not a lockfile"],
+  ])("discloses, never flags, when %s cannot be parsed (%s)", async (file, contents) => {
+    await write(
+      "package.json",
+      JSON.stringify({
+        name: "shape-demo",
+        overrides: { "gone-pkg": "1.0.0" },
+        pnpm: { patchedDependencies: { "tiny@1.0.0": "patches/tiny.patch" } },
+      }),
+    )
+    await write(file, contents)
+
+    const report = await runPins()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.some((d) => d.includes(`${file} could not be parsed`))).toBe(true)
+  })
 })
 
 describe("pin-integrity lens (pnpm patches)", () => {

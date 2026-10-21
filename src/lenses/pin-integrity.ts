@@ -50,6 +50,8 @@ interface LockIndex {
   names: Set<string>
   /** Exact installed versions by name (peer-suffix-free), where the lock records them. */
   versions: Map<string, Set<string>>
+  /** The lockfile exists but could not be parsed: its empty index proves nothing absent. */
+  unreadable?: true
 }
 
 /** `packages` keys in npm locks are paths (`node_modules/<name>`, nested for deduped installs). */
@@ -60,9 +62,10 @@ function nameFromNodeModulesKey(key: string): string {
 
 /**
  * Build the installed-name/version index from whichever lockfile the repo carries. Reads only;
- * malformed input yields an empty index (the caller discloses "could not be read", it does not
- * accuse). yarn.lock is line-oriented text because its headers (`"name@range", …:`) carry the
- * requested names directly and pulling the whole YAML document costs more than it returns.
+ * a lockfile that cannot be parsed is marked `unreadable` (the caller discloses it and judges
+ * nothing — an empty index would make every pin look dead). yarn.lock is line-oriented text
+ * because its headers (`"name@range", …:`) carry the requested names directly and pulling the
+ * whole YAML document costs more than it returns.
  */
 async function indexLockfile(root: string): Promise<LockIndex | null> {
   // pnpm
@@ -75,6 +78,10 @@ async function indexLockfile(root: string): Promise<LockIndex | null> {
         importers?: Record<string, Record<string, Record<string, unknown>>>
         packages?: Record<string, unknown>
         snapshots?: Record<string, unknown>
+      } | null
+      // Garbage can parse as a bare scalar rather than throw; only a mapping is a lockfile.
+      if (typeof doc !== "object" || doc === null || Array.isArray(doc)) {
+        return { file: "pnpm-lock.yaml", names, versions, unreadable: true }
       }
       for (const importer of Object.values(doc.importers ?? {})) {
         for (const section of ["dependencies", "devDependencies", "optionalDependencies"]) {
@@ -92,19 +99,29 @@ async function indexLockfile(root: string): Promise<LockIndex | null> {
         versions.set(target.name, set)
       }
     } catch {
-      /* empty index — disclosed as unreadable by the caller's lockfile-found check */
+      return { file: "pnpm-lock.yaml", names, versions, unreadable: true }
     }
     return { file: "pnpm-lock.yaml", names, versions }
   }
 
   // npm
-  const npmLock = await readJson<{
-    packages?: Record<string, { version?: string }>
-    dependencies?: Record<string, { version?: string }>
-  }>(path.join(root, "package-lock.json"))
-  if (npmLock) {
+  const npmText = await readText(path.join(root, "package-lock.json"))
+  if (npmText !== null) {
     const names = new Set<string>()
     const versions = new Map<string, Set<string>>()
+    let parsed: unknown = null
+    try {
+      parsed = JSON.parse(npmText)
+    } catch {
+      /* unparsable — marked unreadable below */
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return { file: "package-lock.json", names, versions, unreadable: true }
+    }
+    const npmLock = parsed as {
+      packages?: Record<string, { version?: string }>
+      dependencies?: Record<string, { version?: string }>
+    }
     for (const [key, entry] of Object.entries(npmLock.packages ?? {})) {
       if (key === "") continue // the root itself
       const name = nameFromNodeModulesKey(key)
@@ -290,6 +307,20 @@ export const pinIntegrityLens: Lens = {
         disclosures: [
           ...disclosures,
           "Dependency pins are declared but no lockfile (pnpm-lock.yaml, package-lock.json, yarn.lock) exists — liveness cannot be judged offline; skipped, not flagged.",
+        ],
+        findings,
+      }
+    }
+    if (lock.unreadable) {
+      return {
+        lens: LENS_ID,
+        version: "1",
+        title: "Dependency pin integrity",
+        kind: "truth",
+        status: "ran",
+        disclosures: [
+          ...disclosures,
+          `Dependency pins are declared but ${lock.file} could not be parsed — liveness cannot be judged offline; skipped, not flagged.`,
         ],
         findings,
       }
