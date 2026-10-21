@@ -286,6 +286,21 @@ describe("comment-truth lens", () => {
     expect(report.disclosures.some((d) => /could not be read/.test(d))).toBe(true)
   })
 
+  it("holds out of scope the files past the scan cap", async () => {
+    await write("package.json", JSON.stringify({ name: "shape-demo" }))
+    // 2000 empty files fill the cap; git lists paths sorted, so src/zz.ts is the one left over.
+    await Promise.all(
+      Array.from({ length: 2000 }, (_, i) => write(`src/f${String(i).padStart(4, "0")}.ts`, "")),
+    )
+    await write("src/zz.ts", "// See src/legacy/config.ts\n")
+    await gitStage()
+
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.outOfScope).toContain("src/zz.ts")
+    expect(report.disclosures.some((d) => /truncated at 2000/.test(d))).toBe(true)
+  })
+
   it("skips comments entirely when the repo is not git-tracked", async () => {
     await write("package.json", JSON.stringify({ name: "shape-demo" }))
     await write("src/app.ts", "// See src/gone/config.ts\n")

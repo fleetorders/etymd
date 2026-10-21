@@ -124,6 +124,8 @@ export const commentTruthLens: Lens = {
     }
     const truncated = targets.length > MAX_FILES
     const scanTargets = targets.slice(0, MAX_FILES)
+    // Files past the cap were never examined: out of scope, so the ledger keeps their findings open.
+    outOfScope.push(...targets.slice(MAX_FILES))
 
     const findings: Finding[] = []
     const disclosures: string[] = []
