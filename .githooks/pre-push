@@ -153,8 +153,8 @@ if command -v shellcheck >/dev/null 2>&1; then
           exit 1 ;;
       esac
       # Only these paths are read, each as its raw blob — never a checkout of the commit, which
-      # would apply eol and filter attributes (a CRLF shebang left the checked set silently) and
-      # write the whole tree to check a handful of files. Never `git archive` either: it honours
+      # would apply eol and filter attributes, so the checker would read bytes that were never
+      # committed, and write the whole tree to check a handful of files. Never `git archive` either: it honours
       # export-ignore, so a script so marked would leave the set without a word.
       : > "$shellcheck_tmp/records" && : > "$shellcheck_tmp/candidates" || exit 1
       if [ -s "$shellcheck_tmp/tracked" ]; then
@@ -231,14 +231,21 @@ if command -v shellcheck >/dev/null 2>&1; then
         echo "› shellcheck: no shell script $where — nothing to check there"
       else
         echo "› shellcheck ($((count)) scripts $where, blocking at severity=warning)"
-        ( cd "$tree" && xargs -0 shellcheck -S warning -- < "$shellcheck_tmp/scripts" ) || {
+        # Both checker passes carry the staged tree as their config roots (HOME,
+        # XDG_CONFIG_HOME): the commit's rc files still apply by the walk up from each script's
+        # path, but a commit shipping no rc would otherwise fall back to the pusher's home — a
+        # verdict that depends on whose desk the push came from, not on the commit.
+        ( cd "$tree" && HOME="$tree" XDG_CONFIG_HOME="$tree" xargs -0 shellcheck -S warning -- < "$shellcheck_tmp/scripts" ) || {
           echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
           exit 1
         }
         # Everything below the blocking bar, shown once the push is already cleared. Never affects
         # the exit code — advice that can fail a push is not advice.
-        advice=$( ( cd "$tree" && xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/scripts" 2>/dev/null ) \
-          | grep -v ': warning:\|: error:' || true)
+        # The advice split uses two -e patterns, never 'a\|b': backslash-pipe alternation is
+        # a GNU extension BSD grep matches literally, which keeps the wrong lines as advice on
+        # a BSD desk.
+        advice=$( ( cd "$tree" && HOME="$tree" XDG_CONFIG_HOME="$tree" xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/scripts" 2>/dev/null ) \
+          | grep -v -e ': warning:' -e ': error:' || true)
         if [ -n "$advice" ]; then
           echo "  · style/info (not blocking):"
           printf '%s\n' "$advice" | sed 's/^/    /'
@@ -251,9 +258,29 @@ else
   echo "› shellcheck skipped (not on PATH) — install it to gate this repo's shell scripts"
 fi
 
-if command -v etymd >/dev/null 2>&1; then
+# The audit step takes the same override door as the screens (AUDIT_GATE), with the same
+# contract: an override naming a checker that is not there refuses the push naming the path
+# and the two ways out, because a hook that passes shows its stderr to nobody — a typo in the
+# one variable meant to tighten the gate must not turn the gate off unseen.
+AUDIT_GATE="${AUDIT_GATE:-$(command -v etymd || true)}"
+if [ -n "$AUDIT_GATE" ] && [ ! -x "$AUDIT_GATE" ]; then
+  echo "pre-push: AUDIT_GATE is set but not usable: $AUDIT_GATE — point it at an executable etymd, or unset it (audit refused)" >&2
+  exit 1
+fi
+if [ -n "$AUDIT_GATE" ]; then
   echo "› etymd audit --fail-on risk"
-  etymd audit --no-ledger --fail-on risk || exit 1
+  if ! "$AUDIT_GATE" audit --no-ledger --fail-on risk; then
+    # The probe runs only after a failure, so a clean push pays nothing. A checker whose help
+    # carries both flags and still fails has spoken — that is a finding, and it blocks. A
+    # checker predating the flags answers a usage error, which would block every push on that
+    # machine for the checker's sake; it gets the one line the checker cannot say itself.
+    audit_help=$("$AUDIT_GATE" audit --help 2>&1)
+    if printf '%s\n' "$audit_help" | grep -q -- --no-ledger \
+      && printf '%s\n' "$audit_help" | grep -q -- --fail-on; then
+      exit 1
+    fi
+    echo "etymd: this checker does not understand 'audit --no-ledger --fail-on' (needs a newer etymd) — upgrade it, or set AUDIT_GATE to one that does. Not blocking this push" >&2
+  fi
 else
   echo "› etymd audit skipped (not on PATH)"
 fi
@@ -270,4 +297,4 @@ if [ -x "$GATE" ]; then
 fi
 
 exit 0
-# etymd:generated pack-v18 bb3cab32b77cf171
+# etymd:generated pack-v29 fd1d729eb204a67a

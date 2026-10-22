@@ -14,9 +14,11 @@
 # then stages, as raw blobs, the files the staged scripts source.
 #
 # Every byte comes from git's object store as the raw blob — `git cat-file blob`, which
-# applies no eol, text or filter attribute. A checkout converts: under `eol=crlf` the shebang
-# line ends in a carriage return, the match below fails, and the script leaves the checked set
-# without a word. Only the entries handed in are read, never the whole commit.
+# applies no eol, text or filter attribute: a checkout would hand the checker bytes that were
+# never committed. The shebang tails below accept any whitespace after the name, so a
+# `#!/bin/sh` committed with a trailing carriage return or tab (a Windows editor) still
+# classifies instead of landing in no count at all. Only the entries handed in are read, never
+# the whole commit.
 #
 # A symlink or submodule entry has no script bytes of its own — a link's target is a tracked
 # path checked under its own name — so it is a disclosed skip, never a block. A candidate that
@@ -130,7 +132,7 @@ for entry do
   }
   head -n 1 "$work/head-bytes" > "$work/first-line" || exit 1
   st=0
-  grep -qE "^#!.*[/ ](ba|da)?sh( |$)" "$work/first-line" || st=$?
+  grep -qE "^#!.*[/ ](ba|da)?sh([[:space:]]|$)" "$work/first-line" || st=$?
   case $st in
     (0)
       case $file in
@@ -145,7 +147,7 @@ for entry do
       printf . >> "$work/count" || exit 1 ;;
     (1)
       st=0
-      grep -qE "^#!.*[/ ]zsh( |$)" "$work/first-line" || st=$?
+      grep -qE "^#!.*[/ ]zsh([[:space:]]|$)" "$work/first-line" || st=$?
       case $st in
         (0) printf . >> "$work/zsh-count" || exit 1 ;;
         (1) ;;
@@ -154,4 +156,4 @@ for entry do
     (*) exit 1 ;;
   esac
 done
-# etymd:generated pack-v18 619e9b67bc644574
+# etymd:generated pack-v29 741e105fe07be831

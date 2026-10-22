@@ -478,9 +478,11 @@ export function generateShellDiscoveryScript(): string {
 # then stages, as raw blobs, the files the staged scripts source.
 #
 # Every byte comes from git's object store as the raw blob — \`git cat-file blob\`, which
-# applies no eol, text or filter attribute. A checkout converts: under \`eol=crlf\` the shebang
-# line ends in a carriage return, the match below fails, and the script leaves the checked set
-# without a word. Only the entries handed in are read, never the whole commit.
+# applies no eol, text or filter attribute: a checkout would hand the checker bytes that were
+# never committed. The shebang tails below accept any whitespace after the name, so a
+# \`#!/bin/sh\` committed with a trailing carriage return or tab (a Windows editor) still
+# classifies instead of landing in no count at all. Only the entries handed in are read, never
+# the whole commit.
 #
 # A symlink or submodule entry has no script bytes of its own — a link's target is a tracked
 # path checked under its own name — so it is a disclosed skip, never a block. A candidate that
@@ -594,7 +596,7 @@ for entry do
   }
   head -n 1 "$work/head-bytes" > "$work/first-line" || exit 1
   st=0
-  grep -qE "^#!.*[/ ](ba|da)?sh( |$)" "$work/first-line" || st=$?
+  grep -qE "^#!.*[/ ](ba|da)?sh([[:space:]]|$)" "$work/first-line" || st=$?
   case $st in
     (0)
       case $file in
@@ -609,7 +611,7 @@ for entry do
       printf . >> "$work/count" || exit 1 ;;
     (1)
       st=0
-      grep -qE "^#!.*[/ ]zsh( |$)" "$work/first-line" || st=$?
+      grep -qE "^#!.*[/ ]zsh([[:space:]]|$)" "$work/first-line" || st=$?
       case $st in
         (0) printf . >> "$work/zsh-count" || exit 1 ;;
         (1) ;;
@@ -782,8 +784,8 @@ if command -v shellcheck >/dev/null 2>&1; then
           exit 1 ;;
       esac
       # Only these paths are read, each as its raw blob — never a checkout of the commit, which
-      # would apply eol and filter attributes (a CRLF shebang left the checked set silently) and
-      # write the whole tree to check a handful of files. Never \`git archive\` either: it honours
+      # would apply eol and filter attributes, so the checker would read bytes that were never
+      # committed, and write the whole tree to check a handful of files. Never \`git archive\` either: it honours
       # export-ignore, so a script so marked would leave the set without a word.
       : > "$shellcheck_tmp/records" && : > "$shellcheck_tmp/candidates" || exit 1
       if [ -s "$shellcheck_tmp/tracked" ]; then
@@ -860,14 +862,21 @@ if command -v shellcheck >/dev/null 2>&1; then
         echo "› shellcheck: no shell script $where — nothing to check there"
       else
         echo "› shellcheck ($((count)) scripts $where, blocking at severity=warning)"
-        ( cd "$tree" && xargs -0 shellcheck -S warning -- < "$shellcheck_tmp/scripts" ) || {
+        # Both checker passes carry the staged tree as their config roots (HOME,
+        # XDG_CONFIG_HOME): the commit's rc files still apply by the walk up from each script's
+        # path, but a commit shipping no rc would otherwise fall back to the pusher's home — a
+        # verdict that depends on whose desk the push came from, not on the commit.
+        ( cd "$tree" && HOME="$tree" XDG_CONFIG_HOME="$tree" xargs -0 shellcheck -S warning -- < "$shellcheck_tmp/scripts" ) || {
           echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
           exit 1
         }
         # Everything below the blocking bar, shown once the push is already cleared. Never affects
         # the exit code — advice that can fail a push is not advice.
-        advice=$( ( cd "$tree" && xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/scripts" 2>/dev/null ) \\
-          | grep -v ': warning:\\|: error:' || true)
+        # The advice split uses two -e patterns, never 'a\\|b': backslash-pipe alternation is
+        # a GNU extension BSD grep matches literally, which keeps the wrong lines as advice on
+        # a BSD desk.
+        advice=$( ( cd "$tree" && HOME="$tree" XDG_CONFIG_HOME="$tree" xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/scripts" 2>/dev/null ) \\
+          | grep -v -e ': warning:' -e ': error:' || true)
         if [ -n "$advice" ]; then
           echo "  · style/info (not blocking):"
           printf '%s\\n' "$advice" | sed 's/^/    /'
@@ -943,9 +952,29 @@ export function generatePrePushHook(
   // instead of silently passing.
   const failOn = gates?.failOn ?? "risk"
   const auditStep = `
-if command -v etymd >/dev/null 2>&1; then
+# The audit step takes the same override door as the screens (AUDIT_GATE), with the same
+# contract: an override naming a checker that is not there refuses the push naming the path
+# and the two ways out, because a hook that passes shows its stderr to nobody — a typo in the
+# one variable meant to tighten the gate must not turn the gate off unseen.
+AUDIT_GATE="\${AUDIT_GATE:-$(command -v etymd || true)}"
+if [ -n "$AUDIT_GATE" ] && [ ! -x "$AUDIT_GATE" ]; then
+  echo "pre-push: AUDIT_GATE is set but not usable: $AUDIT_GATE — point it at an executable etymd, or unset it (audit refused)" >&2
+  exit 1
+fi
+if [ -n "$AUDIT_GATE" ]; then
   echo "› etymd audit --fail-on ${failOn}"
-  etymd audit --no-ledger --fail-on ${failOn} || exit 1
+  if ! "$AUDIT_GATE" audit --no-ledger --fail-on ${failOn}; then
+    # The probe runs only after a failure, so a clean push pays nothing. A checker whose help
+    # carries both flags and still fails has spoken — that is a finding, and it blocks. A
+    # checker predating the flags answers a usage error, which would block every push on that
+    # machine for the checker's sake; it gets the one line the checker cannot say itself.
+    audit_help=$("$AUDIT_GATE" audit --help 2>&1)
+    if printf '%s\\n' "$audit_help" | grep -q -- --no-ledger \\
+      && printf '%s\\n' "$audit_help" | grep -q -- --fail-on; then
+      exit 1
+    fi
+    echo "etymd: this checker does not understand 'audit --no-ledger --fail-on' (needs a newer etymd) — upgrade it, or set AUDIT_GATE to one that does. Not blocking this push" >&2
+  fi
 else
   echo "› etymd audit skipped (not on PATH)"
 fi`
