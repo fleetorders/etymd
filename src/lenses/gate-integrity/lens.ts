@@ -103,16 +103,26 @@ export function deriveGateFindings(inv: GateInventory, disclosures: string[] = [
     const branchNote = jobs.every((j) => j.branchScoped)
       ? " (rule-scoped — blocking-ness may vary per branch)"
       : ""
+    const evidence = jobs.map((j) => `${j.file} job \`${j.job}\`${branchNote}`)
+    // Wrapper calls whose script name is a variable are scripts the hooks may well run — this
+    // inventory cannot name them. The gap is still asserted (it usually is one), but never as
+    // a certainty built on invocations that were not read.
+    const unresolved = inv.local.unresolvedWrapperCalls
+    if (unresolved > 0) {
+      evidence.push(
+        `${unresolved} local hook call(s) run a script through a variable this tool cannot resolve`,
+      )
+    }
     findings.push(
       finding({
         id: `${LENS_ID}/ci-only-${tool}`,
         tier: "gap",
         claim: `${TOOL_LABEL[tool]} is enforced only in CI — no local hook runs it`,
-        evidence: jobs.map((j) => `${j.file} job \`${j.job}\`${branchNote}`),
+        evidence,
         why: "A failure is invisible until the pipeline runs — the slowest possible feedback loop.",
         action: "Wire it into a pre-push hook — `etymd gates` generates one from your own scripts.",
         effort: "S",
-        confidence: "high",
+        confidence: unresolved > 0 ? "medium" : "high",
       }),
     )
   }

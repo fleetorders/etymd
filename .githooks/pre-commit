@@ -11,10 +11,10 @@ if [ -x "$LOCAL" ]; then
   "$LOCAL" "$@" || exit 1
 fi
 
-# Content screen — staged file bytes. Refuses to commit environment, guarded-side or identity
-# detail into a repo whose history is (or could become) public. The checker and its patterns
-# are machine-local by design, so this is a NO-OP wherever no checker is installed: safe to
-# commit anywhere, active only where you opted in.
+# Content screen — staged file bytes. Refuses to commit detail about your environment, work
+# or identity into a repo whose history is (or could become) public. The checker and its
+# patterns are machine-local by design, so this is a NO-OP wherever no checker is installed:
+# safe to commit anywhere, active only where you opted in.
 #
 # Bypass, with a reason: git commit --no-verify
 GATE="${CONTENT_GATE:-$(if [ -x ./dist/cli.js ]; then echo ./dist/cli.js; else command -v etymd || true; fi)}"
@@ -24,7 +24,10 @@ if [ -x "$GATE" ]; then
       echo "etymd: this checker does not understand 'screen' (needs etymd 0.11+) — upgrade it, or set CONTENT_GATE to a checker that does." >&2
     exit 1
   fi
+elif [ -n "${CONTENT_GATE:-}" ]; then
+  echo "pre-commit: CONTENT_GATE is set but not usable: $GATE — point it at an executable etymd, or unset it (staged screen refused)" >&2
+  exit 1
 fi
 
 exit 0
-# etymd:generated pack-v12 13e6e8c24cfd8559
+# etymd:generated pack-v28 b182abfb0cb88157

@@ -219,3 +219,36 @@ fixed, not ranked, so truth findings stay out.
 **Consequences:** rejected on purpose: a default rubric, free-text criteria, a guarded flag, a
 cutoff flag. Identical input gives identical bytes, so a filed proposal can be re-derived and
 compared later.
+
+## D-013 — Source comments and dependency pins: the checks widen, not multiply
+
+`comment-truth` runs the four existing checkers (script, path, doc, decision) over source-code
+comments; `pin-integrity` judges manifest pins (`overrides`, `resolutions`,
+`patchedDependencies`) by lockfile arithmetic alone — an override whose package nothing
+requests any more, a patch whose target version the lock no longer carries. No new claim kinds
+and no new verification logic: comment text is promoted with the premise surface's stricter
+prose rules and run through the shared checks, so a third copy of the precision rules cannot
+drift in beside the two that exist. Extraction is per language and string-aware — misreading
+string content as a comment would manufacture claims, the exact false-positive class this tool
+exists to avoid. Findings name the file and line; many comments citing one dead reference
+collapse into one finding with example lines. A dead command in a comment is risk, same as in
+an instruction file; paths, doc references, decision ids and dead pins are gap.
+
+Skip classes are counted and disclosed, never silently dropped: test, fixture, mock and vendor
+files (also reported `outOfScope` so the ledger holds any tracked finding inside them open);
+mixed-language templates (`.vue`, `.svelte`, `.astro`); the premise surface's prose classes and
+the shared command/path classes; pin shapes offline arithmetic cannot judge (no lockfile,
+nested-path keys, range selectors — verified by name only).
+
+**Why:** D-010 read "instructions" as anything told to an agent, and the file half still meant
+the instruction layer — a claim written in a comment was never checked, yet a comment is a
+written rule that happens to live in a `.ts` file. The commonest checkable claim there is a
+decision reference; renumber or supersede an entry and the code silently lies. Pins are the
+same shape one layer down the manifest: the dependency moves on, the pin stays, and every
+reader reconstructs a constraint that no longer binds. Both answer with zero registry calls.
+
+**Consequences:** everything stays offline — zero fetch, zero model calls, pinned by a test
+that scans `src/` for network calls. Parked on purpose: checks needing a tool run (an
+`eslint-disable` that suppresses nothing, an `@ts-expect-error` that types no longer object
+to), opt-in network probes behind a flag defaulting to off, and semantic claims — the only
+tier where a model earns its place, which must never be able to fail CI.

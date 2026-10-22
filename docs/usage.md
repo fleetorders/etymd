@@ -83,6 +83,21 @@ committer dates only, never mtime:
 total ≥ 8000 words (defaults; override under `context` in `.etymd/config.json`). Only genuinely
 `alwaysApply` Cursor rules count.
 
+**`comment-truth`** (truth) — the same four claim checks (command, path, doc-reference,
+decision id) over comments in tracked source files, extracted per language (JS/TS, C-family,
+shell/Python/Ruby-style `#`, CSS, markup, SQL) with a string-aware scanner — string content is
+never read as a comment. Findings name the file and line. Comments are prose, so bare mentions are
+promoted with the premise surface's stricter rules; test/fixture/vendor files and
+mixed-language templates (`.vue`/`.svelte`/`.astro`) are skipped, counted, and disclosed, and
+skipped files are held out of scope so the ledger never reads them as fixed.
+
+**`pin-integrity`** (truth) — dependency pins judged by lockfile arithmetic alone: an
+`overrides` / `resolutions` / `pnpm.overrides` entry whose package nothing in the lock (or any
+manifest, workspace included) requests any more, and a `patchedDependencies` target the lock no
+longer carries at the named version (either key direction; `pnpm-workspace.yaml` too). No
+registry, no network, no tool run; unverifiable shapes (no lockfile, nested-path override keys,
+range selectors — verified by name only) are disclosed, never flagged.
+
 ## `etymd premise` — is this the right task?
 
 The task you are about to hand an agent is an instruction too. `etymd premise "<task>"` (or
@@ -122,8 +137,10 @@ Flags: `--file <path>` (`-` = stdin) · `--json` (schema `premise/1`) · `--no-b
 ## `etymd init` — onboarding
 
 Reckon → confirm the workflow profile (solo/team, detected from recent commit authors) → scaffold
-a minimal AGENTS.md **only if none exists**, with its `CLAUDE.md` pointer (Claude Code
-before 2.1.277 loads only `CLAUDE.md`; later versions read `AGENTS.md` themselves) → offer local gates **only if no hook
+a minimal AGENTS.md **only if none exists**, with its `CLAUDE.md` pointer **only where the local
+reader needs one** (Claude Code before 2.1.277 loads only `CLAUDE.md`; later versions read
+`AGENTS.md` themselves, and a machine with no Claude Code has no reader to serve — on both the
+pointer is skipped and init says so) → offer local gates **only if no hook
 system exists** → write the **committed baseline** + gitignore the cache. Never overwrites
 anything. `-y` accepts defaults.
 
@@ -193,14 +210,18 @@ Walkthrough of the pieces:
   only (`HEAD --not --remotes=origin`) — merged upstream traffic cannot make the fork's state
   look stale, and a pure mirror reads as dormant. A missing remote falls back to the full clock
   with a disclosure.
-- **Findings on the manifest's own entries** (lens id `fleet-manifest`, all risk-tier): guarded contract files inside a guarded
+- **Findings on the manifest's own entries** (lens id `fleet-manifest`): guarded contract files inside a guarded
   worktree; unregistered guarded-remote checkouts under the fleet root; tracked `/Users/` paths in
   the manifest's own repo; private identifiers in `trust: "public-repo"` entries; guarded-host commit
   emails on personal entries; and repos whose `AGENTS.md` Claude Code cannot see (`claude-pointer-missing`: a risk when
   a `CLAUDE.md` exists without importing `@AGENTS.md`, since Claude Code then reads only that file
   and `etymd fleet add` refuses the repo; a gap when there is no `CLAUDE.md` and the installed
   Claude Code predates the 2.1.277 `AGENTS.md` fallback; `ETYMD_CLAUDE_VERSION` pins the version
-  checked, `none` for a machine without Claude Code). These are not ledger-quietable; the only honest resolution
+  checked, `none` for a machine without Claude Code — pin it wherever a sweep must not depend on
+  the machine, CI above all, because a box with no readable `claude` counts as no reader and
+  passes bare `AGENTS.md` repos. A probe that fails some other way — timeout, broken shim, and
+  on Windows npm's `claude.cmd`, which Node will not launch without a shell — and a pin that is
+  not `X.Y.Z` are both disclosed as undetermined, never silently clean). These are not ledger-quietable; the only honest resolution
   is fixing them. Every check that cannot run says so.
 
 ## CI recipe

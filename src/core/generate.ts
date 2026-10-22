@@ -6,6 +6,7 @@ import {
   generateArtifactCheckScript,
   generateClaudePointerMd,
   generateCommitMsgHook,
+  generateHooksReadme,
   generatePreCommitHook,
   generatePrePushHook,
   generateShellDiscoveryScript,
@@ -29,7 +30,15 @@ export function derivedCommands(facts: ProjectFacts, existingHook?: string): str
   const base = [c.formatCheck, c.typecheck, c.lint].filter(
     (k): k is string => Boolean(k) && isSafeGateCommand(c.raw[k as string]),
   )
-  if (c.test && existingHook && new RegExp(`\\b${c.test}\\b`).test(existingHook)) {
+  // The scan sees the WHOLE hook file, so comment lines are stripped before the test: comments
+  // are not the repo running anything, and a generated comment reading "an integer test" wired
+  // `test` into every regeneration once — the wired step (`run_gate … test`) survives the strip
+  // because it is code, and so does a hand-written `npm test` line.
+  const hookCode = existingHook
+    ?.split("\n")
+    .filter((l) => !/^\s*#/.test(l))
+    .join("\n")
+  if (c.test && hookCode && new RegExp(`\\b${c.test}\\b`).test(hookCode)) {
     base.push(c.test)
   }
   return base
@@ -112,6 +121,15 @@ export interface GeneratedFile {
 export interface PlanOptions {
   /** Scaffold a minimal AGENTS.md (init only offers this when none exists). */
   agents: boolean
+  /**
+   * Write the scaffold's `CLAUDE.md` pointer alongside AGENTS.md. Defaults to true — a pointer
+   * is never wrong, every reader either follows it or ignores it. `etymd init` passes false on
+   * a machine whose Claude Code reads `AGENTS.md` natively (or has none at all): the pointer
+   * exists exactly where a reader needs it, the stance this tool's own repo wears. Deliberately
+   * a caller-supplied fact, never probed here — the plan stays a pure function of its inputs
+   * because the fleet's gate drift compares two runs byte-for-byte.
+   */
+  agentsPointer?: boolean
   gates: boolean
   /**
    * Emit the publish-time screen. Defaults to `facts.publishable` — set it explicitly to
@@ -162,9 +180,12 @@ export async function planWorkflow(
     await add("AGENTS.md", generateAgentsMd(facts), "Minimal operating contract (scaffold)")
     // The scaffold must satisfy the pointer contract it is about to be held to: `fleet add`
     // refuses a repo whose AGENTS.md Claude Code cannot see, so the same onboarding that
-    // writes the contract writes its CLAUDE.md pointer too. An existing CLAUDE.md is kept —
+    // writes the contract writes its CLAUDE.md pointer too — unless the local reader provably
+    // does not need one (see PlanOptions.agentsPointer). An existing CLAUDE.md is kept —
     // apply never overwrites what it did not write.
-    await add("CLAUDE.md", generateClaudePointerMd(), "Claude Code pointer to AGENTS.md")
+    if (opts.agentsPointer !== false) {
+      await add("CLAUDE.md", generateClaudePointerMd(), "Claude Code pointer to AGENTS.md")
+    }
   }
   if (opts.gates) {
     // Preservation belongs HERE, not in the command that calls this: every caller (the fleet
@@ -235,7 +256,16 @@ export async function planWorkflow(
         true,
       )
     }
-    // The publish gate is only meaningful where something actually ships. A recorded answer
+    // The one fact a plain clone cannot recover from the files themselves: git reaches these
+    // hooks through a machine-local core.hooksPath, so on a fresh clone they sit inert until
+    // `etymd gates` runs again. Saying so beside the hooks turns "unreachable" into
+    // "uninstalled" for whoever reads the directory cold.
+    await add(
+      ".githooks/README.md",
+      generateHooksReadme(),
+      "How git reaches these hooks (core.hooksPath is machine-local)",
+    )
+    // The publish door is only meaningful where something actually ships. A recorded answer
     // wins; otherwise fall back to the derivation. Note the derivation is a GUESS: npm treats a
     // missing `private` as publishable, which is right about npm's semantics and wrong about a
     // local fork that will never be published — hence the recorded override.
