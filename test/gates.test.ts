@@ -473,6 +473,36 @@ exit 23
       expect(args).not.toContain("./docs/example.md")
     }
   })
+
+  it("PINNED: whitespace after the shebang name still counts the script", async () => {
+    // The tails match any whitespace or the end of the line: a shebang line committed from a
+    // Windows editor ends in a carriage return, and a tab after the name is the same shape.
+    // Under the old (space-or-end) tails both landed in no count at all — not even the
+    // disclosed ones — the one outcome the classifier's own header refuses.
+    await baseRepo()
+    await write("tool/crlf.sh", "#!/bin/sh\r\necho crlf\n")
+    await write("tool/tab.sh", "#!/bin/sh\t-e\necho tab\n")
+    await commitAll("chore: whitespace-tailed shebangs")
+    await gates()
+    await recordShellcheck()
+    const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+
+    const { stdout } = await runPrePush(
+      env,
+      update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+    )
+    expect(stdout).toContain("2 scripts")
+    const classifier = await fs.readFile(
+      path.join(dir, ".githooks", "discover-shell-scripts.sh"),
+      "utf8",
+    )
+    expect(classifier).toContain("(ba|da)?sh([[:space:]]|$)")
+    expect(classifier).toContain("zsh([[:space:]]|$)")
+    for (const args of await recorded()) {
+      expect(args).toContain("./tool/crlf.sh")
+      expect(args).toContain("./tool/tab.sh")
+    }
+  })
 })
 
 describe.skipIf(!existsSync(CLI))(
@@ -624,6 +654,19 @@ describe.skipIf(!existsSync(CLI))(
       expect(withSide).toHaveLength(4)
     })
 
+    it("PINNED: the advice split separates severities with two -e patterns, never backslash-pipe", async () => {
+      // grep -v 'a\|b' is GNU backslash-pipe alternation; BSD grep matches it literally, so the
+      // advice pass would drop or keep the wrong lines on a BSD desk. The defect lives in the
+      // bytes every consumer repo ships, so the assertion reads the generated hook itself.
+      await baseRepo()
+      await write("tool/run.sh", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: a script")
+      await gates()
+      const hook = await prePush()
+      expect(hook).toContain("grep -v -e ': warning:' -e ': error:'")
+      expect(hook).not.toContain(": warning:\\|")
+    })
+
     it("the commit that installs the gate is checked whole — scripts no gate ever read", async () => {
       await baseRepo()
       await write("tool/legacy.sh", "#!/bin/sh\necho legacy\n")
@@ -692,9 +735,10 @@ describe.skipIf(!existsSync(CLI))(
     it.skipIf(!hasShellcheck)(
       "PINNED: a script checked out with CRLF line endings is still checked — the read is the raw blob",
       async () => {
-        // A checkout applies eol and filter attributes: under `eol=crlf` the shebang line ends
-        // in a carriage return, the shebang match fails, and the script left the checked set
-        // without a word. The gate reads the committed bytes, never a converted checkout.
+        // A checkout applies eol and filter attributes: under `eol=crlf` a checked-out shebang
+        // line ends in a carriage return — before the tails accepted any whitespace, such a
+        // line left the checked set without a word. The gate reads the committed bytes, never
+        // a converted checkout.
         await baseRepo()
         await write(".gitattributes", "*.sh text eol=crlf\n")
         await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho ok\n")
@@ -726,6 +770,37 @@ describe.skipIf(!existsSync(CLI))(
         await runPrePush(env, update("main", await revParse("HEAD"), await revParse("HEAD~1")))
       },
     )
+
+    it("PINNED: both checker passes carry the staged tree as their config roots", async () => {
+      // The commit's rc files are staged into the tree and apply by the walk up from each
+      // script's path; without pinning HOME and XDG_CONFIG_HOME to the tree, a commit shipping
+      // no rc falls back to the pusher's home — a verdict about whose desk the push came from,
+      // not about the commit. The stub records its config roots, so the pin is asserted, not
+      // assumed.
+      await baseRepo()
+      await write("tool/do.sh", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: a script")
+      await gates()
+      const roots = path.join(dir, "roots.jsonl")
+      await stub(
+        "shellcheck",
+        '#!/usr/bin/env node\nrequire("node:fs").appendFileSync(process.env.ETYMD_RECORD, JSON.stringify([process.env.HOME, process.env.XDG_CONFIG_HOME]) + "\\n")\n',
+      )
+      const env = await stubEnv({ ETYMD_RECORD: roots })
+
+      await runPrePush(env, update("main", await revParse("HEAD"), await revParse("HEAD~1")))
+      const seen = (await fs.readFile(roots, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as [string, string])
+      expect(seen).toHaveLength(2) // the blocking pass, then the advice pass — both pinned
+      for (const [home, xdg] of seen) {
+        expect(home).not.toBe(process.env.HOME)
+        expect(xdg).not.toBe(process.env.XDG_CONFIG_HOME)
+        expect(home).toBe(xdg)
+        expect(home).not.toBe(dir)
+      }
+    })
 
     it.skipIf(!hasShellcheck)(
       "PINNED: with external-sources on, a sourced file without a shebang is there to follow",
@@ -1076,6 +1151,89 @@ describe.skipIf(!existsSync(CLI))(
 
       const log = await fs.readFile(path.join(dir, "calls.log"), "utf8")
       expect(log).toContain("CALL screen --staged")
+      expect(log).not.toContain("--help")
+    })
+  },
+)
+
+describe.skipIf(!existsSync(CLI))(
+  "etymd gates — the audit step cannot be armed or disarmed by an old checker",
+  () => {
+    /** One repo, one pushable commit, fresh gates: the refs line a push of it would hand the hook. */
+    async function pushable() {
+      await baseRepo()
+      await write("tool/run.sh", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: a script")
+      await gates()
+      return update("main", await revParse("HEAD"), await revParse("HEAD~1"))
+    }
+
+    it("PINNED: AUDIT_GATE set but not usable refuses the push, naming the path", async () => {
+      // The same contract as the screen doors: an override naming a checker that is not there
+      // must not silently turn the audit off — a hook that passes shows its stderr to nobody.
+      const pushed = await pushable()
+      const env = await stubEnv({ AUDIT_GATE: path.join(dir, "no-such-etymd") })
+
+      await expect(runPrePush(env, pushed)).rejects.toMatchObject({
+        code: 1,
+        stderr: expect.stringContaining("AUDIT_GATE is set but not usable"),
+      })
+    })
+
+    it("PINNED: a checker that knows the flags and still fails blocks the push", async () => {
+      // The probe separates two failures sharing an exit code: a checker whose help carries
+      // --no-ledger and --fail-on has really spoken, and its finding blocks.
+      const pushed = await pushable()
+      const knowing = path.join(dir, "knowing-etymd")
+      await fs.writeFile(
+        knowing,
+        '#!/bin/sh\nif [ "$1" = "audit" ] && [ "$2" = "--help" ]; then\n  echo "  --no-ledger"\n  echo "  --fail-on <tier>"\n  exit 0\nfi\nif [ "$1" = "audit" ]; then\n  echo "risk: a finding"\n  exit 1\nfi\nexit 0\n',
+        "utf8",
+      )
+      await fs.chmod(knowing, 0o755)
+      const env = await stubEnv({ AUDIT_GATE: knowing })
+
+      await expect(runPrePush(env, pushed)).rejects.toMatchObject({
+        code: 1,
+        stdout: expect.stringContaining("risk: a finding"),
+      })
+    })
+
+    it("PINNED: an old checker without the flags gets the upgrade hint, never a block", async () => {
+      // A checker predating the flags answers a usage error; blocking every push on that
+      // machine would be a verdict about the checker, not the commits. The push proceeds,
+      // saying the one line the checker cannot say itself.
+      const pushed = await pushable()
+      const old = path.join(dir, "old-etymd")
+      await fs.writeFile(
+        old,
+        '#!/bin/sh\nif [ "$1" = "audit" ] && [ "$2" = "--help" ]; then\n  echo "usage: etymd audit"\n  exit 0\nfi\nif [ "$1" = "audit" ]; then\n  echo "error: unknown option --no-ledger" >&2\n  exit 3\nfi\nexit 0\n',
+        "utf8",
+      )
+      await fs.chmod(old, 0o755)
+      const env = await stubEnv({ AUDIT_GATE: old })
+
+      const { stderr } = await runPrePush(env, pushed)
+      expect(stderr).toContain("does not understand 'audit --no-ledger --fail-on'")
+      expect(stderr).toContain("AUDIT_GATE")
+    })
+
+    it("PINNED: a clean audit never pays for the probe", async () => {
+      // The probe is post-failure only: a passing audit run must not invoke the checker again.
+      const pushed = await pushable()
+      const calls = path.join(dir, "audit-calls.log")
+      const counting = path.join(dir, "counting-etymd")
+      await fs.writeFile(
+        counting,
+        '#!/bin/sh\necho "CALL $*" >> ' + JSON.stringify(calls) + "\nexit 0\n",
+        "utf8",
+      )
+      await fs.chmod(counting, 0o755)
+      const env = await stubEnv({ AUDIT_GATE: counting })
+
+      await runPrePush(env, pushed)
+      const log = await fs.readFile(calls, "utf8")
+      expect(log).toContain("CALL audit --no-ledger --fail-on")
       expect(log).not.toContain("--help")
     })
   },
