@@ -25,8 +25,9 @@ if [ -x "$GATE" ]; then
     exit 1
   fi
 elif [ -n "${CONTENT_GATE:-}" ]; then
-  echo "pre-commit: CONTENT_GATE is set but not usable: $GATE (staged screen skipped)" >&2
+  echo "pre-commit: CONTENT_GATE is set but not usable: $GATE — point it at an executable etymd, or unset it (staged screen refused)" >&2
+  exit 1
 fi
 
 exit 0
-# etymd:generated pack-v27 4bccca643203e2bb
+# etymd:generated pack-v28 b182abfb0cb88157

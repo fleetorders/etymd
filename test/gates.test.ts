@@ -783,6 +783,75 @@ describe.skipIf(!existsSync(CLI))(
       }
     })
 
+    it("PINNED: a newline inside a touched path neither forces nor dodges the whole-tree read", async () => {
+      // The trigger read the NUL-delimited touched list as lines: a path holding a newline split
+      // into two records, and "tool/pre-push<newline>notes.txt" passed for the gate, so every
+      // commit touching it was checked whole. Asked of git by pathspec, no record is parsed.
+      await baseRepo()
+      await write("tool/old.sh", "#!/bin/sh\necho old\n")
+      await commitAll("chore: an existing script")
+      await gates()
+      await write("tool/pre-push\nnotes.txt", "not a hook\n")
+      await write("tool/new.sh", "#!/bin/sh\necho new\n")
+      // Only tool/: `git add .` would commit the generated .githooks too, and a commit that
+      // touches the gate is checked whole by rule — the very read this test says must not happen.
+      await pExecFile("git", ["add", "--", "tool"], { cwd: dir })
+      await pExecFile(
+        "git",
+        ["commit", "-q", "-m", "chore: a newline path beside one new script"],
+        {
+          cwd: dir,
+          env: GIT_ENV,
+        },
+      )
+      await recordShellcheck()
+      const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+
+      const { stdout } = await runPrePush(
+        env,
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      )
+      expect(stdout).toContain("1 commit(s) in the pushed range")
+      expect(stdout).not.toContain("whole tree")
+      const calls = await recorded()
+      expect(calls.length).toBeGreaterThan(0)
+      for (const args of calls) {
+        expect(args).toContain("./tool/new.sh")
+        expect(args).not.toContain("./tool/old.sh")
+      }
+    })
+
+    it("PINNED: a .shellcheckrc deleted two directories down checks the commit whole", async () => {
+      // Deletion included: a removed config re-enables every check it disabled, two levels
+      // down as at the root. And an exported GIT_LITERAL_PATHSPECS would read the trigger's
+      // glob as a plain path and find nothing — the narrow path, in silence — so the hook
+      // clears it for that call; this run exports it to prove the clearing.
+      await baseRepo()
+      await write("tool/old.sh", "#!/bin/sh\necho old\n")
+      await write("tool/deep/.shellcheckrc", "disable=SC2034\n")
+      await commitAll("chore: a script and a nested config")
+      await gates()
+      await pExecFile("git", ["rm", "-q", "tool/deep/.shellcheckrc"], { cwd: dir })
+      await pExecFile("git", ["commit", "-q", "-m", "chore: drop the nested config"], {
+        cwd: dir,
+        env: GIT_ENV,
+      })
+      await recordShellcheck()
+      const env = await stubEnv({
+        ETYMD_RECORD: path.join(dir, "shellcheck.jsonl"),
+        GIT_LITERAL_PATHSPECS: "1",
+      })
+
+      const { stdout } = await runPrePush(
+        env,
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      )
+      expect(stdout).toContain("whole tree")
+      const calls = await recorded()
+      expect(calls.length).toBeGreaterThan(0)
+      for (const args of calls) expect(args).toContain("./tool/old.sh")
+    })
+
     // Merge 2026-10-02: the branch's "the narrow path probes the tree root" pin was dropped —
     // it guarded the empty-extraction probe of the deleted materialise-and-read design. The
     // invariant it served (the narrow path checks the changed scripts, never the whole tree as
@@ -1553,7 +1622,7 @@ describe.skipIf(!existsSync(CLI))(
   },
 )
 
-describe.skipIf(!existsSync(CLI))("etymd gates — a set-but-unusable override says so", () => {
+describe.skipIf(!existsSync(CLI))("etymd gates — a set-but-unusable override refuses", () => {
   /** Deterministic doors: no ambient etymd, no shell surface — only the override under test. */
   async function bareFixture() {
     await write("package.json", JSON.stringify({ name: "demo", private: true }) + "\n")
@@ -1562,38 +1631,44 @@ describe.skipIf(!existsSync(CLI))("etymd gates — a set-but-unusable override s
     await gates()
   }
 
-  it("pre-push: CONTENT_GATE naming a missing path is announced on stderr, not silent", async () => {
+  /** A hook run's exit status and stderr, passed or refused. stdin must reach EOF: pre-push
+   * reads the pushed refs from it, and execFile leaves its pipe open — without /dev/null the
+   * read blocks forever (git itself always closes stdin). */
+  async function door(hook: string, args: string[], env: NodeJS.ProcessEnv) {
+    return pExecFile("sh", ["-c", '"$0" "$@" < /dev/null', hook, ...args], { cwd: dir, env }).then(
+      ({ stderr }) => ({ code: 0, stderr }),
+      (e: { code?: number; stderr?: string }) => ({ code: e.code ?? -1, stderr: e.stderr ?? "" }),
+    )
+  }
+
+  it("PINNED: pre-push with CONTENT_GATE naming a missing path refuses, and says the ways out", async () => {
+    // Until pack 27 the door said so on stderr and opened. A hook that passes shows its stderr
+    // to nobody in a GUI client, so the typo stayed and the screen it was set to tighten stayed
+    // off. The variable was set on purpose; a broken value refuses like any broken gate.
     await bareFixture()
 
     const env = { ...process.env, CONTENT_GATE: path.join(dir, "no-such-checker") }
-    // stdin must reach EOF: the hook reads the pushed refs from it, and execFile leaves its
-    // pipe open — without /dev/null the read blocks forever (git itself always closes stdin).
-    const { stderr } = await pExecFile("sh", ["-c", '".githooks/pre-push" < /dev/null', "sh"], {
-      cwd: dir,
-      env,
-    })
-    expect(stderr).toContain("pre-push: CONTENT_GATE is set but not usable")
-    expect(stderr).toContain("no-such-checker")
+    const run = await door(".githooks/pre-push", [], env)
+    expect(run.code).toBe(1)
+    expect(run.stderr).toContain("pre-push: CONTENT_GATE is set but not usable")
+    expect(run.stderr).toContain("no-such-checker")
+    expect(run.stderr).toContain("or unset it")
   })
 
-  it("pre-commit and commit-msg announce their broken overrides too", async () => {
+  it("pre-commit and commit-msg refuse their broken overrides too", async () => {
     await bareFixture()
 
     const staged = { ...process.env, CONTENT_GATE: path.join(dir, "no-such-checker") }
-    const { stderr: pcErr } = await pExecFile("sh", [".githooks/pre-commit"], {
-      cwd: dir,
-      env: staged,
-    })
-    expect(pcErr).toContain("pre-commit: CONTENT_GATE is set but not usable")
+    const pc = await door(".githooks/pre-commit", [], staged)
+    expect(pc.code).toBe(1)
+    expect(pc.stderr).toContain("pre-commit: CONTENT_GATE is set but not usable")
 
     const msg = path.join(dir, "msg.txt")
     await fs.writeFile(msg, "chore: gate\n", "utf8")
     const msgEnv = { ...process.env, COMMIT_MSG_GATE: path.join(dir, "no-such-checker") }
-    const { stderr: cmErr } = await pExecFile("sh", [".githooks/commit-msg", msg], {
-      cwd: dir,
-      env: msgEnv,
-    })
-    expect(cmErr).toContain("commit-msg: COMMIT_MSG_GATE is set but not usable")
+    const cm = await door(".githooks/commit-msg", [msg], msgEnv)
+    expect(cm.code).toBe(1)
+    expect(cm.stderr).toContain("commit-msg: COMMIT_MSG_GATE is set but not usable")
   })
 
   it("an unset gate stays a silent no-op — the line is for misconfiguration, not absence", async () => {

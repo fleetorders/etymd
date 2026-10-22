@@ -297,14 +297,17 @@ describe("commit-message format gate", () => {
     const opted = { commands: [], failOn: "risk", allowWriting: [], commitFormat: true }
     await fs.writeFile(hook, generateCommitMsgHook(opted), { mode: 0o755 })
     await fs.writeFile(msgFile, message)
+    // A screen stand-in that passes everything: this test is about the format step, and the
+    // screen is machine-local by design. An override naming nothing executable refuses the
+    // commit since pack 28, so an absent path is no longer a way to opt out.
+    const screen = path.join(dir, "screen-ok")
+    await fs.writeFile(screen, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
     const { execFile } = await import("node:child_process")
     return await new Promise((resolve) => {
       execFile(
         "sh",
         [hook, msgFile],
-        // Point the screen's resolution at nothing executable: this test is about the format
-        // step, and the screen is machine-local by design.
-        { env: { ...process.env, COMMIT_MSG_GATE: path.join(dir, "absent") } },
+        { env: { ...process.env, COMMIT_MSG_GATE: screen } },
         (error, stdout, stderr) => {
           const code = error && typeof error.code === "number" ? error.code : 0
           resolve({ code, output: `${stdout}${stderr}` })

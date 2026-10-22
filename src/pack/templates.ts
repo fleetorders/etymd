@@ -299,14 +299,19 @@ function contentScreenCall(opts: {
  * is a DIFFERENT silence from "no checker installed". An override naming a missing or
  * non-executable path used to skip the door with no output at all — indistinguishable from
  * the deliberate no-op of a machine with no checker, so a misconfigured override passed for a
- * choice. One stderr line separates them; it says, it never blocks.
+ * choice. From pack 23 one stderr line separated them, but the door still opened, and a hook
+ * that passes shows its stderr to nobody in a GUI client — so a typo in the one variable set
+ * to TIGHTEN the gate turned it off unseen. The door refuses from pack 28: the variable was set
+ * on purpose, the line names the path and the two ways out, and an unset override stays the
+ * silent no-op it always was.
  */
 function gateDoor(hook: string, envVar: string, what: string, inner: string): string {
   return [
     `if [ -x "$GATE" ]; then`,
     inner,
     `elif [ -n "\${${envVar}:-}" ]; then`,
-    `  echo "${hook}: ${envVar} is set but not usable: $GATE (${what} skipped)" >&2`,
+    `  echo "${hook}: ${envVar} is set but not usable: $GATE — point it at an executable etymd, or unset it (${what} refused)" >&2`,
+    `  exit 1`,
     `fi`,
   ].join("\n")
 }
@@ -903,35 +908,33 @@ if command -v shellcheck >/dev/null 2>&1; then
       # commit that adds or changes this hook: a repo adopting the gate after the fact has
       # scripts no gate ever read, and the commit installing it is where they get read once.
       short=$(git rev-parse --short "$sha" 2>/dev/null || echo "$sha")
+      # Two listings from one diff: the paths the commit adds, copies, modifies, renames or
+      # retypes (the checked candidates), and the subset that is the gate, its classifier or a
+      # .shellcheckrc, deletions included (the whole-tree trigger). The trigger is asked of git
+      # by pathspec, never read out of the NUL-delimited list: the one place this hook turned
+      # that list into lines, a tracked path holding a newline split into two records, and a
+      # name ending in pre-push just before the newline passed for the gate. A leading **/ matches at
+      # the root and at every depth. GIT_LITERAL_PATHSPECS, where a caller exports it, would
+      # read the glob as a plain path and find nothing — the narrow path, in silence — so that
+      # one call runs with it cleared.
       if git rev-parse -q --verify "\${sha}^1^{commit}" >/dev/null 2>&1; then
-        git diff-tree -r -z --name-only --no-commit-id "\${sha}^1" "$sha" > "$shellcheck_tmp/touched" \\
-          && git diff-tree -r -z --name-only --no-commit-id --diff-filter=ACMRT "\${sha}^1" "$sha" > "$shellcheck_tmp/tracked"
+        git diff-tree -r -z --name-only --no-commit-id --diff-filter=ACMRT "\${sha}^1" "$sha" > "$shellcheck_tmp/tracked" \\
+          && GIT_LITERAL_PATHSPECS='' git diff-tree -r -z --name-only --no-commit-id "\${sha}^1" "$sha" \\
+            -- ':(glob)**/.shellcheckrc' ':(glob)**/discover-shell-scripts.sh' ':(glob)**/pre-push' > "$shellcheck_tmp/gate-touched"
       else
-        git diff-tree -r -z --name-only --no-commit-id --root "$sha" > "$shellcheck_tmp/touched" \\
-          && cp "$shellcheck_tmp/touched" "$shellcheck_tmp/tracked"
+        git diff-tree -r -z --name-only --no-commit-id --root "$sha" > "$shellcheck_tmp/tracked" \\
+          && GIT_LITERAL_PATHSPECS='' git diff-tree -r -z --name-only --no-commit-id --root "$sha" \\
+            -- ':(glob)**/.shellcheckrc' ':(glob)**/discover-shell-scripts.sh' ':(glob)**/pre-push' > "$shellcheck_tmp/gate-touched"
       fi || {
         echo "etymd: cannot enumerate the paths $short changes for shellcheck" >&2
         exit 1
       }
       where="changed in $short"
-      # Through a file, not a pipe: a pipeline reports only grep's status, and a failing tr would
-      # hand grep nothing — a "no match" that silently takes the narrow path.
-      tr '\\000' '\\n' < "$shellcheck_tmp/touched" > "$shellcheck_tmp/touched-lines" || exit 1
-      # grep: 1 is "no match", a verdict; anything higher is the matcher failing. The status is
-      # taken on the grep's own line so nothing added later can come between them.
       whole_reason=""
       if [ "$force_whole" -eq 1 ]; then
         whole_reason="the checker changed"
-      else
-        st=0
-        grep -qE '(^|/)(\\.shellcheckrc|discover-shell-scripts\\.sh|pre-push)$' "$shellcheck_tmp/touched-lines" || st=$?
-        case $st in
-          (0) whole_reason="the gate, its classifier or a .shellcheckrc changed" ;;
-          (1) ;;
-          (*)
-            echo "etymd: shell script discovery failed; cannot tell whether $short changes the gate, its classifier or a .shellcheckrc" >&2
-            exit 1 ;;
-        esac
+      elif [ -s "$shellcheck_tmp/gate-touched" ]; then
+        whole_reason="the gate, its classifier or a .shellcheckrc changed"
       fi
       if [ -n "$whole_reason" ]; then
         where="in $short (whole tree: $whole_reason)"
