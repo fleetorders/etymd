@@ -149,7 +149,7 @@
   names so it stands in the materialised worktree, a push carrying no commits (deletes only) audits nothing and
   says so, and a tip that cannot be materialised refuses the push rather than certifying bytes
   the gate did not read. Regenerate existing hooks with `etymd gates --yes`.
-- c58af7e: Three pre-push gate defects fixed.
+- c58af7e: Three pre-push gate defects fixed (pack 26).
   
   The audit worktree is now populated entry by entry from git's object store
   (`git cat-file blob`) instead of `git archive | tar`. `git archive` runs working-tree
@@ -170,7 +170,8 @@
   a push the upgraded checker refused still consumed the whole-surface re-baseline; the retry
   then read only touched paths and the re-baseline never completed.
   
-  Regenerate existing hooks with `etymd gates --yes`.
+  Pack 25 is retired-unused on this line (a parallel branch stamped it; a number means one
+  pack, ever). Regenerate existing hooks with `etymd gates --yes`.
 - e05892d: The build tooling's source-map-js dependency moves to 1.2.2, the fix for a
   denial-of-service advisory (GHSA-68fv-2mgg-jv7q) in parsing indexed source-map
   sections. It is a build-time dependency reached through tsup and postcss, so
@@ -179,6 +180,23 @@
   (GHSA-587h-7wmj-h5pm, GHSA-698v-4r3x-3vcv, GHSA-r825-w8mm-5pxw) affecting 8.2.0 through 8.2.2. It
   is reached only through vitest, a development dependency, so nothing changes for anyone installing
   etymd.
+- 40fc5bd: Two gate fixes (pack 28). A screen override (`CONTENT_GATE`, `COMMIT_MSG_GATE`) naming a
+  missing or non-executable checker now refuses the commit or push, with a line naming the
+  path and the two ways out (point it at an executable etymd, or unset it). Since pack 23 the
+  door announced the misconfiguration on stderr and opened; a hook that passes shows its stderr
+  to nobody in a GUI client, so a typo in the one variable set to tighten the gate turned it
+  off unseen. With the override unset nothing changes: the door uses the `etymd` on PATH, and a
+  machine with none skips the screen silently, as before.
+
+  The pre-push whole-tree trigger (a commit touching the gate, its classifier or a
+  `.shellcheckrc` is checked whole, deletions included) is asked of git by pathspec instead of
+  reading the NUL-delimited touched list as lines. A tracked path holding a newline split into
+  two records, and a name ending in `pre-push` just before the newline forced the whole-tree
+  read for a file that was not the gate. The call clears `GIT_LITERAL_PATHSPECS` so an exported
+  literal mode cannot read the glob as a plain path and take the narrow path in silence.
+
+  Upgrading etymd does not rewrite hooks already installed. Regenerate them with
+  `etymd gates --yes`; `etymd gates` lists any hook it keeps because it was edited by hand.
 
 ## 0.20.0
 
