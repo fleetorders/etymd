@@ -200,7 +200,7 @@ export interface TextClaimsOptions {
    */
   sourceRelative?: boolean
   /**
-   * Source comments only. In a repo with no package manifest anywhere, a `pnpm X` in a comment
+   * Source comments only. In a repo with no package manifest anywhere, a package-manager command in a comment
    * cannot name a script of this repo — it describes a command of the trees this code works on.
    * Skipped and counted; instruction files keep the accusation (they tell agents what to run HERE).
    */
