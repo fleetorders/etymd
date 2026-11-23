@@ -428,3 +428,27 @@ describe("comments written from where their file sits", () => {
     expect(report.findings).toEqual([])
   })
 })
+
+describe("review follow-ups on the skip rules", () => {
+  const ids = (report: LensReport) => report.findings.map((f) => f.id)
+
+  it("keeps a missing file under a real dotted directory a finding", async () => {
+    await write("src/config.d/base.json", "{}\n")
+    await write("src/a.ts", "// reads src/config.d/missing.json at boot\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/a.ts:src/config.d/missing.json"])
+  })
+
+  it("judges a flag value by whole path tokens, not by a longer path's tail", async () => {
+    await write("src/out/.keep", "")
+    await write("backup/src/out/.keep", "")
+    await write(
+      "src/tool.mjs",
+      "// node src/tool.mjs --from src/out/2.json --raw backup/src/out/2.json\nexport {}\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+  })
+})

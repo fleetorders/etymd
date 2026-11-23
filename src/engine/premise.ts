@@ -319,6 +319,11 @@ export async function runPremise(opts: PremiseOptions): Promise<PremiseResult> {
       `${counters.namespacedSkipped} backticked path mention(s) sit directly after a namespace prefix (\`app: \`src/x.ts\`\`) — another repo's tree, not this one; skipped, not flagged.`,
     )
   }
+  if (counters.alternativesSkipped) {
+    disclosures.push(
+      `${counters.alternativesSkipped} slash-joined file name(s) (\`a.ts/b.ts\`) in the task read as a list of alternatives, not one path; skipped, not flagged.`,
+    )
+  }
   if (counters.outsideRepoSkipped) {
     disclosures.push(
       `${counters.outsideRepoSkipped} path(s) the task names start at no directory of this repo — typical of a path quoted from another repository or a clone elsewhere on the machine; outside this repo, not missing here. Skipped, not flagged.`,

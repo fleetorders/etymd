@@ -211,9 +211,19 @@ export interface TextClaimsOptions {
 // Nothing is inside a file, so the slash joins alternatives. Judged on missing claims only — a
 // real `conf.d/x` or `My.app/Contents` resolves before this is ever asked.
 const FILE_SEGMENT_RE = /[^./]\.[A-Za-z][A-Za-z0-9]{0,4}$/
-function isAlternativesList(claim: string): boolean {
+async function isAlternativesList(
+  claim: string,
+  isDir: (prefix: string) => Promise<boolean>,
+): Promise<boolean> {
   const segments = claim.replace(/\/$/, "").split("/")
-  return segments.slice(0, -1).some((seg) => FILE_SEGMENT_RE.test(seg))
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    if (!FILE_SEGMENT_RE.test(segments[i] as string)) continue
+    // A dotted name that is a real directory (`conf.d/`) is a path segment, never a file name:
+    // a missing file beneath it stays a finding.
+    if (await isDir(segments.slice(0, i + 1).join("/"))) continue
+    return true
+  }
+  return false
 }
 
 const TS_FOR_JS: Record<string, string[]> = {
@@ -225,14 +235,24 @@ const TS_FOR_JS: Record<string, string[]> = {
 // `--out build/report.json`, `--from=staged/2.json`: in a usage line the path is a value the
 // caller supplies, shown as an example. Only when EVERY mention of the claim sits behind a flag.
 const FLAG_BEFORE_RE = /(?:^|[\s[(|])--?[A-Za-z][A-Za-z0-9-]*(?:=|\s+)[`"']?$/
+const PATH_CHAR_RE = /[A-Za-z0-9_./-]/
 function isOnlyFlagValue(text: string, claim: string): boolean {
   let at = text.indexOf(claim)
   if (at === -1) return false
+  let mentions = 0
   while (at !== -1) {
-    if (!FLAG_BEFORE_RE.test(text.slice(Math.max(0, at - 80), at))) return false
+    // Only a whole path token is a mention: the claim found as the tail or head of a longer
+    // path (`backup/src/out/2.json`) is that other path's text, judged under its own claim.
+    const before = text[at - 1] ?? ""
+    const after = text[at + claim.length] ?? ""
+    const whole = !PATH_CHAR_RE.test(before) && !/[A-Za-z0-9_/-]/.test(after)
+    if (whole) {
+      if (!FLAG_BEFORE_RE.test(text.slice(Math.max(0, at - 80), at))) return false
+      mentions += 1
+    }
     at = text.indexOf(claim, at + claim.length)
   }
-  return true
+  return mentions > 0
 }
 
 /**
@@ -401,7 +421,7 @@ export async function checkTextClaims(
   }
   let pathFindings = 0
   for (const claim of missing) {
-    if (isAlternativesList(claim)) {
+    if (await isAlternativesList(claim, (prefix) => env.pathResolves(prefix, fromDir))) {
       counters.alternativesSkipped += 1
       examined.push({ kind: "path", value: claim, exists: null })
       continue
