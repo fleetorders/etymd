@@ -208,6 +208,10 @@ export function extractCommandClaims(text: string): CommandClaims {
       if ((pm === "bun" || pm === "yarn" || pm === "pnpm") && !ranExplicit && PM_BUILTINS.has(arg))
         continue
       if (ranExplicit && PM_BUILTINS.has(arg)) continue
+      // `pnpm run` named for itself, and `pnpm run script` with the word standing in for a
+      // name, describe the invocation shape — no script is claimed.
+      if (!ranExplicit && arg === "run") continue
+      if (ranExplicit && (arg === "script" || arg === "scripts")) continue
       scripts.set(arg, token)
     }
   }

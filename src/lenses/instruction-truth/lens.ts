@@ -243,6 +243,11 @@ export const instructionTruthLens: Lens = {
         `${counters.fetchedSkipped} path claim(s) sit beside the URL they are fetched from — another tree's files, unverifiable here; skipped, not flagged.`,
       )
     }
+    if (counters.alternativesSkipped) {
+      disclosures.push(
+        `${counters.alternativesSkipped} slash-joined file name(s) (\`a.ts/b.ts\`) read as a list of alternatives, not one path; skipped, not flagged.`,
+      )
+    }
     if (counters.placeholderSkipped) {
       disclosures.push(
         `${counters.placeholderSkipped} path claim(s) are naming stand-ins (e.g. \`my-custom-skill\`) rather than real references; skipped, not flagged.`,
