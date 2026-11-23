@@ -2,7 +2,7 @@ import path from "node:path"
 
 import type { Finding, Lens, LensContext, LensReport } from "../engine/finding.js"
 import { listRootedDirs, promoteBareTokens } from "../engine/premise.js"
-import { git, readText } from "../core/util.js"
+import { git, readJson, readText } from "../core/util.js"
 import {
   buildTruthEnv,
   checkDecisionRefs,
@@ -141,9 +141,31 @@ export const commentTruthLens: Lens = {
     const env = await buildTruthEnv(root, facts)
     const pathResolves = cachedPathResolve(env.pathResolves)
     const binResolves = cached(env.binResolves)
-    const scopedEnv: TruthEnv = { ...env, pathResolves, binResolves }
+    // A comment speaks for the package its file sits in, declared as a workspace or not (a
+    // `server/` with its own manifest beside an app). Every tracked manifest's scripts count.
+    const knownScripts = new Set(env.knownScripts)
+    const nestedManifests = tracked.filter((rel) => path.basename(rel) === "package.json")
+    for (const rel of nestedManifests) {
+      const pkgJson = await readJson<{ scripts?: Record<string, string> }>(path.join(root, rel))
+      for (const key of Object.keys(pkgJson?.scripts ?? {})) knownScripts.add(key)
+    }
+    const scopedEnv: TruthEnv = {
+      ...env,
+      knownScripts,
+      manifestExists: env.manifestExists || nestedManifests.length > 0,
+      pathResolves,
+      binResolves,
+    }
     const ledger = await loadDecisionLedger(root, facts)
+    // Where a missing path may start and still be about this repo: any directory name the
+    // tracked tree carries, at any depth (a comment is written from where its file sits). A path
+    // starting at a name no directory here has is quoted from another tree — a sibling repo, an
+    // upstream project, a device — and its absence here proves nothing.
     const rootedDirs = await listRootedDirs(env)
+    for (const rel of tracked) {
+      const segments = rel.split("/")
+      for (const segment of segments.slice(0, -1)) rootedDirs.add(segment)
+    }
 
     let filesWithComments = 0
     let commentCount = 0
@@ -202,6 +224,9 @@ export const commentTruthLens: Lens = {
             subject,
             missingPathTier: "gap",
             maxPathFindings: MAX_PATH_FINDINGS_PER_FILE,
+            rootedFirstSegments: rootedDirs,
+            sourceRelative: true,
+            skipCommandsWithoutManifest: true,
             whyCommand:
               "A comment naming a dead command misleads every maintainer and agent who reads the code — the check it describes is silently skipped.",
             actionCommand:
@@ -214,7 +239,13 @@ export const commentTruthLens: Lens = {
         )
         addAll(claims.findings)
         disclosures.push(...claims.disclosures)
-        addAll((await checkDocRefs(scopedEnv, file, LENS_ID, counters, subject)).findings)
+        addAll(
+          (
+            await checkDocRefs(scopedEnv, file, LENS_ID, counters, subject, {
+              userLevelUnverifiable: true,
+            })
+          ).findings,
+        )
         addAll(
           checkDecisionRefs(
             file,
@@ -312,6 +343,31 @@ export const commentTruthLens: Lens = {
     if (counters.absenceSkipped) {
       disclosures.push(
         `${counters.absenceSkipped} well-known doc mention(s) in comments name the doc only to say it deliberately does not exist here (create-this or absence prose) — skipped, not flagged.`,
+      )
+    }
+    if (counters.outsideRepoSkipped) {
+      disclosures.push(
+        `${counters.outsideRepoSkipped} missing path(s) in comments start at no directory this repo has, at the root or above the commenting file — quoted from another tree; skipped, not flagged.`,
+      )
+    }
+    if (counters.alternativesSkipped) {
+      disclosures.push(
+        `${counters.alternativesSkipped} slash-joined file name(s) in comments (\`a.ts/b.ts\`) read as a list of alternatives, not one path; skipped.`,
+      )
+    }
+    if (counters.flagValueSkipped) {
+      disclosures.push(
+        `${counters.flagValueSkipped} missing path(s) in comments appear only as the value of a command-line flag (\`--out build/x.json\`) — a usage example's input; skipped, not flagged.`,
+      )
+    }
+    if (counters.userLevelDocSkipped) {
+      disclosures.push(
+        `${counters.userLevelDocSkipped} bare CLAUDE.md / AGENTS.md mention(s) in comments have no file here and may mean the reader's user-level file — unverifiable from the repo; skipped, not flagged.`,
+      )
+    }
+    if (counters.noManifestCommandsSkipped) {
+      disclosures.push(
+        `${counters.noManifestCommandsSkipped} package-manager command(s) in comments were not checked — this repo has no package manifest, so they describe commands of other trees; skipped.`,
       )
     }
     if (promotionSkips.bareInvocations) {

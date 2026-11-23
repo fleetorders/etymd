@@ -113,6 +113,14 @@ export interface ClaimCounters {
   namespacedSkipped: number
   /** Missing paths starting at no directory of this repo — quoted from elsewhere (task only). */
   outsideRepoSkipped: number
+  /** Slash-joined file names (`a.ts/b.ts`) — a list of alternatives, not one path. */
+  alternativesSkipped: number
+  /** Doc mentions that may mean the reader's user-level file, which no repo can see. */
+  userLevelDocSkipped: number
+  /** Command mentions in a repo with no package manifest at all — they describe other trees. */
+  noManifestCommandsSkipped: number
+  /** Missing paths written only as the value of a command-line flag — a usage example's input. */
+  flagValueSkipped: number
 }
 
 export function emptyCounters(): ClaimCounters {
@@ -130,6 +138,10 @@ export function emptyCounters(): ClaimCounters {
     unresolvableRefs: 0,
     namespacedSkipped: 0,
     outsideRepoSkipped: 0,
+    alternativesSkipped: 0,
+    userLevelDocSkipped: 0,
+    noManifestCommandsSkipped: 0,
+    flagValueSkipped: 0,
   }
 }
 
@@ -179,6 +191,79 @@ export interface TextClaimsOptions {
    * surface only; instruction files keep every backticked span as a claim of this repo.
    */
   treatNamespacedPrefixes?: boolean
+  /**
+   * Source comments only. A comment is written from where its file sits: in a nested package
+   * (`tools/site/src/build.mjs` saying `src/build.mjs`) the path is relative to that package,
+   * whether or not a workspace manifest declares it. With this set, a claim also resolves from
+   * every directory above the claiming file, and a JavaScript import specifier resolves to its
+   * TypeScript source (`./logs.js` written in a file whose sibling is `logs.ts`).
+   */
+  sourceRelative?: boolean
+  /**
+   * Source comments only. In a repo with no package manifest anywhere, a `pnpm X` in a comment
+   * cannot name a script of this repo — it describes a command of the trees this code works on.
+   * Skipped and counted; instruction files keep the accusation (they tell agents what to run HERE).
+   */
+  skipCommandsWithoutManifest?: boolean
+}
+
+// A non-final segment that ends in a file extension: `order.ts/order.data.ts`, `AGENTS.md/CLAUDE.md`.
+// Nothing is inside a file, so the slash joins alternatives. Judged on missing claims only — a
+// real `conf.d/x` or `My.app/Contents` resolves before this is ever asked.
+const FILE_SEGMENT_RE = /[^./]\.[A-Za-z][A-Za-z0-9]{0,4}$/
+function isAlternativesList(claim: string): boolean {
+  const segments = claim.replace(/\/$/, "").split("/")
+  return segments.slice(0, -1).some((seg) => FILE_SEGMENT_RE.test(seg))
+}
+
+const TS_FOR_JS: Record<string, string[]> = {
+  ".js": [".ts", ".tsx"],
+  ".jsx": [".tsx"],
+  ".mjs": [".mts"],
+  ".cjs": [".cts"],
+}
+// `--out build/report.json`, `--from=staged/2.json`: in a usage line the path is a value the
+// caller supplies, shown as an example. Only when EVERY mention of the claim sits behind a flag.
+const FLAG_BEFORE_RE = /(?:^|[\s[(|])--?[A-Za-z][A-Za-z0-9-]*(?:=|\s+)[`"']?$/
+function isOnlyFlagValue(text: string, claim: string): boolean {
+  let at = text.indexOf(claim)
+  if (at === -1) return false
+  while (at !== -1) {
+    if (!FLAG_BEFORE_RE.test(text.slice(Math.max(0, at - 80), at))) return false
+    at = text.indexOf(claim, at + claim.length)
+  }
+  return true
+}
+
+/**
+ * Does a missing path start somewhere this repo has? In a source comment a leading `./` is
+ * relative to the commenting file: `./absent.js` names a sibling (rooted by definition), while
+ * `./vendor-lib/x.wasm` is judged by the directory it names.
+ */
+function startsInRepo(claim: string, opts: TextClaimsOptions): boolean {
+  const rooted = opts.rootedFirstSegments
+  if (!rooted) return true
+  if (!opts.sourceRelative) return rooted.has(claim.split("/")[0] ?? claim)
+  const segments = claim.replace(/^(?:\.\.?\/)+/, "").split("/")
+  if (segments.length < 2) return true
+  return rooted.has(segments[0] as string)
+}
+
+/** The TypeScript sources a JavaScript specifier may stand for (ESM imports name the output). */
+function sourceSpecifierCandidates(claim: string): string[] {
+  const ext = path.extname(claim)
+  return (TS_FOR_JS[ext] ?? []).map((ts) => claim.slice(0, -ext.length) + ts)
+}
+
+/** Every directory above a repo-relative directory, nearest first, the root (".") excluded. */
+function ancestorDirs(fromDir: string): string[] {
+  const out: string[] = []
+  let dir = fromDir
+  while (dir && dir !== "." && dir !== path.dirname(dir)) {
+    out.push(dir)
+    dir = path.dirname(dir)
+  }
+  return out
 }
 
 export interface TextClaimsResult {
@@ -207,6 +292,11 @@ export async function checkTextClaims(
   const { scripts: claimed, filteredSkipped } = extractCommandClaims(file.text)
   counters.filteredSkipped += filteredSkipped
   for (const [script, raw] of claimed) {
+    if (opts.skipCommandsWithoutManifest && !env.manifestExists) {
+      counters.noManifestCommandsSkipped += 1
+      examined.push({ kind: "script", value: script, exists: null })
+      continue
+    }
     if (env.knownScripts.has(script)) {
       examined.push({ kind: "script", value: script, exists: true })
       continue
@@ -252,8 +342,19 @@ export async function checkTextClaims(
   // buildTruthEnv).
   const fromDir = path.dirname(file.path)
   const unresolved: string[] = []
+  const resolvesFromSource = async (claim: string): Promise<boolean> => {
+    if (!opts.sourceRelative) return false
+    const candidates = [claim, ...sourceSpecifierCandidates(claim)]
+    for (const candidate of candidates) {
+      if (candidate !== claim && (await env.pathResolves(candidate, fromDir))) return true
+      for (const dir of ancestorDirs(fromDir)) {
+        if (await pathExists(path.join(env.root, dir, candidate))) return true
+      }
+    }
+    return false
+  }
   for (const claim of paths) {
-    if (await env.pathResolves(claim, fromDir))
+    if ((await env.pathResolves(claim, fromDir)) || (await resolvesFromSource(claim)))
       examined.push({ kind: "path", value: claim, exists: true })
     else unresolved.push(claim)
   }
@@ -300,9 +401,19 @@ export async function checkTextClaims(
   }
   let pathFindings = 0
   for (const claim of missing) {
-    // Outside this repo (task surface only): a path that starts at no directory the repo has
+    if (isAlternativesList(claim)) {
+      counters.alternativesSkipped += 1
+      examined.push({ kind: "path", value: claim, exists: null })
+      continue
+    }
+    if (opts.sourceRelative && isOnlyFlagValue(file.text, claim)) {
+      counters.flagValueSkipped += 1
+      examined.push({ kind: "path", value: claim, exists: null })
+      continue
+    }
+    // Outside this repo (task surface and source comments): a path that starts at no directory the repo has
     // is quoted from elsewhere, and "missing here" would be a false accusation.
-    if (opts.rootedFirstSegments && !opts.rootedFirstSegments.has(claim.split("/")[0] ?? claim)) {
+    if (opts.rootedFirstSegments && !startsInRepo(claim, opts)) {
       counters.outsideRepoSkipped += 1
       examined.push({ kind: "path", value: claim, exists: null })
       continue
@@ -347,6 +458,12 @@ export interface RefsResult {
   examined: ExaminedClaim[]
 }
 
+// Docs a coding agent also reads from the user's own config directory (`~/.claude/CLAUDE.md`,
+// `~/.codex/AGENTS.md`). A source comment naming one bare may mean that file, which no repo
+// carries — unverifiable from here. Instruction files keep the check: there the name is a pointer
+// an agent follows inside this repo.
+const USER_LEVEL_DOCS = new Set(["CLAUDE.md", "AGENTS.md"])
+
 /** Cross-references to well-known docs (AGENTS.md, CLAUDE.md, …) must resolve to real files. */
 export async function checkDocRefs(
   env: TruthEnv,
@@ -354,6 +471,7 @@ export async function checkDocRefs(
   lensId: string,
   counters: ClaimCounters,
   subject = file.path,
+  opts: { userLevelUnverifiable?: boolean } = {},
 ): Promise<RefsResult> {
   const findings: Finding[] = []
   const examined: ExaminedClaim[] = []
@@ -362,6 +480,11 @@ export async function checkDocRefs(
   counters.absenceSkipped += absenceSkipped
   for (const ref of refs) {
     const exists = await pathExists(path.join(env.root, ref))
+    if (!exists && opts.userLevelUnverifiable && USER_LEVEL_DOCS.has(ref)) {
+      counters.userLevelDocSkipped += 1
+      examined.push({ kind: "doc", value: ref, exists: null })
+      continue
+    }
     examined.push({ kind: "doc", value: ref, exists })
     if (exists) continue
     findings.push({
