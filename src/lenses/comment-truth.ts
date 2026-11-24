@@ -142,9 +142,18 @@ export const commentTruthLens: Lens = {
     const pathResolves = cachedPathResolve(env.pathResolves)
     const binResolves = cached(env.binResolves)
     // A comment speaks for the package its file sits in, declared as a workspace or not (a
-    // `server/` with its own manifest beside an app). Every tracked manifest's scripts count.
+    // `server/` with its own manifest beside an app): every tracked manifest's scripts count, as
+    // one flat set — the same monorepo rule instruction files use, and deliberate (a comment may
+    // name a sibling package's script bare). Manifests inside the skipped fixture/vendor
+    // directories are the exception, on the same line that keeps their comments out of the scan:
+    // their scripts describe the fixtures, never this repo's own commands.
     const knownScripts = new Set(env.knownScripts)
-    const nestedManifests = tracked.filter((rel) => path.basename(rel) === "package.json")
+    const nestedManifests = tracked.filter(
+      (rel) =>
+        path.basename(rel) === "package.json" &&
+        !SKIP_DIR_RE.test(rel) &&
+        !SKIP_BASENAME_RE.test(rel),
+    )
     for (const rel of nestedManifests) {
       const pkgJson = await readJson<{ scripts?: Record<string, string> }>(path.join(root, rel))
       for (const key of Object.keys(pkgJson?.scripts ?? {})) knownScripts.add(key)
@@ -347,7 +356,7 @@ export const commentTruthLens: Lens = {
     }
     if (counters.outsideRepoSkipped) {
       disclosures.push(
-        `${counters.outsideRepoSkipped} missing path(s) in comments start at no directory this repo has, at the root or above the commenting file — quoted from another tree; skipped, not flagged.`,
+        `${counters.outsideRepoSkipped} missing path(s) in comments start at no directory name this repo carries, anywhere in its tree — quoted from another tree; skipped, not flagged.`,
       )
     }
     if (counters.alternativesSkipped) {
@@ -362,7 +371,7 @@ export const commentTruthLens: Lens = {
     }
     if (counters.userLevelDocSkipped) {
       disclosures.push(
-        `${counters.userLevelDocSkipped} bare CLAUDE.md / AGENTS.md mention(s) in comments have no file here and may mean the reader's user-level file — unverifiable from the repo; skipped, not flagged.`,
+        `${counters.userLevelDocSkipped} bare mention(s) of CLAUDE.md / AGENTS.md / GEMINI.md in comments have no file here and may mean the reader's user-level file — unverifiable from the repo; skipped, not flagged.`,
       )
     }
     if (counters.noManifestCommandsSkipped) {

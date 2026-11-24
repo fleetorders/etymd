@@ -452,3 +452,89 @@ describe("review follow-ups on the skip rules", () => {
     expect(report.findings).toEqual([])
   })
 })
+
+describe("review follow-ups, round two (2026-11-23)", () => {
+  const ids = (report: LensReport) => report.findings.map((f) => f.id)
+
+  it("reads a flag opening a quoted span as a flag value, not a bare path", async () => {
+    await write(
+      "src/tool.mjs",
+      "// pass --out src/out/2.json, i.e. `--out src/out/2.json`, to override\nexport {}\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/value of a command-line flag/)
+  })
+
+  it("keeps a missing file under a dotted directory of a nested package a finding", async () => {
+    await write("tools/site/config.d/base.json", "{}\n")
+    await write("tools/site/src/a.ts", "// reads config.d/missing.json at boot\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual([
+      "comment-truth/stale-path:tools/site/src/a.ts:config.d/missing.json",
+    ])
+  })
+
+  it("reads a dotted FILE prefix as alternatives — nothing is inside a file", async () => {
+    await write("src/a.ts", "export {}\n")
+    await write("src/notes.ts", "// see src/a.ts/b.ts for the shape\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/list of alternatives/)
+  })
+
+  it("does not let a fixture manifest's scripts satisfy a production comment", async () => {
+    await write("package.json", JSON.stringify({ name: "app", scripts: { build: "x" } }))
+    await write("node_modules/.keep", "")
+    await write(".gitignore", "node_modules\n")
+    await write(
+      "test/fixtures/package.json",
+      JSON.stringify({ name: "fx", scripts: { "old-lint": "x" } }),
+    )
+    await write("src/a.ts", "// run `npm run old-lint` after the sweep\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-command:src/a.ts:old-lint"])
+  })
+
+  it("does not accuse a bare GEMINI.md mention that may be the user-level file", async () => {
+    await write(
+      "scripts/sync.sh",
+      "#!/bin/sh\n# mirrors the rules the agent reads from GEMINI.md\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/user-level file/)
+  })
+
+  it("keeps a finding when the same path also appears bare beside its flag use", async () => {
+    await write(
+      "src/tool.mjs",
+      "// node src/tool.mjs --from src/out/2.json; src/out/2.json holds the map\nexport {}\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/tool.mjs:src/out/2.json"])
+  })
+
+  it("keeps an explicitly relative reference a finding even when its directory is gone", async () => {
+    await write("src/a.ts", "// moved from ./legacy/helper.ts\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/a.ts:./legacy/helper.ts"])
+  })
+
+  it("still checks `pnpm run test` against the manifest — a builtin-named script is a claim", async () => {
+    await write("package.json", JSON.stringify({ name: "app", scripts: { build: "x" } }))
+    await write("node_modules/.keep", "")
+    await write(".gitignore", "node_modules\n")
+    await write("src/a.ts", "// `pnpm run test` is the gate\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-command:src/a.ts:test"])
+  })
+})
