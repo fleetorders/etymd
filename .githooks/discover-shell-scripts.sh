@@ -196,9 +196,11 @@ for entry do
     (zsh|zsh[0-9]*|zsh-[0-9]*)
       printf . >> "$work/zsh-count" || exit 1 ;;
     (ksh|ksh[0-9]*|ksh-[0-9]*|mksh|pdksh|oksh|lksh|ash|yash|posh|csh|tcsh|fish)
-      # Another shell is a script this gate cannot check; it gets its own bucket, announced by
-      # the hook like the zsh exclusion — a coverage hole that is silent is indistinguishable
-      # from coverage.
+      # Another shell is a script this gate does not check — by policy, not always by
+      # necessity: the checker parses ksh (only ash warns per file), so the exclusion is a
+      # choice, and the announcement below says so rather than claiming the checker cannot
+      # read what it can. It gets its own bucket, announced by the hook like the zsh
+      # exclusion — a coverage hole that is silent is indistinguishable from coverage.
       printf . >> "$work/other-count" || exit 1 ;;
     (*)
       # No shebang (data), or an interpreter that is not a shell at all (node, python3, ruby,
@@ -208,4 +210,4 @@ for entry do
       ;;
   esac
 done
-# etymd:generated pack-v34 ef84aee1e2ec0c6f
+# etymd:generated pack-v35 9b3a53f66674f9fe

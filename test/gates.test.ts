@@ -647,6 +647,52 @@ exit 23
     },
   )
 
+  it("PINNED: a SHELLCHECK_OPTS token carrying a glob reaches the checker verbatim — the strip loop does not expand it", async () => {
+    // The unquoted expansion word-splits AND path-expands: a token like pack* was
+    // rewritten to whatever the glob matched in the repo root (package.json sits there)
+    // before the strip loop ever saw it — the caller's option silently replaced by a
+    // filename. Globbing is off for exactly that loop; the word-splitting (one token per
+    // word, as the checker reads them itself) stays. The checker stand-in records the
+    // SHELLCHECK_OPTS it received, token by token.
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await commitAll("chore: script")
+    await gates()
+    await stub(
+      "shellcheck",
+      [
+        "#!/usr/bin/env node",
+        'if (process.argv.includes("--version")) {',
+        '  process.stdout.write("version: 1.0.0\\n")',
+        "  process.exit(0)",
+        "}",
+        'require("node:fs").appendFileSync(process.env.ETYMD_RECORD, JSON.stringify((process.env.SHELLCHECK_OPTS ?? "").split(/ +/)) + "\\n")',
+        "process.exit(0)",
+        "",
+      ].join("\n"),
+    )
+    const log = path.join(dir, "sc-opts.jsonl")
+    const env = await stubEnv({ ETYMD_RECORD: log, SHELLCHECK_OPTS: "pack* --format=gcc extra=1" })
+
+    const { stdout } = await runPrePush(
+      env,
+      update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+    )
+    const tokens = (await fs.readFile(log, "utf8"))
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as string[])
+      .flat()
+    // The token survived as itself — not expanded against the repo root.
+    expect(tokens).toContain("pack*")
+    expect(tokens).not.toContain("package.json")
+    // Multi-word still splits, one token per word.
+    expect(tokens).toContain("extra=1")
+    // The format/severity strip still drops the override and says so out loud.
+    expect(tokens).not.toContain("--format=gcc")
+    expect(stdout).toContain("SHELLCHECK_OPTS")
+  })
+
   it.skipIf(!hasShellcheck)(
     "a style-only script passes the push and keeps its advice",
     async () => {
@@ -1124,6 +1170,43 @@ process.stdout.write("      " + n + "\\n")
       expect(stdout).toContain("the checker changed (1.0.0 → 2.0.0)")
       expect(stdout).toContain("whole tree")
       expect((await recorded()).some((args) => args.includes("./tool/old.sh"))).toBe(true)
+    })
+
+    it("PINNED: the checker stamp is shared by every worktree of the clone — keyed to the common git dir", async () => {
+      // --git-dir is per-worktree: a linked worktree had no stamp of its own, read that
+      // absence as a first adoption, and a checker upgrade never fired its whole-tree
+      // re-read — each worktree baselined its checker independently. The stamp lives in
+      // the COMMON git dir: one stamp, one re-baseline, for every worktree of the clone.
+      await baseRepo()
+      await write("scripts/run", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: script")
+      await gates()
+      // The gates must exist in the pushed tree: a linked worktree sees only committed
+      // files, so the pack is committed before the worktree is created.
+      await pExecFile("git", ["add", ".githooks"], { cwd: dir })
+      await pExecFile("git", ["commit", "-q", "-m", "chore: commit the gates"], {
+        cwd: dir,
+        env: GIT_ENV,
+      })
+      // The common dir carries an OUTDATED stamp — exactly what a checker upgrade leaves
+      // behind — while the linked worktree's private dir has none.
+      await fs.writeFile(path.join(dir, ".git", "etymd-shellcheck-version"), "0.0.1-old\n")
+      const wtPath = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-wt-stamp-"))
+      await pExecFile("git", ["worktree", "add", "--detach", wtPath, "HEAD"], { cwd: dir })
+      await recordShellcheck("1.2.3")
+      const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+      const head = await revParse("HEAD")
+      const refsFile = path.join(dir, ".pushed-refs")
+      await fs.writeFile(refsFile, `refs/heads/main ${head} refs/heads/main ${ZERO}\n`)
+
+      const { stdout } = await pExecFile(
+        "sh",
+        ["-c", 'cd "$1" && exec ".githooks/pre-push" < "$2"', "sh", wtPath, refsFile],
+        { cwd: dir, env },
+      )
+      // The linked worktree's push saw the COMMON stamp and fired the re-baseline line —
+      // under a per-worktree stamp it read its own absence and stayed silent.
+      expect(stdout).toContain("the checker changed (0.0.1-old → 1.2.3)")
     })
 
     it("PINNED: a push with nothing in range does not consume the checker-change re-baseline", async () => {
@@ -2623,6 +2706,12 @@ describe.skipIf(!existsSync(CLI))("etymd gates — the hooks README", () => {
     expect(readme).toContain("this README included")
     expect(readme).toContain("silent no-ops by design")
     expect(readme).toContain("set but does not point at an executable checker is loud")
+    // Each check names its own dependency: the old "only the `screen` calls need etymd"
+    // mis-attributed the truth audit's — a reader without etymd on PATH believed pushes
+    // were truth-audited while the audit step skipped with a line.
+    expect(readme).not.toContain("only the `screen` calls need etymd")
+    expect(readme).toContain("the truth audit needs etymd")
+    expect(readme).toContain("shellcheck` on")
   })
 
   // PINNED: a consumer repo running `prettier --check .` over a fresh install fails without

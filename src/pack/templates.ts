@@ -551,8 +551,11 @@ this README included (see the \`etymd:generated\` stamps at the end of each file
 installs the pack and points git at it by setting \`core.hooksPath\` to \`.githooks\` — that
 setting is machine-local, which is why git runs these hooks in this checkout and not in a plain
 clone; there they sit inert until \`etymd gates\` runs again or you set \`core.hooksPath\` by
-hand. Of the checks inside, only the \`screen\` calls need etymd — the shell correctness and
-audit checks in \`pre-push\` need nothing but their tools being on PATH. Where no checker is
+hand. Of the checks inside, the shell correctness pass in \`pre-push\` needs \`shellcheck\` on
+PATH (absent, it skips with a line naming the install); the truth audit needs etymd itself
+(absent, it skips with a line too — a push from a machine without etymd is screened but not
+truth-audited); the \`screen\` calls need the checker your \`CONTENT_GATE\` and
+\`COMMIT_MSG_GATE\` point at. Where no checker is
 installed (\`CONTENT_GATE\` and \`COMMIT_MSG_GATE\` unset, no etymd on PATH) the screens are
 silent no-ops by design and the commit passes; only an override that is set but does not point
 at an executable checker is loud, and it refuses. A later \`etymd gates\` run overwrites the
@@ -782,9 +785,11 @@ for entry do
     (zsh|zsh[0-9]*|zsh-[0-9]*)
       printf . >> "$work/zsh-count" || exit 1 ;;
     (ksh|ksh[0-9]*|ksh-[0-9]*|mksh|pdksh|oksh|lksh|ash|yash|posh|csh|tcsh|fish)
-      # Another shell is a script this gate cannot check; it gets its own bucket, announced by
-      # the hook like the zsh exclusion — a coverage hole that is silent is indistinguishable
-      # from coverage.
+      # Another shell is a script this gate does not check — by policy, not always by
+      # necessity: the checker parses ksh (only ash warns per file), so the exclusion is a
+      # choice, and the announcement below says so rather than claiming the checker cannot
+      # read what it can. It gets its own bucket, announced by the hook like the zsh
+      # exclusion — a coverage hole that is silent is indistinguishable from coverage.
       printf . >> "$work/other-count" || exit 1 ;;
     (*)
       # No shebang (data), or an interpreter that is not a shell at all (node, python3, ruby,
@@ -940,8 +945,12 @@ if command -v shellcheck >/dev/null 2>&1; then
     # A checker upgrade can flag bytes nobody touched: a new shellcheck release adds checks
     # that fire on scripts already sitting on the remote, and the per-commit read below only
     # re-reads what a commit touches — those findings would wait for each script's next edit.
-    # The checker's own version is stamped inside the git dir (never the working tree, so no
-    # repo grows an untracked file for bookkeeping); when it moves, every commit of this push
+    # The checker's own version is stamped inside the COMMON git dir (never the working tree,
+    # so no repo grows an untracked file for bookkeeping, and never a linked worktree's
+    # private dir: --git-dir is per-worktree, so each worktree would baseline its own checker
+    # version and a checker upgrade would re-read whole only in the worktree that saw it —
+    # --git-common-dir is one stamp shared by every worktree of the clone); when the version
+    # moves, every commit of this push
     # is checked whole — once, after the change, not on every push as the old gate did. A
     # missing stamp is a first adoption, not a change (the adopting push is covered by the
     # gate-install trigger below); a stamp that cannot be read is doubt, and doubt points at
@@ -950,7 +959,7 @@ if command -v shellcheck >/dev/null 2>&1; then
     # whole-tree read instead of trusting a re-baseline that never completed — a write that
     # cannot happen at all only means the next push re-checks whole again — never less
     # coverage.
-    checker_stamp="$(git rev-parse --git-dir 2>/dev/null)/etymd-shellcheck-version"
+    checker_stamp="$(git rev-parse --git-common-dir 2>/dev/null)/etymd-shellcheck-version"
     checker_ver=$(shellcheck --version 2>/dev/null | sed -n 's/^version: //p' | head -n 1)
     force_whole=0
     if [ -f "$checker_stamp" ]; then
@@ -971,7 +980,13 @@ if command -v shellcheck >/dev/null 2>&1; then
     sc_kept=""
     sc_dropped=0
     sc_prev=""
+    # Globbing is OFF for exactly this loop, and back on after it: the unquoted expansion
+    # word-splits AND path-expands, so a token carrying * ? [ would first expand against
+    # the repo root (the hook's cwd) and hand the checker different words than the caller
+    # exported — matched or not, silently. The word-splitting is the point and stays; the
+    # glob side door contradicts the loop's own business, which is exact token handling.
     # shellcheck disable=SC2086  # word-splitting is the point: one option token per word, as shellcheck reads them itself
+    set -f
     for sc_opt in \${SHELLCHECK_OPTS:-}; do
       case "$sc_opt" in
         (-f|-f*|-S|-S*|--format|--severity|--format=*|--severity=*)
@@ -987,6 +1002,7 @@ if command -v shellcheck >/dev/null 2>&1; then
           ;;
       esac
     done
+    set +f
     sc_kept=\${sc_kept# }
     if [ "$sc_dropped" -eq 1 ]; then
       echo "› shellcheck: format/severity override in SHELLCHECK_OPTS ignored — the verdict reads gcc format at style severity"
@@ -1022,14 +1038,16 @@ if command -v shellcheck >/dev/null 2>&1; then
       # name ending in pre-push just before the newline passed for the gate. A leading **/ matches at
       # the root and at every depth. GIT_LITERAL_PATHSPECS, where a caller exports it, would
       # read the glob as a plain path and find nothing — the narrow path, in silence — so that
-      # one call runs with it cleared.
+      # call runs with the variable UNSET (env -u), not set-but-empty: today's git parses an
+      # empty value as unset, but the interface guarantees only the unset state, and a future
+      # git reading any non-NULL value as set would kill the glob trigger silently.
       if git rev-parse -q --verify "\${sha}^1^{commit}" >/dev/null 2>&1; then
         git diff-tree -r -z --name-only --no-commit-id --diff-filter=ACMRT "\${sha}^1" "$sha" > "$shellcheck_tmp/tracked" \\
-          && GIT_LITERAL_PATHSPECS='' git diff-tree -r -z --name-only --no-commit-id "\${sha}^1" "$sha" \\
+          && env -u GIT_LITERAL_PATHSPECS git diff-tree -r -z --name-only --no-commit-id "\${sha}^1" "$sha" \\
             -- ':(glob)**/.shellcheckrc' ':(glob)**/discover-shell-scripts.sh' ':(glob)**/pre-push' > "$shellcheck_tmp/gate-touched"
       else
         git diff-tree -r -z --name-only --no-commit-id --root "$sha" > "$shellcheck_tmp/tracked" \\
-          && GIT_LITERAL_PATHSPECS='' git diff-tree -r -z --name-only --no-commit-id --root "$sha" \\
+          && env -u GIT_LITERAL_PATHSPECS git diff-tree -r -z --name-only --no-commit-id --root "$sha" \\
             -- ':(glob)**/.shellcheckrc' ':(glob)**/discover-shell-scripts.sh' ':(glob)**/pre-push' > "$shellcheck_tmp/gate-touched"
       fi || {
         echo "etymd: cannot enumerate the paths $short changes for shellcheck" >&2
@@ -1135,7 +1153,7 @@ if command -v shellcheck >/dev/null 2>&1; then
         echo "› shellcheck: $((zsh_count)) zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
       fi
       if [ "$other_count" -gt 0 ]; then
-        echo "› shellcheck: $((other_count)) script(s) under another interpreter (ksh, ash, …) — outside the sh dialects; not checked, not failed"
+        echo "› shellcheck: $((other_count)) script(s) under another interpreter (ksh, ash, …) — not in the checked set by policy, not by the checker's reach; not checked, not failed"
       fi
       if [ "$count" -eq 0 ]; then
         echo "› shellcheck: no shell script $where — nothing to check there"
