@@ -269,22 +269,28 @@ export async function checkManifest(
   disclosures.push(...archivedDisclosure(manifest))
 
   // An archived entry still holds its name: a live entry reusing it is a duplicate.
-  const seen = new Set<string>(manifest.archived.map((e) => e.name))
+  const seen = new Set<string>()
   const flaggedDup = new Set<string>()
+  const flagDuplicate = (name: string) => {
+    if (flaggedDup.has(name)) return
+    flaggedDup.add(name)
+    findings.push(
+      finding(
+        `${FLEET_LENS}/duplicate-name:${name}`,
+        "gap",
+        `\`${name}\` is registered more than once`,
+        [`${manifestFile}: ${name} appears twice`],
+        "Resolution is keyed by name — a duplicate makes every lookup, dismiss, and delta ambiguous.",
+        "Rename one of the entries.",
+      ),
+    )
+  }
+  for (const entry of manifest.archived) {
+    if (seen.has(entry.name)) flagDuplicate(entry.name)
+    seen.add(entry.name)
+  }
   for (const entry of manifest.entries) {
-    if (seen.has(entry.name) && !flaggedDup.has(entry.name)) {
-      flaggedDup.add(entry.name)
-      findings.push(
-        finding(
-          `${FLEET_LENS}/duplicate-name:${entry.name}`,
-          "gap",
-          `\`${entry.name}\` is registered more than once`,
-          [`${manifestFile}: ${entry.name} appears twice`],
-          "Resolution is keyed by name — a duplicate makes every lookup, dismiss, and delta ambiguous.",
-          "Rename one of the entries.",
-        ),
-      )
-    }
+    if (seen.has(entry.name)) flagDuplicate(entry.name)
     seen.add(entry.name)
 
     // Trust is a SAFETY PREDICATE gating content screening, so "unanswered" must never collapse
@@ -478,6 +484,10 @@ async function checkCoverage(
   const registered = new Set<string>()
   for (const entry of manifest.entries) {
     if (entry.resolvedRoot) registered.add(await realpathOr(entry.resolvedRoot))
+  }
+  // An archived entry's checkout is registered too: a record is not an unregistered repository.
+  for (const entry of manifest.archived) {
+    if (entry.path) registered.add(await realpathOr(path.resolve(manifest.root, entry.path)))
   }
   registered.add(await realpathOr(manifest.dir))
 

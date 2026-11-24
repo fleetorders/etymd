@@ -485,6 +485,16 @@ describe("fleet — archived entries are records, not members", () => {
     )
   })
 
+  it("two archived entries under one name are a duplicate", async () => {
+    const manifestPath = await writeHub([
+      { ...personal("twin"), archived: true },
+      { ...personal("twin"), archived: "2026-05-01" },
+    ])
+    const manifest = await loadFleetManifest(manifestPath)
+    const check = await checkManifest(manifest)
+    expect(check.findings.map((f) => f.id)).toContain("fleet-manifest/duplicate-name:twin")
+  })
+
   it("a malformed archived value is reported and the entry is read as live", async () => {
     await initRepo("alive", { stateAt: "2026-06-01T09:00:00Z" })
     const manifestPath = await writeHub([{ ...personal("alive"), archived: 7 }])

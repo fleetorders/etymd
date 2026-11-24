@@ -2,7 +2,7 @@ import path from "node:path"
 
 import type { Finding, Lens, LensContext, LensReport } from "../engine/finding.js"
 import { listRootedDirs, promoteBareTokens } from "../engine/premise.js"
-import { git, readJson, readText } from "../core/util.js"
+import { git, pathExists, readJson, readText } from "../core/util.js"
 import {
   buildTruthEnv,
   checkDecisionRefs,
@@ -182,7 +182,6 @@ export const commentTruthLens: Lens = {
     const contextSkips = { example: 0, packaged: 0, sibling: 0, wrapped: 0, nested: 0, upstream: 0 }
     // A missing path that exists under a nested package's own directory was written relative to
     // that package, by a file that does not sit in it (a root script naming a package's file).
-    const trackedSet = new Set(tracked)
     const packageDirs = [
       ...new Set(
         tracked
@@ -195,9 +194,10 @@ export const commentTruthLens: Lens = {
       if (claim.startsWith(".")) return false // dot-relative: about the commenting file's own directory
       const bare = claim.replace(/\/+$/, "")
       if (!bare.includes("/")) return false
-      return packageDirs.some(
-        (d) => trackedSet.has(`${d}/${bare}`) || tracked.some((t) => t.startsWith(`${d}/${bare}/`)),
-      )
+      // Asked of the working tree, like every other path check: a file deleted but still in
+      // the index is gone.
+      for (const d of packageDirs) if (await pathExists(path.join(root, d, bare))) return true
+      return false
     })
     let upstreamRemote = ctx.upstreamRemote
     if (upstreamRemote) {
