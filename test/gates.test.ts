@@ -379,7 +379,9 @@ describe.skipIf(!existsSync(CLI))("etymd gates — shell discovery fails closed"
   it.each([
     ["git", "etymd: could not enumerate the commits being pushed for shellcheck"],
     ["head", "etymd: cannot read tracked file for shellcheck:"],
-    ["grep", "etymd: shell script discovery failed"],
+    // awk is the classifier's matcher: it reads each candidate's interpreter, and a failed
+    // read must block like the failed grep it replaced, never pass as "not a shell script".
+    ["awk", "etymd: shell script discovery failed"],
     ["xargs", "etymd: shell script discovery failed"],
   ])("blocks when %s fails during discovery, even after partial output", async (command, step) => {
     const env = await fixture()
@@ -1000,6 +1002,39 @@ process.stdout.write("      " + n + "\\n")
       expect((await recorded()).some((args) => args.includes("./tool/old.sh"))).toBe(true)
     })
 
+    it("PINNED: a push with nothing in range does not consume the checker-change re-baseline", async () => {
+      // The stamp was written after the per-commit loop whether or not the loop ran. A
+      // deletes-only push (or a terminal run, or a rollback) read nothing, yet baselined the
+      // new checker version — the next real push then skipped the whole-surface re-read.
+      await baseRepo()
+      await write("tool/do.sh", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: a script")
+      await gates()
+      await recordShellcheck("1.0.0")
+      const log = path.join(dir, "shellcheck.jsonl")
+      await runPrePush(
+        await stubEnv({ ETYMD_RECORD: log }),
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      )
+
+      await recordShellcheck("2.0.0")
+      const env = await stubEnv({ ETYMD_RECORD: log })
+      const deletes = await runPrePush(
+        env,
+        `refs/heads/gone ${ZERO} refs/heads/gone ${await revParse("HEAD")}`,
+      )
+      expect(deletes.stdout).toContain("nothing to check")
+
+      await write("docs/notes.md", "# Notes\n")
+      await commitAll("docs: no script touched")
+      const { stdout } = await runPrePush(
+        env,
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      )
+      expect(stdout).toContain("the checker changed (1.0.0 → 2.0.0)")
+      expect(stdout).toContain("whole tree")
+    })
+
     it("PINNED: a refused push does not consume the checker-change re-baseline", async () => {
       // The stamp used to be written before the checks ran, so a push the checker's new
       // version refused still recorded the new version — the retry then read only touched
@@ -1271,11 +1306,13 @@ describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's r
       path.join(dir, ".githooks", "discover-shell-scripts.sh"),
       "utf8",
     )
-    // The checked set: sh, bash, dash — zsh dropped from the character class. The pattern
-    // lives in the classifier file now, which is the point: the hook delegates, the helper
+    // The checked set: sh, bash, dash — zsh has its own arm, never the checked one. The
+    // patterns live in the classifier file, which is the point: the hook delegates, the helper
     // classifies.
-    expect(classifier).toContain("(ba|da)?sh")
-    expect(classifier).not.toContain("(ba|da|z)?sh")
+    const checkedArm = classifier.split("\n").find((l) => l.trim().startsWith("(sh|bash|dash"))
+    expect(checkedArm).toBeDefined()
+    expect(checkedArm).not.toContain("zsh")
+    expect(classifier).toContain("(zsh|")
     // The exclusion is a disclosed skip, not silent absence of coverage.
     expect(hook).toContain("SC1071")
     expect(hook).toContain("zsh script(s) excluded")
@@ -1343,6 +1380,70 @@ describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's r
     // …and the exclusion is disclosed at run time, not silent.
     expect(stdout).toContain("1 script(s) under another interpreter")
     expect(stdout).toContain("not checked, not failed")
+  })
+
+  it("a versioned or suffixed interpreter lands in its family", async () => {
+    // Three near-duplicate patterns matched the interpreter by its exact name, so bash5 and
+    // zsh5 fell through to the "other" bucket: a bash script went unchecked, a zsh one was
+    // announced as some other shell. The name is now read once and classified by family.
+    await baseRepo()
+    await write("tool/five.sh", "#!/usr/local/bin/bash5\necho ok\n")
+    await write("tool/split.sh", "#!/usr/bin/env -S bash -e\necho ok\n")
+    await write("tool/plain.sh", "#!/bin/sh\necho ok\n")
+    await write("tool/five.zsh", "#!/bin/zsh5\necho hi\n")
+    await write("tool/dotted.zsh", "#!/bin/zsh-5.9\necho hi\n")
+    await commitAll("chore: versioned shells")
+    await gates()
+    await recordShellcheck()
+    const log = path.join(dir, "shellcheck.jsonl")
+    const env = await stubEnv({ ETYMD_RECORD: log })
+
+    const { stdout } = await runPrePush(
+      env,
+      update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+    )
+    const calls = await recorded()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.filter((arg) => arg.startsWith("./")).sort()).toEqual([
+      "./tool/five.sh",
+      "./tool/plain.sh",
+      "./tool/split.sh",
+    ])
+    expect(stdout).toContain("2 zsh script(s) excluded")
+    expect(stdout).not.toContain("another interpreter")
+  })
+
+  it("PINNED: Node and Python tools are not a shell coverage hole; a ksh script still is", async () => {
+    // The bare `#!` catch-all put every non-sh shebang in the "other" bucket, so a repo with
+    // Node and Python tools printed a standing "N script(s) under another interpreter (ksh,
+    // ash, …)" line on every push for scripts that were never shell — a line pushers learn to
+    // ignore, the opposite of what an announced hole is for.
+    await baseRepo()
+    await write("tool/do.sh", "#!/bin/sh\necho ok\n")
+    await write("tool/build.mjs", "#!/usr/bin/env node\nconsole.log(1)\n")
+    await write("tool/report.py", "#!/usr/bin/env python3\nprint(1)\n")
+    await write("tool/legacy.pl", "#!/usr/bin/perl -w\nprint 1;\n")
+    await commitAll("chore: mixed tools")
+    await gates()
+    await recordShellcheck()
+    const log = path.join(dir, "shellcheck.jsonl")
+    const env = await stubEnv({ ETYMD_RECORD: log })
+
+    const first = await runPrePush(
+      env,
+      update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+    )
+    expect(first.stdout).not.toContain("another interpreter")
+    expect((await recorded())[0]?.filter((arg) => arg.startsWith("./"))).toEqual(["./tool/do.sh"])
+
+    await write("tool/run.ksh", "#!/bin/ksh\necho hi\n")
+    await write("tool/more.mjs", "#!/usr/bin/env node\nconsole.log(2)\n")
+    await commitAll("chore: a ksh tool")
+    const second = await runPrePush(
+      env,
+      update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+    )
+    expect(second.stdout).toContain("1 script(s) under another interpreter")
   })
 
   it.skipIf(!hasShellcheck)(
@@ -1655,6 +1756,35 @@ describe.skipIf(!existsSync(CLI))("etymd gates — a set-but-unusable override r
     expect(run.stderr).toContain("or unset it")
   })
 
+  it("pre-push names the refusal a configuration error, and refuses before any long step", async () => {
+    // The door used to sit at the end, after the local guard, the package steps and the
+    // materialised audit, and said "advisory screen refused" under a comment promising the
+    // screen never blocks. It now refuses first, in words that separate the configuration
+    // error from the screen's own (advisory) verdict.
+    await bareFixture()
+    await write(
+      ".githooks/pre-push.local",
+      '#!/bin/sh\necho ran > "$(dirname "$0")/../LOCAL_RAN"\n',
+    )
+    await fs.chmod(path.join(dir, ".githooks/pre-push.local"), 0o755)
+
+    const env = { ...process.env, CONTENT_GATE: path.join(dir, "no-such-checker") }
+    const run = await door(".githooks/pre-push", [], env)
+    expect(run.code).toBe(1)
+    expect(run.stderr).toContain("a configuration error refuses the push")
+    expect(run.stderr).not.toContain("advisory screen refused")
+    expect(existsSync(path.join(dir, "LOCAL_RAN"))).toBe(false)
+  })
+
+  it("the way out names any screen-capable checker, not etymd alone", async () => {
+    await bareFixture()
+    for (const hook of ["pre-commit", "commit-msg", "pre-push"]) {
+      const text = await fs.readFile(path.join(dir, ".githooks", hook), "utf8")
+      expect(text).not.toContain("an executable etymd")
+      expect(text).toContain("an executable checker that understands 'screen'")
+    }
+  })
+
   it("pre-commit and commit-msg refuse their broken overrides too", async () => {
     await bareFixture()
 
@@ -1722,6 +1852,22 @@ describe.skipIf(!existsSync(CLI))("etymd gates — the push-time audit reads the
     // where the gap lives and would have refused this clean branch.
     expect(audits[0]?.endsWith(dir)).toBe(false)
     expect(stdout).not.toContain("gap-level finding")
+  })
+
+  it("PINNED: a refused audit leaves no worktree registration behind", async () => {
+    // The exit trap removed the materialised directory but deregistered the worktree only on
+    // the success path, so every refused push left a registration pointing at nothing.
+    await baseRepo()
+    await write("BLOCK", "1\n")
+    await commitAll("chore: a gap the audit refuses")
+    await gates()
+    const env = await pushEnv()
+
+    await expect(
+      runPrePush(env, update("main", await revParse("HEAD"), await revParse("HEAD~1"))),
+    ).rejects.toMatchObject({ code: 1 })
+    const { stdout } = await pExecFile("git", ["worktree", "list", "--porcelain"], { cwd: dir })
+    expect(stdout.split("\n").filter((l) => l.startsWith("worktree "))).toHaveLength(1)
   })
 
   it("PINNED: the audit's worktree carries raw blobs — a converting checkout filter cannot change what is audited", async () => {
@@ -1844,6 +1990,26 @@ describe.skipIf(!existsSync(CLI))("etymd gates — the hooks README", () => {
     expect(readme).toContain("machine-local")
     // Pack-owned and stamped, so regeneration can tell its own file from a stranger's.
     expect(readme).toContain("etymd:generated")
+  })
+
+  it("says the README is generated too, and how the screens degrade with no checker", async () => {
+    // "Everything except this file" sat above the file's own stamp: a reader taking it as leave
+    // to edit got prompted or clobbered by the next run, and a kept edit froze the file. And
+    // the silent no-op of a machine with no checker was stated only inside the hooks, never
+    // in the file a debugging reader opens first.
+    await write("package.json", JSON.stringify({ name: "demo", private: true }) + "\n")
+    await write("AGENTS.md", "# AGENTS.md\n")
+    await pExecFile("git", ["add", "."], { cwd: dir })
+
+    await gates()
+    const readme = (await fs.readFile(path.join(dir, ".githooks/README.md"), "utf8")).replace(
+      /\s+/g,
+      " ",
+    )
+    expect(readme).not.toContain("except this file")
+    expect(readme).toContain("this README included")
+    expect(readme).toContain("silent no-ops by design")
+    expect(readme).toContain("set but does not point at an executable checker is loud")
   })
 
   // PINNED: a consumer repo running `prettier --check .` over a fresh install fails without

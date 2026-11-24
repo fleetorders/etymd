@@ -129,13 +129,38 @@ for entry do
     exit 1
   }
   head -n 1 "$work/head-bytes" > "$work/first-line" || exit 1
-  # Trailing whitespace after the interpreter name is still the interpreter: a tab before a
-  # flag (sh<TAB>-e) or a first line committed with a carriage return must classify, or the
-  # script leaves every bucket — unchecked, unexcluded, undisclosed.
-  st=0
-  grep -qE "^#!.*[/ ](ba|da)?sh([[:space:]].*)?$" "$work/first-line" || st=$?
-  case $st in
-    (0)
+  # The interpreter is read ONCE, as a name: the first word after #! with its directory
+  # stripped, or — where that word is env — the first word after env's own options and NAME=value
+  # settings (env -S bash -e is bash), or — where it is busybox — the applet it runs. One name,
+  # one case below, so a versioned or suffixed build (bash5, zsh-5.9) lands in its family
+  # instead of slipping past three near-duplicate patterns. Spaces, tabs and a trailing carriage
+  # return all separate words: a tab before a flag (sh<TAB>-e) or a first line committed with
+  # CRLF must still classify, or the script leaves every bucket — unchecked, unexcluded,
+  # undisclosed. LC_ALL=C: the line is bytes, possibly not text in the caller's locale. A first
+  # line with no shebang prints nothing.
+  interp=$(LC_ALL=C awk 'NR == 1 {
+      if (substr($0, 1, 2) != "#!") exit
+      line = substr($0, 3)
+      gsub(/[\t\r]/, " ", line)
+      n = split(line, w, " ")
+      i = 1
+      name = w[1]
+      sub(/.*\//, "", name)
+      if (name == "env") {
+        for (i = 2; i <= n; i++) {
+          if (w[i] == "-u" || w[i] == "--unset" || w[i] == "-C" || w[i] == "--chdir" || w[i] == "-P") { i++; continue }
+          if (w[i] ~ /^-/ || w[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) continue
+          break
+        }
+        name = (i <= n) ? w[i] : ""
+        sub(/.*\//, "", name)
+      }
+      if (name == "busybox") name = (i + 1 <= n) ? w[i + 1] : ""
+      print name
+      exit
+    }' "$work/first-line") || exit 1
+  case $interp in
+    (sh|bash|dash|sh[0-9]*|bash[0-9]*|dash[0-9]*|sh-[0-9]*|bash-[0-9]*|dash-[0-9]*)
       case $file in
         (*/*) dir=${file%/*} ;;
         (*) dir=. ;;
@@ -146,26 +171,19 @@ for entry do
       }
       printf "./%s\0" "$file" >> "$work/scripts" || exit 1
       printf . >> "$work/count" || exit 1 ;;
-    (1)
-      st=0
-      grep -qE "^#!.*[/ ]zsh([[:space:]].*)?$" "$work/first-line" || st=$?
-      case $st in
-        (0) printf . >> "$work/zsh-count" || exit 1 ;;
-        (1)
-          # Any other shebang (ksh, ash) is a script this gate cannot check; it gets its own
-          # bucket, announced by the hook like the zsh exclusion — a coverage hole that is
-          # silent is indistinguishable from coverage. A first line with no shebang at all is
-          # data, not a script, and lands in no bucket by design.
-          st=0
-          grep -qE "^#!" "$work/first-line" || st=$?
-          case $st in
-            (0) printf . >> "$work/other-count" || exit 1 ;;
-            (1) ;;
-            (*) exit 1 ;;
-          esac ;;
-        (*) exit 1 ;;
-      esac ;;
-    (*) exit 1 ;;
+    (zsh|zsh[0-9]*|zsh-[0-9]*)
+      printf . >> "$work/zsh-count" || exit 1 ;;
+    (ksh|ksh[0-9]*|ksh-[0-9]*|mksh|pdksh|oksh|lksh|ash|yash|posh|csh|tcsh|fish)
+      # Another shell is a script this gate cannot check; it gets its own bucket, announced by
+      # the hook like the zsh exclusion — a coverage hole that is silent is indistinguishable
+      # from coverage.
+      printf . >> "$work/other-count" || exit 1 ;;
+    (*)
+      # No shebang (data), or an interpreter that is not a shell at all (node, python3, ruby,
+      # perl, deno …): not a shell script, so no bucket and no announcement — counting every
+      # Node or Python tool as a shell coverage hole printed a standing line pushers learned to
+      # ignore, the opposite of what an announced hole is for.
+      ;;
   esac
 done
-# etymd:generated pack-v30 28ef73acfe6160b4
+# etymd:generated pack-v31 c038fb5dda4a5d3c

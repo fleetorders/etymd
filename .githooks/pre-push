@@ -1,6 +1,15 @@
 #!/usr/bin/env sh
 # etymd: correctness gate. Mirrors CI cheapest-first; blocks the push on any failure.
 
+# The content screen at the end of this hook is advisory — its findings never block the push —
+# but an override set to something unusable is a configuration error, and that refuses. Checked
+# here, before every long step, so a typo costs seconds rather than the whole push.
+GATE="${CONTENT_GATE:-$(if [ -x ./dist/cli.js ]; then echo ./dist/cli.js; else command -v etymd || true; fi)}"
+if [ ! -x "$GATE" ] && [ -n "${CONTENT_GATE:-}" ]; then
+  echo "pre-push: CONTENT_GATE is set but not usable: $GATE — point it at an executable checker that understands 'screen', or unset it (a configuration error refuses the push; the advisory screen's own findings never do)" >&2
+  exit 1
+fi
+
 # Repo-owned checks. This file is generated and will be overwritten; `.githooks/pre-push.local`
 # is yours — etymd never reads, writes, or regenerates it. Put project-specific guards there.
 # A guard running tests that build fixture repositories should scrub git's exported GIT_* names
@@ -46,9 +55,9 @@ run_gate npm run test || exit 1
 # the checker cannot parse it (SC1071 is a parser-level error no inline directive can silence),
 # so checking it would fail every push on the parser, not on the script. Excluded — and said so
 # at run time below, because a coverage hole that is silent is indistinguishable from coverage.
-# Any other interpreter (ksh, ash) is the same shape: counted in its own bucket and said so
-# below, never silently unread. Only a first line with no shebang at all lands nowhere — data,
-# not a script.
+# Any other shell (ksh, ash) is the same shape: counted in its own bucket and said so below,
+# never silently unread. A first line with no shebang, or a shebang naming an interpreter that is
+# not a shell (node, python3), lands nowhere — not a shell script, so no coverage hole.
 # The same honesty splits the unreadable: a regular file that exists but cannot be read blocks
 # the push (coverage would otherwise silently shrink), while a tracked path with nothing readable
 # behind it — a submodule entry, a dangling symlink — is counted and said so below as skipped,
@@ -75,10 +84,13 @@ if command -v shellcheck >/dev/null 2>&1; then
     # script, then its fix — passed a tip-only read while the bad commit landed on the remote.
     # An all-zero local sha is a delete (nothing to check). An all-zero REMOTE sha is a new
     # branch: everything the pushed-to remote does not already have is being pushed, so the
-    # range is the local sha minus THAT remote's tracking refs — commits it received were gated
-    # when they landed there. Commits only OTHER remotes hold were gated by nobody (a fetch
-    # runs no hooks), so they stay in the range and are read here. $1 carries the pushed-to
-    # remote's name, but a push can name a URL instead (git push <url>), and --remotes=<url>
+    # range is the local sha minus THAT remote's tracking refs — commits it already holds are
+    # not re-read here. That is a cost bound, not a proof: a commit that reached the remote
+    # ungated (pushed from a clone where these hooks sit inert, or with --no-verify) and was
+    # fetched into this clone stays outside the range — a known gap that only checks running on
+    # the remote's side (CI) can close. Commits only OTHER remotes hold were gated by nobody
+    # (a fetch runs no hooks), so they stay in the range and are read here. $1 carries the
+    # pushed-to remote's name, but a push can name a URL instead (git push <url>), and --remotes=<url>
     # matches no refs — it would negate nothing and check a fresh clone's entire history, the
     # exact cost blowup this range design exists to avoid — so the narrow bound applies only
     # where $1 names a remote this clone has configured; a URL push keeps the wide bound and
@@ -371,17 +383,26 @@ if command -v shellcheck >/dev/null 2>&1; then
     done
     # The re-baseline stamp is written here, after every commit's checks passed: a refused or
     # interrupted push never reaches this line, so the next push re-runs the whole-tree read
-    # rather than trusting a re-baseline that did not complete.
-    printf '%s\n' "$checker_ver" > "$checker_stamp" 2>/dev/null || true
+    # rather than trusting a re-baseline that did not complete. And only when the loop above
+    # read at least one commit: a push with nothing in range (a terminal run, deletes only, a
+    # rollback) never consumed the whole-tree trigger, so stamping the new version there would
+    # baseline a checker upgrade that no whole read ever followed.
+    if [ -n "$shas" ]; then
+      printf '%s\n' "$checker_ver" > "$checker_stamp" 2>/dev/null || true
+    fi
   ) || exit 1
 else
   echo "› shellcheck skipped (not on PATH) — install it to gate this repo's shell scripts"
 fi
 
 # The truth gate reads the bytes BEING PUSHED: each pushed tip is materialised as a detached
-# worktree of its own commit and audited there, the same subject rule the shell gate above
-# applies — and the same raw-blob rule: the worktree is added --no-checkout and populated
-# entry by entry from git's object store (`git cat-file blob`, one process per file — the
+# worktree of its own commit and audited there. The TIP only, unlike the shell gate above,
+# which reads every commit in the range: what the audit judges — whether the instructions
+# describe the repo — is a property of the state a reader checks out, and a lie that an
+# intermediate commit introduced and a later one removed misleads no one at the tip. The cost
+# is the reason it stops there: one materialised tree and one audit per commit would multiply
+# the push by the range length. What the audit shares with the shell gate is the raw-blob
+# rule: the worktree is added --no-checkout and populated entry by entry from git's object store (`git cat-file blob`, one process per file — the
 # price of never converting). A checkout would run every tracked file's smudge filters and
 # let an unrelated one's failure refuse the push, and `git archive` is no way out either:
 # it honours export-ignore (a file so marked would leave the audit silently) and it runs
@@ -395,15 +416,23 @@ fi
 # node_modules is linked into the audit tree (best effort — a committed node_modules path stays
 # the commit's), because a tree without it degrades every command claim the audit cannot resolve
 # to an installed binary into "unverifiable, skipped", and dead commands are exactly what this
-# gate exists to catch. hooksPath is neutralised for the materialisation
+# gate exists to catch. The link cuts the other way too: a binary installed in this checkout
+# but absent from an older pushed tip's dependencies lets that tip's claim resolve — a narrow
+# case (pushing a tip that is not the checkout's HEAD), known and accepted rather than paid for
+# by skipping the link. hooksPath is neutralised for the materialisation
 # itself so no hook of the pushed tree runs as a side effect of this read; the audit inside
 # sees the repo's own config. It runs scrubbed (run_gate): a child git inheriting git's
 # exported names would ignore the worktree it stands in. A push that carries no commits
-# (deletes only) audits nothing, and says so.
+# (deletes only) audits nothing, and says so. Every exit — a refused audit, a failed
+# materialisation, a signal — deregisters the tip's worktree before its directory goes:
+# removing only the directory left a registration pointing at nothing behind every failed
+# push. Only this hook's own worktree is named, never a prune, which would also drop the
+# registrations of the repo's other worktrees whose directories happen to be away.
 if command -v etymd >/dev/null 2>&1; then
   (
     audit_tmp=$(mktemp -d) || exit 1
-    trap 'rm -rf "$audit_tmp"' 0
+    wt=""
+    trap '[ -z "$wt" ] || git -c core.hooksPath=/dev/null worktree remove --force "$wt" >/dev/null 2>&1; rm -rf "$audit_tmp"' 0
     trap 'exit 1' 1 2 3 15
     : > "$audit_tmp/tips" || exit 1
     printf '%s\n' "$refs" | while read -r _lref lsha _rref rsha; do
@@ -454,6 +483,7 @@ if command -v etymd >/dev/null 2>&1; then
         exit 1
       fi
       git -c core.hooksPath=/dev/null worktree remove --force "$wt" >/dev/null 2>&1 || exit 1
+      wt=""
     done
   ) || exit 1
 else
@@ -461,18 +491,15 @@ else
 fi
 
 # Content screen, second pass — the WHOLE TREE rather than one diff. Catches anything committed
-# with --no-verify and anything a rebase or merge brought in from elsewhere. Advisory here (it
-# never blocks the push): the blocking decision belongs at commit time, where the fix is cheap.
-GATE="${CONTENT_GATE:-$(if [ -x ./dist/cli.js ]; then echo ./dist/cli.js; else command -v etymd || true; fi)}"
+# with --no-verify and anything a rebase or merge brought in from elsewhere. Advisory here: its
+# findings never block the push — the blocking decision belongs at commit time, where the fix
+# is cheap. The checker was resolved, and a broken override refused, at the top of this hook.
 if [ -x "$GATE" ]; then
   if ! "$GATE" screen --tree --advisory; then
     "$GATE" screen --help >/dev/null 2>&1 ||
       echo "etymd: this checker does not understand 'screen' (needs etymd 0.11+) — upgrade it, or set CONTENT_GATE to a checker that does." >&2
   fi
-elif [ -n "${CONTENT_GATE:-}" ]; then
-  echo "pre-push: CONTENT_GATE is set but not usable: $GATE — point it at an executable etymd, or unset it (advisory screen refused)" >&2
-  exit 1
 fi
 
 exit 0
-# etymd:generated pack-v30 8520bcca5a4c9de7
+# etymd:generated pack-v31 5e83a2672f9cecc0
