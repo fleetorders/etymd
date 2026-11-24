@@ -14,8 +14,8 @@ export function mentionsOf(text: string, claim: string): { before: string; after
     if (at === -1) break
     from = at + claim.length
     const prev = text[at - 1]
-    // `./x.js` is written with its own leading dot; any other path char before the match means
-    // the claim is the tail of a longer token (`a/src/x.ts` for `src/x.ts`) — not this mention.
+    // A dot-relative claim carries its own leading dot; any other path char before the match
+    // means the claim is the tail of a longer token, not this mention.
     if (isPathChar(prev)) continue
     let end = at + claim.length
     if (text[end] === "/") end += 1
@@ -68,7 +68,7 @@ export function isPackagedMention(before: string, after: string): boolean {
 
 /**
  * The word directly before the mention, when nothing but opening punctuation separates them:
- * "(other-repo src/data/x.json" gives `other-repo`. `carry` is the tail of the previous comment
+ * a repository name written in front of the path gives that name. `carry` is the tail of the previous comment
  * line, used when the mention opens its own line (a name and its path wrapped across two lines).
  */
 export function leadWord(before: string, carry = ""): string | undefined {

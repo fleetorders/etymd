@@ -192,11 +192,12 @@ export interface TextClaimsOptions {
    */
   treatNamespacedPrefixes?: boolean
   /**
-   * Source comments only. A comment is written from where its file sits: in a nested package
-   * (`tools/site/src/build.mjs` saying `src/build.mjs`) the path is relative to that package,
-   * whether or not a workspace manifest declares it. With this set, a claim also resolves from
-   * every directory above the claiming file, and a JavaScript import specifier resolves to its
-   * TypeScript source (`./logs.js` written in a file whose sibling is `logs.ts`).
+   * Source comments only. A comment is written from where its file sits: in a nested package the
+   * path is relative to that package, whether or not a workspace manifest declares it (a file
+   * three directories down may write a path like `src/build.mjs`). With this set, a claim also
+   * resolves from every directory above the claiming file, and a JavaScript import specifier
+   * resolves to its TypeScript source (for example `./logs.js`, written in a file whose sibling
+   * is the `.ts` file of the same name).
    */
   sourceRelative?: boolean
   /**
@@ -257,8 +258,8 @@ function isOnlyFlagValue(text: string, claim: string): boolean {
 
 /**
  * Does a missing path start somewhere this repo has? In a source comment a leading `./` is
- * relative to the commenting file: `./absent.js` names a sibling (rooted by definition), while
- * `./vendor-lib/x.wasm` is judged by the directory it names.
+ * relative to the commenting file: a sibling name such as `./absent.js` is rooted by definition,
+ * while a longer path like `./vendor-lib/x.wasm` is judged by the directory it names.
  */
 function startsInRepo(claim: string, opts: TextClaimsOptions): boolean {
   const rooted = opts.rootedFirstSegments

@@ -252,3 +252,24 @@ that scans `src/` for network calls. Parked on purpose: checks needing a tool ru
 `eslint-disable` that suppresses nothing, an `@ts-expect-error` that types no longer object
 to), opt-in network probes behind a flag defaulting to off, and semantic claims — the only
 tier where a model earns its place, which must never be able to fail CI.
+
+## D-014 — A comment's words decide what a missing path means; archived entries are skipped by name
+
+**Comments.** A missing path in a comment is a stale reference only when the comment points at
+this repository's tree. The lens reads the words beside each mention before it accuses: a path
+introduced as an example, a path placed inside a built artifact, a path written after a sibling
+repository's name, a path that exists under a nested package's own directory, a slash-ended
+phrase cut by a line wrap, and a comment last written by a commit of the fork's upstream remote
+are counted, disclosed and not flagged. A finding is dropped only when every mention of the path
+in that comment reads the same way.
+
+**Archived entries.** A fleet manifest entry may declare `archived`. Every fleet command skips
+such an entry and discloses the count.
+
+**Why:** the reader of a finding list acts on its first few lines. When most lines are wrong, or
+describe a project nobody works in, the list is not read at all, and that costs more than the
+stale references the dropped shapes would have caught.
+
+**Consequences:** recall drops in each named shape, recorded in
+[limitations.md](limitations.md). The upstream rule needs the remote fetched and runs `git blame`
+only on comments that already produced a finding, so a clean file costs nothing extra.

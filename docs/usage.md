@@ -31,7 +31,11 @@ Findings reconcile against the **committed ledger**: the diff shows new / still-
 `--truth`) never marks unexamined findings resolved.
 
 Flags: `--lens <id>` · `--truth` (doctor subset) · `--json` (machine-stable) · `--no-ledger`
-(read-only) · `--fail-on <risk|gap|polish>` (exit non-zero at/above the tier — the CI gate).
+(read-only) · `--fail-on <risk|gap|polish>` (exit non-zero at/above the tier — the CI gate) ·
+`--upstream <remote>` (this repo is a fork of that remote: freshness counts fork-authored commits
+only, and a source comment last written by one of the remote's commits is not checked, because
+the fork inherited it; run `git fetch <remote>` first, an unfetched remote is disclosed and
+ignored).
 
 ### The lenses
 
@@ -209,7 +213,12 @@ Walkthrough of the pieces:
 - **Fork freshness**: an entry with `"upstream": "origin"` is dated on fork-authored commits
   only (`HEAD --not --remotes=origin`) — merged upstream traffic cannot make the fork's state
   look stale, and a pure mirror reads as dormant. A missing remote falls back to the full clock
-  with a disclosure.
+  with a disclosure. The same field keeps the comment lens off comments the fork inherited: a
+  comment last written by a commit of that remote is counted and skipped.
+- **Sibling names**: in a comment, a path written directly after another entry's name
+  (`other-repo src/data/x.json`) is read as that repository's path, not this one's.
+- **Archived entries** (`"archived": "<date>"`) are skipped by every fleet command, with the
+  count disclosed. See [fleet.md](fleet.md).
 - **Findings on the manifest's own entries** (lens id `fleet-manifest`): guarded contract files inside a guarded
   worktree; unregistered guarded-remote checkouts under the fleet root; tracked `/Users/` paths in
   the manifest's own repo; private identifiers in `trust: "public-repo"` entries; guarded-host commit

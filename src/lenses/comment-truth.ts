@@ -35,6 +35,8 @@ const MAX_FILES = 2000
 const MAX_FILE_BYTES = 1_000_000
 const MAX_PATH_FINDINGS_PER_FILE = 10
 const MAX_EVIDENCE_LINES = 3
+// A directory holding one of these is a package: paths written inside it start at its root.
+const PACKAGE_MANIFEST_RE = /(?:^|\/)(?:package\.json|Cargo\.toml|pyproject\.toml|go\.mod)$/
 
 // Directories and basenames whose comments are about fixtures and vendored code, never about this
 // repo's own surface — the paths they name are deliberately nonexistent. Skipped, counted, and
@@ -177,7 +179,26 @@ export const commentTruthLens: Lens = {
     // What a comment says about a missing path decides whether it is a stale reference at all
     // (comment-context.ts); and a comment the fork inherited from its upstream is upstream's to
     // fix. Both are decided per comment, on findings only, so a clean file costs nothing extra.
-    const contextSkips = { example: 0, packaged: 0, sibling: 0, wrapped: 0, upstream: 0 }
+    const contextSkips = { example: 0, packaged: 0, sibling: 0, wrapped: 0, nested: 0, upstream: 0 }
+    // A missing path that exists under a nested package's own directory was written relative to
+    // that package, by a file that does not sit in it (a root script naming a package's file).
+    const trackedSet = new Set(tracked)
+    const packageDirs = [
+      ...new Set(
+        tracked
+          .filter((rel) => PACKAGE_MANIFEST_RE.test(rel))
+          .map((rel) => path.posix.dirname(rel))
+          .filter((d) => d !== "."),
+      ),
+    ]
+    const isInNestedPackage = cached(async (claim: string) => {
+      if (claim.startsWith(".")) return false // dot-relative: about the commenting file's own directory
+      const bare = claim.replace(/\/+$/, "")
+      if (!bare.includes("/")) return false
+      return packageDirs.some(
+        (d) => trackedSet.has(`${d}/${bare}`) || tracked.some((t) => t.startsWith(`${d}/${bare}/`)),
+      )
+    })
     let upstreamRemote = ctx.upstreamRemote
     if (upstreamRemote) {
       const fetched = await git(root, [
@@ -216,16 +237,17 @@ export const commentTruthLens: Lens = {
     }
     const stalePathPrefix = `${LENS_ID}/stale-path:`
     /** Why a missing path in this comment is not a stale reference, or null when it is one. */
-    const contextSkip = (
+    const contextSkip = async (
       span: { text: string },
       rel: string,
       finding: Finding,
       carry: string,
-    ): keyof typeof contextSkips | null => {
+    ): Promise<keyof typeof contextSkips | null> => {
       const prefix = `${stalePathPrefix}${rel}:`
       if (!finding.id.startsWith(prefix)) return null
-      const mentions = mentionsOf(span.text, finding.id.slice(prefix.length))
-      if (!mentions.length) return null
+      const claim = finding.id.slice(prefix.length)
+      const mentions = mentionsOf(span.text, claim)
+      if (!mentions.length) return (await isInNestedPackage(claim)) ? "nested" : null
       if (mentions.every((m) => isExampleMention(m.before))) return "example"
       if (mentions.every((m) => isPackagedMention(m.before, m.after))) return "packaged"
       if (
@@ -240,6 +262,7 @@ export const commentTruthLens: Lens = {
         m.before.lastIndexOf("(") > m.before.lastIndexOf(")") &&
         span.text.trimEnd().endsWith("/")
       if (mentions.every(cutByWrap)) return "wrapped"
+      if (await isInNestedPackage(claim)) return "nested"
       return null
     }
 
@@ -297,7 +320,7 @@ export const commentTruthLens: Lens = {
         const keep = async (fresh: Finding[]): Promise<Finding[]> => {
           const kept: Finding[] = []
           for (const f of fresh) {
-            const why = contextSkip(span, rel, f, carry)
+            const why = await contextSkip(span, rel, f, carry)
             if (why) {
               contextSkips[why] += 1
               continue
@@ -492,6 +515,11 @@ export const commentTruthLens: Lens = {
     if (contextSkips.wrapped) {
       disclosures.push(
         `${contextSkips.wrapped} slash-ended phrase(s) in comments are cut by a line wrap inside an open parenthesis — the phrase continues on the next line; skipped, not flagged.`,
+      )
+    }
+    if (contextSkips.nested) {
+      disclosures.push(
+        `${contextSkips.nested} missing path(s) in comments exist under a nested package's own directory — written relative to that package; treated as true, not flagged.`,
       )
     }
     if (contextSkips.upstream) {

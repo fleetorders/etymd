@@ -452,3 +452,109 @@ describe("review follow-ups on the skip rules", () => {
     expect(report.findings).toEqual([])
   })
 })
+
+describe("what a comment says about a missing path", () => {
+  const ids = (report: LensReport) => report.findings.map((f) => f.id)
+  const gitEnv = {
+    ...process.env,
+    GIT_AUTHOR_NAME: "fixture",
+    GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+    GIT_COMMITTER_NAME: "fixture",
+    GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+  }
+  const gitRun = (...args: string[]) => pExecFile("git", args, { cwd: dir, env: gitEnv })
+
+  async function runWith(extra: Partial<LensContext>): Promise<LensReport> {
+    const facts = await scanProject(dir)
+    return commentTruthLens.run({ root: dir, facts, profile: "solo", baseline: null, ...extra })
+  }
+
+  it("skips a path introduced as an example, and says so", async () => {
+    await write("docs/readme.md", "# docs\n")
+    await write("src/a.ts", "// paints a path like docs/notes/ in bold\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/1 missing path\(s\) in comments are introduced/)
+  })
+
+  it("keeps the finding when one mention of the path is a plain reference", async () => {
+    await write("docs/readme.md", "# docs\n")
+    await write(
+      "src/a.ts",
+      "// a path like docs/notes/ is bold; docs/notes/ is also read at boot\nexport {}\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/a.ts:docs/notes"])
+  })
+
+  it("skips a path the comment places inside a built artifact", async () => {
+    await write("content/source.json", "{}\n")
+    await write("tools/export.mjs", "// reads content/build.json back out of the APK\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/inside a built artifact/)
+  })
+
+  it("skips a path that follows a sibling repository's name, only when the name is a sibling", async () => {
+    await write(
+      "src/a.ts",
+      "// the header copies (other-repo src/data/dev.json) by hand\nexport {}\n",
+    )
+    await gitStage()
+    expect(ids(await runComments())).toEqual([
+      "comment-truth/stale-path:src/a.ts:src/data/dev.json",
+    ])
+    const report = await runWith({ siblingNames: ["other-repo"] })
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/follow the name of another repository/)
+  })
+
+  it("skips a slash-ended phrase cut by a line wrap inside an open parenthesis", async () => {
+    await write("cart/index.ts", "export {}\n")
+    await write(
+      "src/seo.ts",
+      "// private routes (cart/checkout/order/\n// account) stay out of the index\nexport {}\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/cut by a line wrap/)
+  })
+
+  it("treats a path found under a nested package as written from that package", async () => {
+    await write("packages/agent/package.json", JSON.stringify({ name: "agent" }))
+    await write("packages/agent/src/tools/voice.ts", "export {}\n")
+    await write(
+      "scripts/run.ts",
+      "// builds src/tools/voice.ts, then src/tools/absent.ts\nexport {}\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:scripts/run.ts:src/tools/absent.ts"])
+    expect(report.disclosures.join("\n")).toMatch(/under a nested package's own directory/)
+  })
+
+  it("leaves a comment the upstream remote wrote to upstream, and checks the fork's own", async () => {
+    await write("src/a.ts", "// see src/gone.ts for the rest\nexport {}\n")
+    await gitStage()
+    await gitRun("commit", "-q", "-m", "upstream work")
+    await gitRun("update-ref", "refs/remotes/upstream/main", "HEAD")
+    await write("src/b.ts", "// see src/lost.ts for the rest\nexport {}\n")
+    await gitRun("add", "-A")
+    await gitRun("commit", "-q", "-m", "fork work")
+    const report = await runWith({ upstreamRemote: "upstream" })
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/b.ts:src/lost.ts"])
+    expect(report.disclosures.join("\n")).toMatch(/upstream remote `upstream`/)
+  })
+
+  it("says so when the named upstream remote has no fetched refs, and checks everything", async () => {
+    await write("src/a.ts", "// see src/gone.ts for the rest\nexport {}\n")
+    await gitStage()
+    const report = await runWith({ upstreamRemote: "upstream" })
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/a.ts:src/gone.ts"])
+    expect(report.disclosures.join("\n")).toMatch(/has no fetched refs/)
+  })
+})
