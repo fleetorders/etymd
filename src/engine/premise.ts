@@ -104,7 +104,7 @@ const STOP_WORDS = new Set(
     "a an the this that these those it its them all any both each every some your our my their " +
     "and or but to in on at of for with from by as is are was were be will would can could should " +
     "may might must do does did not no so if then than when where which who what how also again " +
-    "now first once twice after before via into over only just too very"
+    "now first once twice after before via into over only just too very script scripts"
   ).split(" "),
 )
 const WRAP_RE = /^([([{"']*)(.*?)([.,;:!?)\]}"']*)$/
@@ -317,6 +317,11 @@ export async function runPremise(opts: PremiseOptions): Promise<PremiseResult> {
   if (counters.namespacedSkipped) {
     disclosures.push(
       `${counters.namespacedSkipped} backticked path mention(s) sit directly after a namespace prefix (\`app: \`src/x.ts\`\`) — another repo's tree, not this one; skipped, not flagged.`,
+    )
+  }
+  if (counters.alternativesSkipped) {
+    disclosures.push(
+      `${counters.alternativesSkipped} slash-joined file name(s) (\`a.ts/b.ts\`) in the task read as a list of alternatives, not one path; skipped, not flagged.`,
     )
   }
   if (counters.outsideRepoSkipped) {

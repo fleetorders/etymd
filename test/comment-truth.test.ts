@@ -334,3 +334,121 @@ describe("offline by construction", () => {
     }
   })
 })
+
+describe("comments written from where their file sits", () => {
+  const ids = (report: LensReport) => report.findings.map((f) => f.id)
+
+  it("resolves a path from the nested package the commenting file belongs to", async () => {
+    await write("tools/site/src/build.mjs", "// Usage: node src/build.mjs\nexport {}\n")
+    await write("tools/site/src/gone.mjs", "// see src/missing.mjs for the rest\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual([
+      "comment-truth/stale-path:tools/site/src/gone.mjs:src/missing.mjs",
+    ])
+  })
+
+  it("reads a JavaScript import specifier as its TypeScript source", async () => {
+    await write("src/logs.ts", "export {}\n")
+    await write("src/index.ts", "// re-exports ./logs.js and ./absent.js\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/index.ts:./absent.js"])
+  })
+
+  it("skips a path that starts at no directory of this repo, and says so", async () => {
+    await write(
+      "src/a.ts",
+      "// mirrors upstream platform/ios/export.h; ours is src/b.ts\nexport {}\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/a.ts:src/b.ts"])
+    expect(report.disclosures.join("\n")).toMatch(
+      /1 missing path\(s\) in comments start at no directory/,
+    )
+  })
+
+  it("reads slash-joined file names as alternatives, not a path", async () => {
+    await write("src/a.ts", "// nothing in order.ts/order.data.ts changes\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/slash-joined file name/)
+  })
+
+  it("skips a path given only as a flag's value in a usage line", async () => {
+    await write("src/out/.keep", "")
+    await write(
+      "src/tool.mjs",
+      "// node src/tool.mjs --from src/out/2.json [--raw=src/out/raw.json]\n// then read src/out/3.json\nexport {}\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/tool.mjs:src/out/3.json"])
+  })
+
+  it("does not accuse a bare CLAUDE.md mention that may be the user-level file", async () => {
+    await write("scripts/sync.sh", "#!/bin/sh\n# writes the pinned rules into CLAUDE.md\n")
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/user-level file/)
+  })
+
+  it("accepts a script of a nested package that no workspace declares", async () => {
+    await write("package.json", JSON.stringify({ name: "app", scripts: { build: "x" } }))
+    await write("node_modules/.keep", "")
+    await write("server/package.json", JSON.stringify({ name: "server", scripts: { dev: "x" } }))
+    await write("server/smoke.mjs", "// `pnpm dev` first, then `pnpm run nope`\nexport {}\n")
+    await write(".gitignore", "node_modules\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-command:server/smoke.mjs:nope"])
+  })
+
+  it("leaves package-manager mentions alone in a repo with no manifest", async () => {
+    await write("guard.sh", "#!/bin/sh\n# `yarn playwright test` counts as a runner here\n")
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/no package manifest/)
+  })
+
+  it("does not read `pnpm run` or a stand-in word as a script name", async () => {
+    await write("package.json", JSON.stringify({ name: "app", scripts: { build: "x" } }))
+    await write("node_modules/.keep", "")
+    await write(".gitignore", "node_modules\n")
+    await write(
+      "src/a.ts",
+      "// never install as a side effect of `pnpm run`; `pnpm run script --` is empty\nexport {}\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+  })
+})
+
+describe("review follow-ups on the skip rules", () => {
+  const ids = (report: LensReport) => report.findings.map((f) => f.id)
+
+  it("keeps a missing file under a real dotted directory a finding", async () => {
+    await write("src/config.d/base.json", "{}\n")
+    await write("src/a.ts", "// reads src/config.d/missing.json at boot\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/a.ts:src/config.d/missing.json"])
+  })
+
+  it("judges a flag value by whole path tokens, not by a longer path's tail", async () => {
+    await write("src/out/.keep", "")
+    await write("backup/src/out/.keep", "")
+    await write(
+      "src/tool.mjs",
+      "// node src/tool.mjs --from src/out/2.json --raw backup/src/out/2.json\nexport {}\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+  })
+})
