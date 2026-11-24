@@ -51,6 +51,14 @@ case ${1-} in
     for record do
       meta=${record%%"$tab"*}
       file=${record#*"$tab"}
+      # A record path must stay inside the tree before anything consumes it: git's own
+      # writers refuse a tree entry whose name carries .., but a hand-forged or corrupted
+      # object reaches ls-tree verbatim, and an escaping name writes outside the tree.
+      case $file in
+        (""|/*|.|..|./*|../*|*/..|*/../*|*/.|*/./*)
+          echo "etymd: tracked path does not stay inside the checked tree: $file" >&2
+          exit 1 ;;
+      esac
       case $file in
         (.shellcheckrc|*/.shellcheckrc) ;;
         (*) continue ;;
@@ -90,6 +98,13 @@ case ${1-} in
     for record do
       meta=${record%%"$tab"*}
       file=${record#*"$tab"}
+      # The same staying-inside guard as --config: the path is consumed below (mkdir, the
+      # blob write) before any later filter can be trusted to neutralise it.
+      case $file in
+        (""|/*|.|..|./*|../*|*/..|*/../*|*/.|*/./*)
+          echo "etymd: tracked path does not stay inside the checked tree: $file" >&2
+          exit 1 ;;
+      esac
       case ${meta%% *} in
         (100644|100755) ;;
         (*) continue ;;
@@ -121,6 +136,13 @@ sha=$4
 shift 4
 for entry do
   file=${entry#"$sha":}
+  # The path is consumed below (the blob read, the mv into the tree): the same
+  # staying-inside guard as the other arms, checked before any byte moves.
+  case $file in
+    (""|/*|.|..|./*|../*|*/..|*/../*|*/.|*/./*)
+      echo "etymd: tracked path does not stay inside the checked tree: $file" >&2
+      exit 1 ;;
+  esac
   # 4096 bytes bound the classifying read — a binary with no newline would otherwise be copied
   # whole into the next step. The second head restores line-1-only semantics, so a shebang
   # embedded on a LATER line of a document cannot match the patterns below.
@@ -186,4 +208,4 @@ for entry do
       ;;
   esac
 done
-# etymd:generated pack-v32 c038fb5dda4a5d3c
+# etymd:generated pack-v32 ef84aee1e2ec0c6f

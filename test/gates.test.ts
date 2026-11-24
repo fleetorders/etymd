@@ -1,8 +1,10 @@
 import { execFile, execSync, spawnSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import { existsSync, promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
+import { deflateSync } from "node:zlib"
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
@@ -15,6 +17,28 @@ const CLI = path.resolve(import.meta.dirname, "..", "dist", "cli.js")
 // stub cannot `exec grep` without recursing into itself, so the binary is resolved once
 // here and baked into the stub. First existing wins; the tests needing it skip without it.
 const realGrep = ["/usr/bin/grep", "/bin/grep"].find((p) => existsSync(p)) ?? ""
+
+// The real git, for the same shape of delegating stub. Resolved through the shell because
+// git lives elsewhere than the fixed system paths on some setups.
+const realGit = (() => {
+  try {
+    return execSync("command -v git", { encoding: "utf8" }).trim()
+  } catch {
+    return ""
+  }
+})()
+
+/** Write a loose object straight into the fixture's object store, bypassing every git writer
+ * (mktree and hash-object refuse or fsck the shapes these tests need): the only way to hand
+ * the gate a tree entry whose name escapes the tree. */
+async function forgeObject(type: string, body: Buffer): Promise<string> {
+  const payload = Buffer.concat([Buffer.from(`${type} ${body.length}\0`), body])
+  const sha = createHash("sha1").update(payload).digest("hex")
+  const obj = path.join(dir, ".git", "objects", sha.slice(0, 2), sha.slice(2))
+  await fs.mkdir(path.dirname(obj), { recursive: true })
+  await fs.writeFile(obj, deflateSync(payload))
+  return sha
+}
 
 let dir: string
 
@@ -410,6 +434,50 @@ exit 23
       stderr: expect.stringContaining(step),
     })
     expect(existsSync(path.join(dir, "shellcheck.jsonl"))).toBe(false)
+  })
+
+  it("PINNED: a staged ls-tree record whose path escapes the tree refuses — every consuming arm", async () => {
+    // --config, --context and --commit each write tracked bytes into the scratch tree at
+    // the record's path; a hand-forged or corrupted tree entry whose name carries .. (git's
+    // own writers refuse it, so it can only arrive as a forged object) would write outside
+    // the tree the gate built. The guard sits before any byte moves, in every arm that
+    // consumes a record path.
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await commitAll("chore: script")
+    await gates()
+    const discover = path.join(dir, ".githooks", "discover-shell-scripts.sh")
+    const tree = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-staging-tree-"))
+    const work = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-staging-work-"))
+    const sha = await revParse("HEAD")
+    const blob = await revParse("HEAD:scripts/run")
+    // --context reads this before its record loop; an invocation without it would exit 1
+    // for a reason this test is not about.
+    await fs.writeFile(path.join(work, "source-names"), "")
+
+    // The control: a plain relative path still stages, as it always has.
+    await pExecFile("sh", [discover, "--commit", work, tree, sha, `${sha}:scripts/run`], {
+      cwd: dir,
+    })
+    expect(existsSync(path.join(tree, "scripts", "run"))).toBe(true)
+
+    const escaping = ["../evil.sh", "a/../../evil.sh", "/abs.sh", "./dot.sh"]
+    for (const bad of escaping) {
+      const res = spawnSync("sh", [discover, "--commit", work, tree, sha, `${sha}:${bad}`], {
+        cwd: dir,
+        encoding: "utf8",
+      })
+      expect(res.status, `--commit must refuse ${bad}`).toBe(1)
+      expect(res.stderr).toContain("does not stay inside")
+    }
+    for (const arm of ["--config", "--context"]) {
+      const res = spawnSync("sh", [discover, arm, work, tree, `100644 ${blob}\t../evil.sh`], {
+        cwd: dir,
+        encoding: "utf8",
+      })
+      expect(res.status, `${arm} must refuse an escaping record path`).toBe(1)
+      expect(res.stderr).toContain("does not stay inside")
+    }
   })
 
   it("PINNED: the pushed commit is the read — a deleted working-tree copy neither dodges the gate nor blocks it", async () => {
@@ -2174,6 +2242,214 @@ describe.skipIf(!existsSync(CLI))("etymd gates — the push-time audit reads the
     // And the audit never ran (the content screen's call is the only etymd invocation).
     const lines = (await fs.readFile(path.join(dir, "audit-paths.log"), "utf8")).trim().split("\n")
     expect(lines.filter((l) => l.startsWith("audit "))).toEqual([])
+  })
+
+  it("PINNED: an exported GIT_DIR cannot blind the audit — the materialisation runs scrubbed", async () => {
+    // git exports GIT_DIR to every hook, and a child git that inherits it ignores its cwd.
+    // Unscrubbed, read-tree wrote the pushing checkout's index while the audit tree's stayed
+    // empty — the audit's git-scoped enumeration then listed nothing and passed over a tree
+    // it never saw (the exact blindness the block comment promises run_gate prevents). The
+    // materialisation, the inner blob writes and the removals now all run through the scrub.
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await write("data.txt", "payload\n")
+    await commitAll("chore: script and data")
+    await gates()
+    const log = path.join(dir, "audit-count.log")
+    await stub(
+      "etymd",
+      [
+        "#!/bin/sh",
+        'if [ "$1" = "--version" ]; then printf "version: 0.0.0-stub\\n"; exit 0; fi',
+        'printf \'audit %s\\n\' "$(git ls-files | wc -l | tr -d "[:space:]")" >> "$ETYMD_RECORD"',
+        "exit 0",
+      ].join("\n") + "\n",
+    )
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      PATH: `${path.join(dir, ".stub-bin")}${path.delimiter}${process.env.PATH}`,
+      ETYMD_RECORD: log,
+      // The live shape: an absolute GIT_DIR pointing at this very repo — what a linked
+      // worktree's push or a caller's export lands on.
+      GIT_DIR: path.join(dir, ".git"),
+    }
+
+    const { stdout } = await runPrePush(
+      env,
+      update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+    )
+    expect(stdout).toContain("the pushed tip")
+    const logText = await fs.readFile(log, "utf8")
+    const auditCount = logText
+      .split("\n")
+      .find((l) => /^audit \d+$/.test(l.trim()))
+      ?.trim()
+    // The audit tree's index was filled: ls-files inside the materialised worktree sees the
+    // tracked files, so the audit read the tree it was handed.
+    expect(auditCount).toBeDefined()
+    expect(Number(auditCount?.split(" ")[1])).toBeGreaterThan(0)
+  })
+
+  it("PINNED: a failed materialisation prints git's own reason, not a bare refusal", async () => {
+    // `worktree add … 2>/dev/null` threw the reason away — a stale lock or a disk condition
+    // left the operator with "could not materialise" and nothing to act on. The stub fails
+    // ONLY the add; every other git call reaches the real binary.
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await commitAll("chore: script")
+    await gates()
+    await stub(
+      "git",
+      [
+        "#!/bin/sh",
+        'case "$*" in',
+        '  (*" worktree add "*) echo "stub: forced worktree add failure" >&2; exit 1 ;;',
+        "esac",
+        `exec "${realGit}" "$@"`,
+        "",
+      ].join("\n"),
+    )
+    const env = await stubEnv()
+
+    const failure = await runPrePush(
+      env,
+      update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+    ).then(
+      () => {
+        throw new Error("expected the failed materialisation to refuse the push")
+      },
+      (error) => error,
+    )
+    expect(failure.code).toBe(1)
+    expect(failure.stderr).toContain("could not materialise")
+    expect(failure.stderr).toContain("git's reason follows")
+    expect(failure.stderr).toContain("stub: forced worktree add failure")
+  })
+
+  it("PINNED: a failed cleanup after a passed audit names the tree and prints git's reason", async () => {
+    // The old success-path remove was `worktree remove --force "$wt" >/dev/null 2>&1 ||
+    // exit 1` — checks all green, then a bare nonzero exit with no diagnosis at all. The
+    // shellcheck cleanup branch got a naming message in the same era; this path now matches
+    // it: the tree, the audited tip, and git's stderr under the refusal.
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await commitAll("chore: script")
+    await gates()
+    await stub(
+      "git",
+      [
+        "#!/bin/sh",
+        'case "$*" in',
+        '  (*" worktree remove "*) echo "stub: forced worktree remove failure" >&2; exit 1 ;;',
+        "esac",
+        `exec "${realGit}" "$@"`,
+        "",
+      ].join("\n"),
+    )
+    const env = await stubEnv()
+
+    const failure = await runPrePush(
+      env,
+      update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+    ).then(
+      () => {
+        throw new Error("expected the failed cleanup to refuse the push")
+      },
+      (error) => error,
+    )
+    expect(failure.code).toBe(1)
+    // The audit itself passed — the refusal is a cleanup failure, and says so.
+    expect(failure.stdout).toContain("the pushed tip")
+    expect(failure.stderr).toContain("could not remove the audited worktree")
+    expect(failure.stderr).toContain("cleanup failed after the audit passed")
+    expect(failure.stderr).toContain("stub: forced worktree remove failure")
+  })
+
+  it("PINNED: a committed node_modules path stays the commit's — no nested graft of the checkout's live tree", async () => {
+    // `ln -s target dir` with an EXISTING directory places the link INSIDE it: a tip that
+    // tracked node_modules/committed.json grew a stray $wt/node_modules/node_modules symlink
+    // to the checkout's live tree, and the audit read today's installed bytes under the
+    // pushed tree's name — neither the commit's nor the intended link's. The link is now
+    // skipped when the tip tracks anything under node_modules/ (skip-with-disclosure, the
+    // failure mode the block comment already names).
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await write("node_modules/committed.json", '{"from":"commit"}\n')
+    await commitAll("chore: script and a committed node_modules file")
+    await gates()
+    const log = path.join(dir, "audit-nm.log")
+    await stub(
+      "etymd",
+      [
+        "#!/bin/sh",
+        'if [ "$1" = "--version" ]; then printf "version: 0.0.0-stub\\n"; exit 0; fi',
+        '[ -e node_modules/committed.json ] && printf "committed-present\\n" >> "$ETYMD_RECORD"',
+        '[ -e node_modules/node_modules ] && printf "nested-link-present\\n" >> "$ETYMD_RECORD"',
+        '[ -L node_modules ] && printf "node_modules-is-link\\n" >> "$ETYMD_RECORD"',
+        "exit 0",
+      ].join("\n") + "\n",
+    )
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      PATH: `${path.join(dir, ".stub-bin")}${path.delimiter}${process.env.PATH}`,
+      ETYMD_RECORD: log,
+    }
+    // The checkout HAS a live node_modules (the link would graft without the guard).
+    await fs.mkdir(path.join(dir, "node_modules", ".bin"), { recursive: true })
+
+    const { stdout } = await runPrePush(
+      env,
+      update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+    )
+    expect(stdout).toContain("the pushed tip")
+    const logText = await fs.readFile(log, "utf8")
+    expect(logText).toContain("committed-present")
+    expect(logText).not.toContain("nested-link-present")
+    expect(logText).not.toContain("node_modules-is-link")
+  })
+
+  it("PINNED: a tree entry whose name escapes the tree refuses the push — no write outside the audit tree", async () => {
+    // git's own writers refuse a tree entry named ../evil.txt, so the object has to be
+    // forged straight into the object store — but once it exists, ls-tree emits it verbatim
+    // and the materialiser would write OUTSIDE the worktree it just built (a deeper ../
+    // chain climbs further). A path the gate cannot safely place is the same class of doubt
+    // as a blob it cannot read: refuse. The fixture carries no shell script, so the audit
+    // materialiser is the consumer that meets the forged entry.
+    await write("package.json", JSON.stringify({ name: "evil", private: true }) + "\n")
+    await write("AGENTS.md", "# AGENTS.md\n")
+    await commitAll("chore: base")
+    await gates()
+    const env = await stubEnv()
+    const blobSha = await forgeObject("blob", Buffer.from("pwned-content\n"))
+    const entry = (mode: string, name: string, sha: string) =>
+      Buffer.concat([Buffer.from(`${mode} ${name}\0`), Buffer.from(sha, "hex")])
+    const treeSha = await forgeObject(
+      "tree",
+      Buffer.concat([
+        entry("100644", "AGENTS.md", await revParse("HEAD:AGENTS.md")),
+        entry("100644", "package.json", await revParse("HEAD:package.json")),
+        entry("100644", "../escaped.txt", blobSha),
+      ]),
+    )
+    const commitSha = await forgeObject(
+      "commit",
+      Buffer.from(
+        `tree ${treeSha}\nauthor t <t@example.invalid> 1700000000 +0000\ncommitter t <t@example.invalid> 1700000000 +0000\n\nchore: forged\n`,
+      ),
+    )
+    await pExecFile("git", ["update-ref", "refs/heads/evil", commitSha], { cwd: dir })
+
+    const failure = await runPrePush(
+      env,
+      `refs/heads/evil ${commitSha} refs/heads/evil ${ZERO}`,
+    ).then(
+      () => {
+        throw new Error("expected the escaping tree entry to refuse the push")
+      },
+      (error) => error,
+    )
+    expect(failure.code).toBe(1)
+    expect(failure.stderr).toContain("could not materialise")
   })
 })
 

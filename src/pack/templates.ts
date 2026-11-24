@@ -621,6 +621,14 @@ case \${1-} in
     for record do
       meta=\${record%%"$tab"*}
       file=\${record#*"$tab"}
+      # A record path must stay inside the tree before anything consumes it: git's own
+      # writers refuse a tree entry whose name carries .., but a hand-forged or corrupted
+      # object reaches ls-tree verbatim, and an escaping name writes outside the tree.
+      case $file in
+        (""|/*|.|..|./*|../*|*/..|*/../*|*/.|*/./*)
+          echo "etymd: tracked path does not stay inside the checked tree: $file" >&2
+          exit 1 ;;
+      esac
       case $file in
         (.shellcheckrc|*/.shellcheckrc) ;;
         (*) continue ;;
@@ -660,6 +668,13 @@ case \${1-} in
     for record do
       meta=\${record%%"$tab"*}
       file=\${record#*"$tab"}
+      # The same staying-inside guard as --config: the path is consumed below (mkdir, the
+      # blob write) before any later filter can be trusted to neutralise it.
+      case $file in
+        (""|/*|.|..|./*|../*|*/..|*/../*|*/.|*/./*)
+          echo "etymd: tracked path does not stay inside the checked tree: $file" >&2
+          exit 1 ;;
+      esac
       case \${meta%% *} in
         (100644|100755) ;;
         (*) continue ;;
@@ -691,6 +706,13 @@ sha=$4
 shift 4
 for entry do
   file=\${entry#"$sha":}
+  # The path is consumed below (the blob read, the mv into the tree): the same
+  # staying-inside guard as the other arms, checked before any byte moves.
+  case $file in
+    (""|/*|.|..|./*|../*|*/..|*/../*|*/.|*/./*)
+      echo "etymd: tracked path does not stay inside the checked tree: $file" >&2
+      exit 1 ;;
+  esac
   # 4096 bytes bound the classifying read — a binary with no newline would otherwise be copied
   # whole into the next step. The second head restores line-1-only semantics, so a shebang
   # embedded on a LATER line of a document cannot match the patterns below.
@@ -1296,8 +1318,9 @@ export function generatePrePushHook(
 # case (pushing a tip that is not the checkout's HEAD), known and accepted rather than paid for
 # by skipping the link. hooksPath is neutralised for the materialisation
 # itself so no hook of the pushed tree runs as a side effect of this read; the audit inside
-# sees the repo's own config. It runs scrubbed (run_gate): a child git inheriting git's
-# exported names would ignore the worktree it stands in. A push that carries no commits
+# sees the repo's own config. The materialisation and the audit both run scrubbed (run_gate):
+# a child git inheriting git's exported names ignores the worktree it stands in, so read-tree
+# would write the pushing checkout's index while the audit tree's stayed empty. A push that carries no commits
 # (deletes only) audits nothing, and says so. Every exit — a refused audit, a failed
 # materialisation, a signal — deregisters the tip's worktree before its directory goes:
 # removing only the directory left a registration pointing at nothing behind every failed
@@ -1307,7 +1330,7 @@ if command -v etymd >/dev/null 2>&1; then
   (
     audit_tmp=$(mktemp -d) || exit 1
     wt=""
-    trap '[ -z "$wt" ] || git -c core.hooksPath=/dev/null worktree remove --force "$wt" >/dev/null 2>&1; rm -rf "$audit_tmp"' 0
+    trap '[ -z "$wt" ] || run_gate git -c core.hooksPath=/dev/null worktree remove --force "$wt" >/dev/null 2>&1; rm -rf "$audit_tmp"' 0
     trap 'exit 1' 1 2 3 15
     : > "$audit_tmp/tips" || exit 1
     printf '%s\\n' "$refs" | while read -r _lref lsha _rref rsha; do
@@ -1324,23 +1347,46 @@ if command -v etymd >/dev/null 2>&1; then
     tab=$(printf '\\t')
     for tip in $tips; do
       wt=$(mktemp -d "$audit_tmp/tip.XXXXXX") || exit 1
-      if ! git -c core.hooksPath=/dev/null worktree add --detach --no-checkout -q "$wt" "$tip" 2>/dev/null \\
-        || ! git -C "$wt" -c core.hooksPath=/dev/null read-tree "$tip" \\
-        || ! git ls-tree -r -z "$tip" > "$audit_tmp/audit-entries"; then
-        echo "✗ etymd audit: could not materialise $(git rev-parse --short "$tip" 2>/dev/null || echo "$tip") for the audit — refusing the push rather than certifying bytes this gate did not read" >&2
+      # Materialised through run_gate, like the audit itself: git exports GIT_DIR and friends
+      # to this hook, and a child git that inherits them ignores its cwd — an unscrubbed
+      # read-tree writes the pushing checkout's REAL index while the audit tree's stays
+      # empty (the audit's enumeration then sees nothing), and an unscrubbed worktree add or
+      # ls-tree acts on the exporting repo instead of this one. Git's own stderr is kept and
+      # printed under the refusal: a stale lock or a disk condition is something an operator
+      # can act on, a bare nonzero is not.
+      if ! run_gate git -c core.hooksPath=/dev/null worktree add --detach --no-checkout -q "$wt" "$tip" 2> "$audit_tmp/materialise.err" \\
+        || ! run_gate git -C "$wt" -c core.hooksPath=/dev/null read-tree "$tip" >> "$audit_tmp/materialise.err" 2>&1 \\
+        || ! run_gate git ls-tree -r -z "$tip" > "$audit_tmp/audit-entries" 2>> "$audit_tmp/materialise.err"; then
+        echo "✗ etymd audit: could not materialise $(git rev-parse --short "$tip" 2>/dev/null || echo "$tip") for the audit — refusing the push rather than certifying bytes this gate did not read; git's reason follows" >&2
+        cat "$audit_tmp/materialise.err" >&2
         exit 1
       fi
       st=0
-      xargs -0 sh -c 'wt=$1; tab=$2; shift 2; for record do
+      xargs -0 sh -c 'wt=$1; tab=$2; shift 2
+        # The same GIT_* scrub as the hook run_gate, inlined: this loop is its own shell, the
+        # function is not in scope, and a cat-file inheriting git exported names would read
+        # the exporting repo objects, not this tip.
+        gate() { env $(env | grep -o "^GIT_[A-Za-z0-9_]*" | sed "s/^/-u /") "$@"; }
+        # A record path must stay inside the worktree: the git writers themselves refuse a
+        # tree entry whose name carries .., but a hand-forged or corrupted object reaches
+        # ls-tree verbatim, and an escaping name writes outside the tree this gate just
+        # built — refuse it like an unreadable entry: bytes this gate cannot safely place
+        # are bytes it will not certify.
+        for record do
           meta=\${record%%"$tab"*}
           file=\${record#*"$tab"}
+          case $file in
+            (""|/*|.|..|./*|../*|*/..|*/../*|*/.|*/./*)
+              echo "etymd: tracked path does not stay inside the audited tree: $file" >&2
+              exit 1 ;;
+          esac
           case \${meta%% *} in (160000) continue ;; esac
           case $file in (*/*) dir=\${file%/*} ;; (*) dir=. ;; esac
           mkdir -p -- "$wt/$dir" || exit 1
           case \${meta%% *} in
-            (120000) ln -s -- "$(git cat-file blob "\${meta##* }")" "$wt/$file" || exit 1 ;;
+            (120000) ln -s -- "$(gate git cat-file blob "\${meta##* }")" "$wt/$file" || exit 1 ;;
             (*)
-              git cat-file blob "\${meta##* }" > "$wt/$file" || exit 1
+              gate git cat-file blob "\${meta##* }" > "$wt/$file" || exit 1
               case \${meta%% *} in (100755) chmod +x "$wt/$file" || exit 1 ;; esac ;;
           esac
         done' sh "$wt" "$tab" < "$audit_tmp/audit-entries" || st=$?
@@ -1348,16 +1394,31 @@ if command -v etymd >/dev/null 2>&1; then
         echo "✗ etymd audit: could not materialise $(git rev-parse --short "$tip" 2>/dev/null || echo "$tip") for the audit — a tracked entry could not be written as its raw blob — refusing the push rather than certifying bytes this gate did not read" >&2
         exit 1
       fi
-      # The checkout's installed binaries, linked in for the audit run (see the block comment):
-      # any failure here only restores the skip-with-disclosure behaviour, never blocks a push.
+      # The checkout's installed binaries, linked in for the audit run (see the block
+      # comment): any failure here only restores the skip-with-disclosure behaviour, never
+      # blocks a push. The link is skipped when the tip tracks anything under node_modules/
+      # itself: \`ln -s target dir\` with an EXISTING directory grafts the link INSIDE it
+      # ($wt/node_modules/node_modules), handing the audit the checkout's live bytes under
+      # the pushed tree's name — a committed node_modules path stays the commit's, exactly
+      # as the block comment claims.
       checkout_root=$(git rev-parse --show-toplevel 2>/dev/null) \\
         && [ -d "$checkout_root/node_modules" ] \\
+        && [ ! -e "$wt/node_modules" ] \\
         && ln -s "$checkout_root/node_modules" "$wt/node_modules" || :
       echo "› etymd audit --no-ledger --fail-on ${failOn} (at $(git rev-parse --short "$tip" 2>/dev/null || echo "$tip"), the pushed tip)"
       if ! (cd "$wt" && run_gate etymd audit --no-ledger --fail-on ${failOn}); then
         exit 1
       fi
-      git -c core.hooksPath=/dev/null worktree remove --force "$wt" >/dev/null 2>&1 || exit 1
+      # The remove on the success path gets the shellcheck cleanup branch's own treatment:
+      # the checks passed, and a cleanup that fails anyway refuses the push NAMING the tree
+      # and the tip it audited, with git's stderr beside it — a bare nonzero exit after a
+      # green audit is a refusal nobody can act on. Run scrubbed like the materialisation:
+      # the trap's own remove (a silent best effort) hits the same hazard.
+      if ! run_gate git -c core.hooksPath=/dev/null worktree remove --force "$wt" >/dev/null 2> "$audit_tmp/remove.err"; then
+        echo "✗ etymd audit: could not remove the audited worktree $wt (tip $(git rev-parse --short "$tip" 2>/dev/null || echo "$tip")) — cleanup failed after the audit passed; refusing the push; git's reason follows" >&2
+        cat "$audit_tmp/remove.err" >&2
+        exit 1
+      fi
       wt=""
     done
   ) || exit 1
