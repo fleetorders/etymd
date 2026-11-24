@@ -260,8 +260,11 @@ describe("comment-truth lens", () => {
     await write("docs/guide.ts", "// The table lives in tables/sizes.json.\n")
     await write("docs/tables/sizes.json", "{}\n")
     // The SAME claim string from a directory that does not carry it: a real finding, whose
-    // probe must not inherit the answer the docs/ probe cached for the identical string.
+    // probe must not inherit the answer the docs/ probe cached for the identical string. Its
+    // own `tables/` (holding another file) keeps the claim rooted where that comment sits —
+    // without it the path would start at no directory there, a skip rather than a finding.
     await write("other/none.ts", "// The table lives in tables/sizes.json.\n")
+    await write("other/tables/widths.json", "{}\n")
     await gitStage()
 
     const report = await runComments()
@@ -464,7 +467,7 @@ describe("review follow-ups, round two (2026-11-23)", () => {
     await gitStage()
     const report = await runComments()
     expect(report.findings).toEqual([])
-    expect(report.disclosures.join("\n")).toMatch(/value of a command-line flag/)
+    expect(report.disclosures.join("\n")).toMatch(/right after a command-line flag/)
   })
 
   it("keeps a missing file under a dotted directory of a nested package a finding", async () => {
@@ -536,5 +539,54 @@ describe("review follow-ups, round two (2026-11-23)", () => {
     await gitStage()
     const report = await runComments()
     expect(ids(report)).toEqual(["comment-truth/stale-command:src/a.ts:test"])
+  })
+})
+
+describe("review follow-ups, round three (2026-11-24)", () => {
+  const ids = (report: LensReport) => report.findings.map((f) => f.id)
+
+  it("roots a comment's paths per file — a directory deep in an unrelated subtree vouches for nothing", async () => {
+    // The outside-repo set took every directory name at any depth, repo-wide: an `ios/` inside
+    // a mobile package made `ios/Bridge.swift` quoted in `server/` read as this repo's.
+    await write("packages/mobile/ios/App.swift", "// app\n")
+    await write("server/a.ts", "// mirrors ios/Bridge.swift upstream\nexport {}\n")
+    await write("packages/mobile/src/b.ts", "// the native half is ios/Bridge.swift\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    // From inside the mobile package `ios/` is where the comment's paths resolve: a finding.
+    expect(ids(report)).toEqual([
+      "comment-truth/stale-path:packages/mobile/src/b.ts:ios/Bridge.swift",
+    ])
+    expect(report.disclosures.join("\n")).toMatch(
+      /1 missing path\(s\) in comments start at no directory/,
+    )
+  })
+
+  it("verifies a script literally named `script` instead of reading the word as a stand-in", async () => {
+    await write(
+      "package.json",
+      JSON.stringify({ name: "app", scripts: { script: "x", build: "x" } }),
+    )
+    await write("node_modules/.keep", "")
+    await write(".gitignore", "node_modules\n")
+    await write(
+      "src/a.ts",
+      "// `pnpm run script` regenerates it, then `pnpm run nope`\nexport {}\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-command:src/a.ts:nope"])
+  })
+
+  it("survives a nested manifest that is not valid JSON", async () => {
+    await write("package.json", JSON.stringify({ name: "app", scripts: { build: "x" } }))
+    await write("node_modules/.keep", "")
+    await write(".gitignore", "node_modules\n")
+    await write("server/package.json", "{ not json\n")
+    await write("src/a.ts", "// `npm run nope` first\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(report.status).toBe("ran")
+    expect(ids(report)).toEqual(["comment-truth/stale-command:src/a.ts:nope"])
   })
 })

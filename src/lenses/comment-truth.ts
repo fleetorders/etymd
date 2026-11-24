@@ -141,12 +141,15 @@ export const commentTruthLens: Lens = {
     const env = await buildTruthEnv(root, facts)
     const pathResolves = cachedPathResolve(env.pathResolves)
     const binResolves = cached(env.binResolves)
-    // A comment speaks for the package its file sits in, declared as a workspace or not (a
-    // `server/` with its own manifest beside an app): every tracked manifest's scripts count, as
-    // one flat set — the same monorepo rule instruction files use, and deliberate (a comment may
-    // name a sibling package's script bare). Manifests inside the skipped fixture/vendor
-    // directories are the exception, on the same line that keeps their comments out of the scan:
-    // their scripts describe the fixtures, never this repo's own commands.
+    // Nested manifests count whether or not a workspace declares them (a `server/` with its own
+    // manifest beside an app), and their scripts are POOLED into one flat set, not scoped to the
+    // package the commenting file sits in: a root comment naming `pnpm dev` defined only in
+    // `server/` is accepted. That is the monorepo rule instruction files use, kept on purpose —
+    // comments name a sibling package's script bare often enough that a per-package reading
+    // would accuse true text, and a false accusation costs more than a missed one. Manifests
+    // inside the skipped fixture/vendor directories are the exception, on the same line that
+    // keeps their comments out of the scan: their scripts describe the fixtures, never this
+    // repo's own commands.
     const knownScripts = new Set(env.knownScripts)
     const nestedManifests = tracked.filter(
       (rel) =>
@@ -166,14 +169,37 @@ export const commentTruthLens: Lens = {
       binResolves,
     }
     const ledger = await loadDecisionLedger(root, facts)
-    // Where a missing path may start and still be about this repo: any directory name the
-    // tracked tree carries, at any depth (a comment is written from where its file sits). A path
-    // starting at a name no directory here has is quoted from another tree — a sibling repo, an
-    // upstream project, a device — and its absence here proves nothing.
-    const rootedDirs = await listRootedDirs(env)
+    // Where a missing path may start and still be about this repo: a directory found where the
+    // comment's paths resolve — the root, a workspace package and their src/ scripts/
+    // (listRootedDirs), or the commenting file's own directory and every directory above it (a
+    // comment is written from where its file sits, so a nested package's comment names paths
+    // relative to that package).
+    // Per file, never repo-wide: almost every repo carries `src`, `test` or `docs` somewhere, so
+    // an any-depth set took nearly every path quoted from another tree as this repo's, and a name
+    // living only in an unrelated subtree (an `ios/` inside a mobile package) vouched for a
+    // comment in `server/`. A path starting anywhere else is quoted from another tree — a sibling
+    // repo, an upstream project, a device — and its absence here proves nothing.
+    const baseRooted = await listRootedDirs(env)
+    const childDirs = new Map<string, Set<string>>()
     for (const rel of tracked) {
       const segments = rel.split("/")
-      for (const segment of segments.slice(0, -1)) rootedDirs.add(segment)
+      for (let i = 0; i < segments.length - 1; i += 1) {
+        const parent = segments.slice(0, i).join("/") || "."
+        let names = childDirs.get(parent)
+        if (!names) childDirs.set(parent, (names = new Set()))
+        names.add(segments[i] as string)
+      }
+    }
+    const rootedByDir = new Map<string, ReadonlySet<string>>()
+    const rootedFor = (rel: string): ReadonlySet<string> => {
+      const fromDir = path.posix.dirname(rel)
+      const hit = rootedByDir.get(fromDir)
+      if (hit) return hit
+      const rooted = new Set([...baseRooted, ...(childDirs.get(".") ?? [])])
+      for (let dir = fromDir; dir !== "."; dir = path.posix.dirname(dir))
+        for (const name of childDirs.get(dir) ?? []) rooted.add(name)
+      rootedByDir.set(fromDir, rooted)
+      return rooted
     }
 
     let filesWithComments = 0
@@ -198,6 +224,7 @@ export const commentTruthLens: Lens = {
       const spans = extractComments(text, style)
       if (!spans.length) continue
       filesWithComments += 1
+      const rootedDirs = rootedFor(rel)
 
       // One finding per (file, claim): the first occurrence names the line, later ones append
       // theirs to the evidence (capped) — 600 comments citing one deleted decision are one
@@ -220,7 +247,7 @@ export const commentTruthLens: Lens = {
       for (const span of spans) {
         commentCount += 1
         const subject = `${rel}:${span.line}`
-        const promoted = promoteBareTokens(span.text, { rootedDirs })
+        const promoted = promoteBareTokens(span.text, { rootedDirs, knownScripts })
         for (const key of Object.keys(promotionSkips) as (keyof typeof promotionSkips)[]) {
           promotionSkips[key] += promoted.skips[key]
         }
@@ -356,7 +383,7 @@ export const commentTruthLens: Lens = {
     }
     if (counters.outsideRepoSkipped) {
       disclosures.push(
-        `${counters.outsideRepoSkipped} missing path(s) in comments start at no directory name this repo carries, anywhere in its tree — quoted from another tree; skipped, not flagged.`,
+        `${counters.outsideRepoSkipped} missing path(s) in comments start at no directory found where the comment's paths resolve (the root, a workspace package, their src/ scripts/, or a directory at or above the commenting file) — quoted from another tree; skipped, not flagged.`,
       )
     }
     if (counters.alternativesSkipped) {
@@ -366,7 +393,7 @@ export const commentTruthLens: Lens = {
     }
     if (counters.flagValueSkipped) {
       disclosures.push(
-        `${counters.flagValueSkipped} missing path(s) in comments appear only as the value of a command-line flag (\`--out build/x.json\`) — a usage example's input; skipped, not flagged.`,
+        `${counters.flagValueSkipped} missing path(s) in comments appear only right after a command-line flag (\`--out build/x.json\`, \`node --watch src/x.ts\`) — the flag's value or a usage line's operand, an example's input either way; skipped, not flagged.`,
       )
     }
     if (counters.userLevelDocSkipped) {

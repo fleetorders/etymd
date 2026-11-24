@@ -84,6 +84,8 @@ export interface PromotionSkips {
 export interface PromotionContext {
   /** Directory names that exist at the root, in a workspace package, or under their src/ scripts/. */
   rootedDirs: ReadonlySet<string>
+  /** The repo's script names: a stop word that IS a script here (`script`) is promoted as one. */
+  knownScripts?: ReadonlySet<string>
 }
 
 export interface PromotedText {
@@ -98,7 +100,10 @@ const CODE_SPAN_RE = /(```[\s\S]*?```|`[^`\n]+`)/g
 // bare form is for code spans, where the backtick itself was the author's signal.
 const RUN_RE = /\b(?:pnpm|yarn|npm|bun)\s+run\s+(?!-)([A-Za-z0-9:._-]+)|\bnpm\s+(?:test|start)\b/g
 const BARE_PM_RE = /\b(?:pnpm|yarn|bun)\s+(?!run\b)(?!-)[A-Za-z0-9:._-]+/g
-// Function words that follow "run" in prose ("npm run the tests") — never script names.
+// Function words that follow "run" in prose ("npm run the tests") — never script names, unless
+// the repo has a script of that literal name (PromotionContext.knownScripts). One list for every
+// surface that promotes prose, the task and source comments alike, deliberately: `script` and
+// `scripts` stand in for a name the same way in both ("npm run scripts", "pnpm run script").
 const STOP_WORDS = new Set(
   (
     "a an the this that these those it its them all any both each every some your our my their " +
@@ -142,7 +147,7 @@ function promoteProse(segment: string, ctx: PromotionContext, skips: PromotionSk
     const core = trail ? m.slice(0, -trail.length) : m
     if (script !== undefined) {
       const name = script.replace(TRAIL_RE, "")
-      if (name.length < 2 || STOP_WORDS.has(name.toLowerCase())) {
+      if (name.length < 2 || (STOP_WORDS.has(name.toLowerCase()) && !ctx.knownScripts?.has(name))) {
         skips.proseScripts += 1
         return m
       }
@@ -228,7 +233,7 @@ export async function runPremise(opts: PremiseOptions): Promise<PremiseResult> {
   // One rooting notion for both halves: where prose dir claims may start, and where a missing
   // path's first segment must start to be plausibly repo-relative at all.
   const rootedDirs = await listRootedDirs(env)
-  const promoted = promoteBareTokens(task, { rootedDirs })
+  const promoted = promoteBareTokens(task, { rootedDirs, knownScripts: env.knownScripts })
   const text = { path: TASK_LABEL, text: promoted.text }
 
   const findings: Finding[] = []

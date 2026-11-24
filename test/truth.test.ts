@@ -38,6 +38,18 @@ async function runTruth(): Promise<ReturnType<typeof instructionTruthLens.run>> 
 }
 
 describe("claim extraction", () => {
+  it("reads a stand-in word as a script name only where the repo has that script", () => {
+    expect([...extractCommandClaims("`pnpm run script`").scripts.keys()]).toEqual([])
+    expect([
+      ...extractCommandClaims("`pnpm run script`", new Set(["script"])).scripts.keys(),
+    ]).toEqual(["script"])
+    // `run` is this match's own group: a bare invocation after an explicit one is still bare.
+    expect([...extractCommandClaims("`pnpm run build && pnpm lint`").scripts.keys()]).toEqual([
+      "build",
+      "lint",
+    ])
+  })
+
   it("extracts script claims from pm invocations, skipping builtins and flagged calls", () => {
     const { scripts, filteredSkipped } = extractCommandClaims(
       [
@@ -681,5 +693,39 @@ describe("instruction-truth path resolution (the false-positive shapes)", () => 
     const report = await runTruth()
     expect(report.findings.filter((f) => f.id.includes("stale-path"))).toEqual([])
     expect(report.disclosures.some((d) => d.includes("gitignored"))).toBe(true)
+  })
+})
+
+describe("instruction files keep the stricter reading (PINNED)", () => {
+  // The comment lens learned five skips (flag values, JS→TS specifiers, bare user-level doc
+  // names, commands in a manifest-less repo, paths quoted from another tree). Every one is
+  // scoped to source comments; an instruction file tells agents what to do HERE, so each shape
+  // stays a finding there. A default flipped later must turn this red, not pass silently.
+  it("accuses every shape the comment lens skips", async () => {
+    await write("src/logs.ts", "export {}\n")
+    await write(
+      "AGENTS.md",
+      [
+        "# AGENTS.md",
+        "",
+        "- Replay a run with node tool.mjs --from `data/report.json`.",
+        "- Logging lives in `src/logs.js`.",
+        "- House rules are in CLAUDE.md.",
+        "- Run `npm run lint` before pushing.",
+        "- The mirror of `platform/ios/export.h` is ours.",
+        "",
+      ].join("\n"),
+    )
+    const report = await runTruth()
+    const ids = report.findings.map((f) => f.id).sort()
+    expect(ids).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("stale-path:AGENTS.md:data/report.json"),
+        expect.stringContaining("src/logs.js"),
+        expect.stringContaining("CLAUDE.md"),
+        expect.stringContaining("stale-command:AGENTS.md:lint"),
+        expect.stringContaining("platform/ios/export.h"),
+      ]),
+    )
   })
 })

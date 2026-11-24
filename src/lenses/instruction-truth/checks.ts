@@ -119,7 +119,11 @@ export interface ClaimCounters {
   userLevelDocSkipped: number
   /** Command mentions in a repo with no package manifest at all — they describe other trees. */
   noManifestCommandsSkipped: number
-  /** Missing paths written only as the value of a command-line flag — a usage example's input. */
+  /**
+   * Missing paths written only right after a command-line flag — the flag's value or, after a
+   * boolean flag, an operand of the usage line (`node --watch src/x.ts`). The text cannot tell
+   * which, so both are skipped: a usage example's input either way, and precision over recall.
+   */
   flagValueSkipped: number
 }
 
@@ -180,10 +184,11 @@ export interface TextClaimsOptions {
   actionPath?: string
   /**
    * Directories a missing path may start from and still be plausibly repo-relative — the root,
-   * workspace packages, and their src/ scripts/. Supplied by the task surface (`etymd premise`)
-   * only: a task quoting a path from ANOTHER repository (a clone elsewhere on the machine) starts where
-   * no directory of this repo does, and its absence here proves nothing. Instruction files keep
-   * the stricter reading — their references are written against this repo.
+   * workspace packages, and their src/ scripts/; for source comments also the directories at and
+   * above the commenting file, per file. Supplied by the task surface (`etymd premise`) and the
+   * comment lens: a task or comment quoting a path from ANOTHER tree starts where no directory of
+   * this repo does, and its absence here proves nothing. Instruction files keep the stricter
+   * reading — their references are written against this repo.
    */
   rootedFirstSegments?: ReadonlySet<string>
   /**
@@ -209,7 +214,10 @@ export interface TextClaimsOptions {
 
 // A non-final segment that ends in a file extension: `order.ts/order.data.ts`, `AGENTS.md/CLAUDE.md`.
 // Nothing is inside a file, so the slash joins alternatives. Judged on missing claims only — a
-// real `conf.d/x` or `My.app/Contents` resolves before this is ever asked.
+// real `conf.d/x` or `My.app/Contents` resolves before this is ever asked. An extension is one
+// to five characters, a letter first (`ts`, `json`, `plist`, `swift`): a longer dotted suffix
+// (`.config`, `.template`, `.backup`) names directories and versions as often as file types, so
+// `web.config/web.template` is judged as one path — a deliberate cut-off, not an oversight.
 const FILE_SEGMENT_RE = /[^./]\.[A-Za-z][A-Za-z0-9]{0,4}$/
 async function isAlternativesList(
   claim: string,
@@ -234,6 +242,9 @@ const TS_FOR_JS: Record<string, string[]> = {
 }
 // `--out build/report.json`, `--from=staged/2.json`: in a usage line the path is a value the
 // caller supplies, shown as an example. Only when EVERY mention of the claim sits behind a flag.
+// Whether the flag takes a value is unknowable from text, so an operand after a boolean flag
+// (`node --watch src/x.ts`) reads the same way — the stated rule is "right after a flag", and the
+// disclosure says so; a dead script named only that way is a missed finding, never a false one.
 // The flag may open a quoted span (`` `--out x.json` ``): a quote or backtick before the dashes
 // is a boundary exactly like whitespace, or that span's own mention would read as a bare path.
 const FLAG_BEFORE_RE = /(?:^|[\s[(|`'"])--?[A-Za-z][A-Za-z0-9-]*(?:=|\s+)[`"']?$/
@@ -313,7 +324,7 @@ export async function checkTextClaims(
   const subject = opts.subject ?? file.path
 
   // Command claims: a script the text tells agents to run must exist somewhere real.
-  const { scripts: claimed, filteredSkipped } = extractCommandClaims(file.text)
+  const { scripts: claimed, filteredSkipped } = extractCommandClaims(file.text, env.knownScripts)
   counters.filteredSkipped += filteredSkipped
   for (const [script, raw] of claimed) {
     if (opts.skipCommandsWithoutManifest && !env.manifestExists) {
