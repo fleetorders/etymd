@@ -2,7 +2,7 @@ import path from "node:path"
 
 import type { Finding, Lens, LensContext, LensReport } from "../engine/finding.js"
 import { listRootedDirs, promoteBareTokens } from "../engine/premise.js"
-import { git, readJson, readText } from "../core/util.js"
+import { git, pathExists, readJson, readText } from "../core/util.js"
 import {
   buildTruthEnv,
   checkDecisionRefs,
@@ -12,6 +12,12 @@ import {
   loadDecisionLedger,
   type TruthEnv,
 } from "./instruction-truth/checks.js"
+import {
+  isExampleMention,
+  isPackagedMention,
+  leadWord,
+  mentionsOf,
+} from "./instruction-truth/comment-context.js"
 import {
   commentStyleFor,
   extractComments,
@@ -29,6 +35,8 @@ const MAX_FILES = 2000
 const MAX_FILE_BYTES = 1_000_000
 const MAX_PATH_FINDINGS_PER_FILE = 10
 const MAX_EVIDENCE_LINES = 3
+// A directory holding one of these is a package: paths written inside it start at its root.
+const PACKAGE_MANIFEST_RE = /(?:^|\/)(?:package\.json|Cargo\.toml|pyproject\.toml|go\.mod)$/
 
 // Directories and basenames whose comments are about fixtures and vendored code, never about this
 // repo's own surface — the paths they name are deliberately nonexistent. Skipped, counted, and
@@ -98,6 +106,7 @@ export const commentTruthLens: Lens = {
   kind: "truth",
   async run(ctx: LensContext): Promise<LensReport> {
     const { root, facts } = ctx
+    const siblingNames = new Set(ctx.siblingNames ?? [])
     if (!facts.git.isRepo) {
       return skippedLens("not a git repository — tracked source files cannot be enumerated")
     }
@@ -167,6 +176,96 @@ export const commentTruthLens: Lens = {
       for (const segment of segments.slice(0, -1)) rootedDirs.add(segment)
     }
 
+    // What a comment says about a missing path decides whether it is a stale reference at all
+    // (comment-context.ts); and a comment the fork inherited from its upstream is upstream's to
+    // fix. Both are decided per comment, on findings only, so a clean file costs nothing extra.
+    const contextSkips = { example: 0, packaged: 0, sibling: 0, wrapped: 0, nested: 0, upstream: 0 }
+    // A missing path that exists under a nested package's own directory was written relative to
+    // that package, by a file that does not sit in it (a root script naming a package's file).
+    const packageDirs = [
+      ...new Set(
+        tracked
+          .filter((rel) => PACKAGE_MANIFEST_RE.test(rel))
+          .map((rel) => path.posix.dirname(rel))
+          .filter((d) => d !== "."),
+      ),
+    ]
+    const isInNestedPackage = cached(async (claim: string) => {
+      if (claim.startsWith(".")) return false // dot-relative: about the commenting file's own directory
+      const bare = claim.replace(/\/+$/, "")
+      if (!bare.includes("/")) return false
+      // Asked of the working tree, like every other path check: a file deleted but still in
+      // the index is gone.
+      for (const d of packageDirs) if (await pathExists(path.join(root, d, bare))) return true
+      return false
+    })
+    let upstreamRemote = ctx.upstreamRemote
+    if (upstreamRemote) {
+      const fetched = await git(root, [
+        "for-each-ref",
+        "--count=1",
+        `refs/remotes/${upstreamRemote}`,
+      ])
+      if (!fetched) {
+        disclosures.push(
+          `upstream remote \`${upstreamRemote}\` has no fetched refs — comments inherited from it could not be told apart and were checked like the rest.`,
+        )
+        upstreamRemote = undefined
+      }
+    }
+    const upstreamCommit = cached(async (sha: string) => {
+      if (/^0+$/.test(sha)) return false // not committed yet: this checkout's own work
+      // Empty output: nothing of this commit lies outside the upstream remote's refs.
+      return (
+        (await git(root, ["rev-list", "-n", "1", sha, "--not", `--remotes=${upstreamRemote}`])) ===
+        ""
+      )
+    })
+    const writtenUpstream = async (rel: string, first: number, last: number): Promise<boolean> => {
+      if (!upstreamRemote) return false
+      const blame = await git(root, ["blame", "--porcelain", "-L", `${first},${last}`, "--", rel])
+      if (!blame) return false
+      const shas = new Set(
+        blame
+          .split("\n")
+          .map((line) => /^([0-9a-f]{40}) \d+ \d+/.exec(line)?.[1])
+          .filter((sha): sha is string => Boolean(sha)),
+      )
+      if (!shas.size) return false
+      for (const sha of shas) if (!(await upstreamCommit(sha))) return false
+      return true
+    }
+    const stalePathPrefix = `${LENS_ID}/stale-path:`
+    /** Why a missing path in this comment is not a stale reference, or null when it is one. */
+    const contextSkip = async (
+      span: { text: string },
+      rel: string,
+      finding: Finding,
+      carry: string,
+    ): Promise<keyof typeof contextSkips | null> => {
+      const prefix = `${stalePathPrefix}${rel}:`
+      if (!finding.id.startsWith(prefix)) return null
+      const claim = finding.id.slice(prefix.length)
+      const mentions = mentionsOf(span.text, claim)
+      if (!mentions.length) return (await isInNestedPackage(claim)) ? "nested" : null
+      if (mentions.every((m) => isExampleMention(m.before))) return "example"
+      if (mentions.every((m) => isPackagedMention(m.before, m.after))) return "packaged"
+      if (
+        siblingNames.size &&
+        mentions.every((m) => siblingNames.has(leadWord(m.before, carry) ?? ""))
+      )
+        return "sibling"
+      // "(cart/checkout/…/auth/" cut by the line wrap inside an open parenthesis: the phrase
+      // continues on the next line, so the token is not the whole of what was written.
+      const cutByWrap = (m: { before: string; after: string }) =>
+        m.after.trim() === "" &&
+        m.before.lastIndexOf("(") > m.before.lastIndexOf(")") &&
+        span.text.trimEnd().endsWith("/")
+      if (mentions.every(cutByWrap)) return "wrapped"
+      if (await isInNestedPackage(claim)) return "nested"
+      return null
+    }
+
     let filesWithComments = 0
     let commentCount = 0
     let unreadable = 0
@@ -208,9 +307,33 @@ export const commentTruthLens: Lens = {
         }
       }
 
+      let previous: { text: string; line: number } | undefined
       for (const span of spans) {
         commentCount += 1
         const subject = `${rel}:${span.line}`
+        const lastLine = span.line + span.text.split("\n").length - 1
+        // The previous comment's tail counts as this one's lead-in only when it is the line
+        // directly above — one sentence wrapped across two line comments.
+        const carry = previous && previous.line === span.line - 1 ? previous.text : ""
+        previous = { text: span.text, line: lastLine }
+        let inherited: boolean | undefined
+        const keep = async (fresh: Finding[]): Promise<Finding[]> => {
+          const kept: Finding[] = []
+          for (const f of fresh) {
+            const why = await contextSkip(span, rel, f, carry)
+            if (why) {
+              contextSkips[why] += 1
+              continue
+            }
+            inherited ??= await writtenUpstream(rel, span.line, lastLine)
+            if (inherited) {
+              contextSkips.upstream += 1
+              continue
+            }
+            kept.push(f)
+          }
+          return kept
+        }
         const promoted = promoteBareTokens(span.text, { rootedDirs })
         for (const key of Object.keys(promotionSkips) as (keyof typeof promotionSkips)[]) {
           promotionSkips[key] += promoted.skips[key]
@@ -237,27 +360,31 @@ export const commentTruthLens: Lens = {
           },
           counters,
         )
-        addAll(claims.findings)
+        addAll(await keep(claims.findings))
         disclosures.push(...claims.disclosures)
         addAll(
-          (
-            await checkDocRefs(scopedEnv, file, LENS_ID, counters, subject, {
-              userLevelUnverifiable: true,
-            })
-          ).findings,
+          await keep(
+            (
+              await checkDocRefs(scopedEnv, file, LENS_ID, counters, subject, {
+                userLevelUnverifiable: true,
+              })
+            ).findings,
+          ),
         )
         addAll(
-          checkDecisionRefs(
-            file,
-            ledger,
-            {
-              lensId: LENS_ID,
-              subject,
-              why: "The comment cites a ruling the decision record cannot back — a reader looking for the reasoning finds nothing.",
-              action: "Fix the reference, or record the decision it meant to cite.",
-            },
-            counters,
-          ).findings,
+          await keep(
+            checkDecisionRefs(
+              file,
+              ledger,
+              {
+                lensId: LENS_ID,
+                subject,
+                why: "The comment cites a ruling the decision record cannot back — a reader looking for the reasoning finds nothing.",
+                action: "Fix the reference, or record the decision it meant to cite.",
+              },
+              counters,
+            ).findings,
+          ),
         )
       }
       findings.push(...byId.values())
@@ -368,6 +495,36 @@ export const commentTruthLens: Lens = {
     if (counters.noManifestCommandsSkipped) {
       disclosures.push(
         `${counters.noManifestCommandsSkipped} package-manager command(s) in comments were not checked — this repo has no package manifest, so they describe commands of other trees; skipped.`,
+      )
+    }
+    if (contextSkips.example) {
+      disclosures.push(
+        `${contextSkips.example} missing path(s) in comments are introduced as examples ("a path like …", "e.g. …") — shapes, not references; skipped, not flagged.`,
+      )
+    }
+    if (contextSkips.packaged) {
+      disclosures.push(
+        `${contextSkips.packaged} missing path(s) in comments are placed inside a built artifact ("… out of the APK") — laid out by the build, not by this tree; skipped, not flagged.`,
+      )
+    }
+    if (contextSkips.sibling) {
+      disclosures.push(
+        `${contextSkips.sibling} missing path(s) in comments directly follow the name of another repository in this fleet — that repository's paths, not this one's; skipped, not flagged.`,
+      )
+    }
+    if (contextSkips.wrapped) {
+      disclosures.push(
+        `${contextSkips.wrapped} slash-ended phrase(s) in comments are cut by a line wrap inside an open parenthesis — the phrase continues on the next line; skipped, not flagged.`,
+      )
+    }
+    if (contextSkips.nested) {
+      disclosures.push(
+        `${contextSkips.nested} missing path(s) in comments exist under a nested package's own directory — written relative to that package; treated as true, not flagged.`,
+      )
+    }
+    if (contextSkips.upstream) {
+      disclosures.push(
+        `${contextSkips.upstream} finding(s) sit in comments last written by a commit of the upstream remote \`${ctx.upstreamRemote}\` — inherited, not this fork's to fix; skipped, not flagged.`,
       )
     }
     if (promotionSkips.bareInvocations) {

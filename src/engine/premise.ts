@@ -114,8 +114,8 @@ const TRAIL_RE = /[.,;:!?)\]}"']*$/
 
 /**
  * People do not backtick paths in a prompt. Promote the bare mentions the claim extractors would
- * otherwise treat as prose — `src/x.ts`, `docs/design/`, `npm run typecheck` — into code spans, leaving
- * anything already in a code span untouched. Precision over recall: only what an instruction
+ * otherwise treat as prose, such as `src/x.ts`, `docs/design/` and `npm run typecheck`, into code
+ * spans, leaving anything already in a code span untouched. Precision over recall: only what an instruction
  * file's extractor would accept is promoted, and every class left as prose is counted.
  */
 export function promoteBareTokens(text: string, ctx: PromotionContext): PromotedText {

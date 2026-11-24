@@ -417,7 +417,7 @@ export function extractPathClaims(text: string, opts: PathClaimOptions = {}): Pa
 }
 
 export interface DecisionRefs {
-  /** Decision number → the id as first written (`D-014`). Only refs claiming THIS repo's record. */
+  /** Decision number → the id as first written, zero padding kept. Only refs claiming THIS repo's record. */
   refs: Map<number, string>
   /** Refs whose every mention names another record (`peer D-050`) — skipped, counted, disclosed. */
   qualifiedSkipped: number
