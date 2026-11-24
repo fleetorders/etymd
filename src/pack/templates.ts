@@ -492,6 +492,14 @@ exit 0
  * push gate looks unreachable rather than uninstalled (observed in review). Markdown, stamped
  * like the hooks so regeneration treats it as pack-owned; a hand-written README is kept like
  * any other unstamped file.
+ *
+ * The blank line before the stamp is load-bearing: prettier's markdown formatter separates a
+ * trailing block-level HTML comment from the paragraph above it, so a consumer running
+ * `prettier --check .` over a fresh install fails on this file without it — and "fixing" the
+ * format by hand breaks the stamp's digest, which reclassifies the file as hand-edited and
+ * silently freezes it out of every later regeneration. The file is emitted in the one shape
+ * the formatter and the stamp agree on, whichever side of the formatter's blank-line
+ * behavior a consumer runs.
  */
 export function generateHooksReadme(): string {
   return stampGenerated(
@@ -507,6 +515,7 @@ checks in \`pre-push\` need nothing but their tools being on PATH. A later \`ety
 overwrites the generated hooks (it asks before clobbering hand-edited ones), so fixes to them
 belong upstream in etymd's pack; your own guards go in \`pre-push.local\`, \`pre-commit.local\`
 or \`commit-msg.local\`, which etymd never reads, writes or regenerates.
+
 `,
     "md",
   )

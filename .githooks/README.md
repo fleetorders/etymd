@@ -11,4 +11,4 @@ overwrites the generated hooks (it asks before clobbering hand-edited ones), so 
 belong upstream in etymd's pack; your own guards go in `pre-push.local`, `pre-commit.local`
 or `commit-msg.local`, which etymd never reads, writes or regenerates.
 
-<!-- etymd:generated pack-v24 f5e69569e5fabfb1 -->
+<!-- etymd:generated pack-v30 7166e869f58464d7 -->

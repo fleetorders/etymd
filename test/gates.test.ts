@@ -1846,6 +1846,27 @@ describe.skipIf(!existsSync(CLI))("etymd gates — the hooks README", () => {
     expect(readme).toContain("etymd:generated")
   })
 
+  // PINNED: a consumer repo running `prettier --check .` over a fresh install fails without
+  // the blank line below — the formatter separates a trailing block-level HTML comment from
+  // the paragraph above it. Any byte the formatter would move is a byte the stamp's digest
+  // then disagrees with, which reclassifies the file as hand-edited and freezes it out of
+  // regeneration; emitting the formatter-stable shape is the only fix that keeps both true.
+  it("writes the README in the shape a markdown formatter leaves alone", async () => {
+    await write("package.json", JSON.stringify({ name: "demo", private: true }) + "\n")
+    await write("AGENTS.md", "# AGENTS.md\n")
+    await pExecFile("git", ["add", "."], { cwd: dir })
+
+    await gates()
+    const readme = await fs.readFile(path.join(dir, ".githooks/README.md"), "utf8")
+    expect(readme.endsWith("\n")).toBe(true)
+    const lines = readme.split("\n")
+    const stampIndex = lines.findIndex((l) => /^<!-- etymd:generated /.test(l))
+    expect(stampIndex).toBe(lines.length - 2)
+    expect(lines[stampIndex - 1]).toBe("")
+    const { format } = await import("prettier")
+    expect(await format(readme, { parser: "markdown" })).toBe(readme)
+  })
+
   it("keeps a hand-written README — unstamped files are never clobbered", async () => {
     await write("package.json", JSON.stringify({ name: "demo", private: true }) + "\n")
     await write("AGENTS.md", "# AGENTS.md\n")
