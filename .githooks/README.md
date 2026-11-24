@@ -15,4 +15,4 @@ stops receiving fixes), so fixes to any of them, this one included, belong upstr
 pack; your own guards go in `pre-push.local`, `pre-commit.local` or `commit-msg.local`,
 which etymd never reads, writes or regenerates.
 
-<!-- etymd:generated pack-v33 b4fdaac2a1d0662f -->
+<!-- etymd:generated pack-v34 b4fdaac2a1d0662f -->

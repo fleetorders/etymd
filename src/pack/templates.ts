@@ -368,17 +368,33 @@ function localHookCall(hook: string, feedRefs = false): string {
 # they are captured here and fed to each. stdin is read only when it is NOT a terminal: git
 # always pipes the refs, but a hand run of this hook from a terminal would leave the read
 # waiting on a keyboard that never sends EOF — a long silent hang. A terminal run reads no
-# refs and says so; the steps below then report nothing to check.
+# refs and says so; the steps below then report nothing to check. A read that FAILS (a
+# directory fd, a broken pipe) refuses the push: empty refs from a failed read are
+# indistinguishable from empty refs by content, and gating green over bytes never read is
+# the one thing this hook must not do.
 if [ -t 0 ]; then
   refs=""
+  manual_run=1
   echo "› no pushed refs — terminal stdin (a manual run?); git feeds the refs only on a real push"
 else
-  refs=$(cat)
+  refs=$(cat) || {
+    echo "etymd: could not read the pushed refs from stdin — refusing the push rather than gating over nothing" >&2
+    exit 1
+  }
 fi
 `
     : ""
   const call = feedRefs
-    ? `printf '%s\\n' "$refs" | "$LOCAL" "$@" || exit 1`
+    ? `# The guard reads the same stdin protocol git uses — one record per line, never a
+# blank one. A manual or empty push hands it a true empty stream from /dev/null, not the
+# single blank line feeding an empty string would emit: a strictly-parsing guard must not
+# see one malformed record where git itself sends zero, and a stdin-reading guard must hit
+# EOF at once instead of the keyboard the capture above exists to avoid.
+if [ -n "$refs" ]; then
+  printf '%s\\n' "$refs" | "$LOCAL" "$@" || exit 1
+else
+  "$LOCAL" "$@" </dev/null || exit 1
+fi`
     : `"$LOCAL" "$@" || exit 1`
   return `# Repo-owned checks. This file is generated and will be overwritten; \`.githooks/${hook}.local\`
 # is yours — etymd never reads, writes, or regenerates it. Put project-specific guards there.
@@ -867,7 +883,13 @@ if command -v shellcheck >/dev/null 2>&1; then
     # matches no refs — it would negate nothing and check a fresh clone's entire history, the
     # exact cost blowup this range design exists to avoid — so the narrow bound applies only
     # where $1 names a remote this clone has configured; a URL push keeps the wide bound and
-    # its old residue. A remote sha this clone has never seen (the remote moved on since the
+    # its old residue. A NAMED remote this clone never fetched negates nothing either (no refs
+    # under refs/remotes/<name>/), so the range is the whole history — deliberate, not the
+    # wide bound: negating every remote's refs here would let a commit merely FETCHED from a
+    # second remote (gated by nobody on its way in) ship unchecked, the exact hole the bound
+    # exists to close. The cost is paid in checking, never in skipping, and it is NAMED —
+    # a long silent push reads as a hung one. A remote sha this clone has never seen (the
+    # remote moved on since the
     # last fetch) cannot bound a range, so it takes the same new-branch rule instead of
     # refusing a push the gate could have read. The same subtraction bounds the EXISTING-branch
     # range: a branch that merged the upstream drags commits a remote already holds into
@@ -881,6 +903,9 @@ if command -v shellcheck >/dev/null 2>&1; then
     bound="--remotes"
     if git remote get-url "$1" >/dev/null 2>&1; then
       bound="--remotes=$1"
+      if [ -z "$(git for-each-ref --count=1 --format=x "refs/remotes/$1/")" ]; then
+        echo "› shellcheck: remote $1 is configured but not fetched here — no tracking refs to bound the range, so the whole history is checked (a commit merely fetched from another remote was gated by nobody and stays checked)"
+      fi
     fi
     : > "$shellcheck_tmp/shas" || exit 1
     printf '%s\\n' "$refs" | while read -r _lref lsha _rref rsha; do
@@ -1446,6 +1471,12 @@ ${contentScreenCall({
   indent: "  ",
 })}
 fi
+
+# A manual run (terminal stdin) reaches this line with every gate vacuous: no refs arrived,
+# so nothing was enumerated, checked or audited. The exit stays 0 — a hand run of the hook
+# is a wiring probe, not a verdict — but the transcript must not masquerade as a passed
+# push, so the last line says what a reader of a green manual run is actually holding.
+[ "\${manual_run:-0}" -eq 1 ] && echo "› manual run: no refs arrived on stdin — the shellcheck and audit gates checked nothing; this exit 0 carries no verdict"
 
 exit 0
 `)

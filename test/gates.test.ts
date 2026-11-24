@@ -1,6 +1,6 @@
 import { execFile, execSync, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { existsSync, promises as fs } from "node:fs"
+import { closeSync, existsSync, openSync, promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
@@ -723,6 +723,57 @@ describe.skipIf(!existsSync(CLI))(
       },
     )
 
+    it("PINNED: a configured-but-unfetched remote checks the whole history — and says so, never silently skipping", async () => {
+      // A remote this clone configured but never fetched passes the name test while
+      // --remotes=<name> matches nothing under refs/remotes/<name>/: the bound negates
+      // nothing and the range is the whole history. That is the DELIBERATE cost — the
+      // wide bound (every remote's refs negated) would let a commit merely fetched from a
+      // second remote ship unchecked, the exact hole the "fetched is not gated" pin above
+      // guards — so the defect was the SILENCE: a long push with no line saying why. The
+      // whole-history read is now named, and a fetched remote still narrows.
+      await baseRepo()
+      await write("tool/c2.sh", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: c2")
+      await write("tool/c3.sh", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: c3")
+      await gates()
+      await recordShellcheck()
+      const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+      const c2 = await revParse("HEAD~1")
+      const c3 = await revParse("HEAD")
+      // origin: configured AND holding tracking refs; other: another remote holding the
+      // tip; backup: configured, never fetched — the shape whose silence was the defect.
+      await pExecFile("git", ["remote", "add", "origin", path.join(dir, "bare-origin.git")], {
+        cwd: dir,
+      })
+      await pExecFile("git", ["remote", "add", "backup", path.join(dir, "bare-backup.git")], {
+        cwd: dir,
+      })
+      await pExecFile("git", ["update-ref", "refs/remotes/origin/main", c2], { cwd: dir })
+      await pExecFile("git", ["update-ref", "refs/remotes/other/x", c3], { cwd: dir })
+
+      // Pushing a new branch to the unfetched remote: nothing is skipped (other's fetched
+      // tip included — fetched is not gated), and the whole-history read is NAMED.
+      const { stdout } = await runPrePushRemote(
+        env,
+        "backup",
+        `refs/heads/topic ${c3} refs/heads/topic ${ZERO}`,
+      )
+      expect(stdout).toContain("3 commit(s) in the pushed range")
+      expect(stdout).toContain("configured but not fetched here")
+
+      // The same push naming origin, which HAS tracking refs: the narrow bound negates
+      // only origin's refs, so the tip (held by another remote, not origin) IS in the
+      // range — and no whole-history line prints.
+      const { stdout: narrow } = await runPrePushRemote(
+        env,
+        "origin",
+        `refs/heads/topic ${c3} refs/heads/topic ${ZERO}`,
+      )
+      expect(narrow).toContain("1 commit(s) in the pushed range")
+      expect(narrow).not.toContain("configured but not fetched here")
+    })
+
     it("PINNED: a branch that merged commits a remote already has does not re-check them", async () => {
       // The defect this pins: the existing-branch range was "$rsha..$lsha" with no remote
       // subtraction, so a branch that merged the upstream re-checked every upstream commit
@@ -1342,7 +1393,21 @@ describe.skipIf(!existsSync(CLI) || !(bsdScript || process.platform === "linux")
       // A checker on PATH (the recording stub) so the shell step exists and its nothing-to-
       // check line can prove the empty-refs path completed; the real checker is never run.
       await recordShellcheck()
-      const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
+      // A counting repo-owned guard, so the manual run's .local feed is observable: zero
+      // records and immediate EOF is the contract (see the empty-pipe test below it).
+      await fs.writeFile(
+        path.join(dir, ".githooks", "pre-push.local"),
+        [
+          "#!/bin/sh",
+          'printf "start\\n" >> "$ETYMD_RECORD"',
+          "n=0",
+          "while IFS= read -r line; do n=$((n+1)); done",
+          'printf "records %s\\n" "$n" >> "$ETYMD_RECORD"',
+          "",
+        ].join("\n"),
+      )
+      await fs.chmod(path.join(dir, ".githooks", "pre-push.local"), 0o755)
+      const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "local-records.log") })
       const hook = path.join(dir, ".githooks", "pre-push")
       const args = bsdScript
         ? ["-q", "/dev/null", "sh", hook, "origin", "url"]
@@ -1362,9 +1427,82 @@ describe.skipIf(!existsSync(CLI) || !(bsdScript || process.platform === "linux")
       const out = `${res.stdout ?? ""}${res.stderr ?? ""}`.replaceAll("\r\n", "\n")
       expect(out).toContain("no pushed refs")
       expect(out).toContain("nothing to check")
+      // The vacuous run cannot masquerade as a passed push: the last line says what the
+      // exit code is actually worth, and the repo-owned guard saw zero records (not the
+      // one blank line an empty-string feed would have delivered).
+      expect(out).toContain("this exit 0 carries no verdict")
+      const localLog = await fs.readFile(path.join(dir, "local-records.log"), "utf8")
+      expect(localLog).toContain("records 0")
+    })
+
+    it("PINNED: a manual run feeds the repo-owned guard zero records, not one blank", async () => {
+      // An empty refs feed reached the guard as `printf '%s\n' "" | guard` — one blank
+      // line, where git itself never sends one: a strictly-parsing guard read ONE
+      // malformed record on a run that checked nothing, and a stdin-reading guard would
+      // have waited on the keyboard the capture exists to avoid. The empty case now hands
+      // the guard /dev/null: a true EOF, at once. The terminal run above covers the -t 0
+      // branch; this run covers the same downstream branch through an empty piped stdin.
+      await baseRepo()
+      await write("scripts/run", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: script")
+      await gates()
+      const log = path.join(dir, "local-records.log")
+      await fs.writeFile(
+        path.join(dir, ".githooks", "pre-push.local"),
+        [
+          "#!/bin/sh",
+          'printf "start\\n" >> "$ETYMD_RECORD"',
+          "n=0",
+          "while IFS= read -r line; do n=$((n+1)); done",
+          'printf "records %s\\n" "$n" >> "$ETYMD_RECORD"',
+          "",
+        ].join("\n"),
+      )
+      await fs.chmod(path.join(dir, ".githooks", "pre-push.local"), 0o755)
+      const env = await stubEnv({ ETYMD_RECORD: log })
+
+      // Empty refs (stdin open, empty — not a terminal): zero records, immediate EOF.
+      await runPrePush(env)
+      const first = await fs.readFile(log, "utf8")
+      expect(first).toContain("start")
+      expect(first).toContain("records 0")
+
+      // A piped-refs run still delivers one well-formed record per pushed ref.
+      await runPrePush(env, update("main", await revParse("HEAD"), await revParse("HEAD~1")))
+      const second = await fs.readFile(log, "utf8")
+      expect(second).toContain("records 1")
     })
   },
 )
+
+describe.skipIf(!existsSync(CLI))("etymd gates — the pushed refs themselves", () => {
+  it("PINNED: a failed stdin read refuses the push rather than gating over nothing", async () => {
+    // `refs=$(cat)` never checked the read's status: a directory fd fails cat with
+    // "stdin: Is a directory", yields empty refs, and every gate below ran green over
+    // nothing — against the hook's own rule that an enumeration it could not read
+    // refuses. The directory fd is opened here (a shell's own `< dir` redirect is
+    // refused at open on some shells, but cat's read of an open fd fails exactly as it
+    // would inside the hook).
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await commitAll("chore: script")
+    await gates()
+    const env = await stubEnv()
+    const dirfd = openSync(dir, "r")
+    try {
+      const res = spawnSync("sh", [".githooks/pre-push"], {
+        cwd: dir,
+        env,
+        stdio: [dirfd, "pipe", "pipe"],
+        encoding: "utf8",
+      })
+      expect(res.status).toBe(1)
+      expect(res.stderr).toContain("could not read the pushed refs from stdin")
+    } finally {
+      closeSync(dirfd)
+    }
+  })
+})
 
 describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's reach", () => {
   it("the shebang scan hands only sh/bash/dash to shellcheck, and the hook says why", async () => {
