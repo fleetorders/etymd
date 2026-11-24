@@ -11,6 +11,11 @@ const pExecFile = promisify(execFile)
 // The built CLI (skipped when dist/ is absent; `npm ci` builds it via `prepare`, so CI has it).
 const CLI = path.resolve(import.meta.dirname, "..", "dist", "cli.js")
 
+// The real grep, for stubs that must delegate every invocation but one: a PATH-prepended
+// stub cannot `exec grep` without recursing into itself, so the binary is resolved once
+// here and baked into the stub. First existing wins; the tests needing it skip without it.
+const realGrep = ["/usr/bin/grep", "/bin/grep"].find((p) => existsSync(p)) ?? ""
+
 let dir: string
 
 beforeEach(async () => {
@@ -1512,6 +1517,200 @@ describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's r
     await expect(runPrePush(env, update("main", head, base))).rejects.toThrow()
   })
 })
+
+/** The shellcheck verdict read, against checker stand-ins that speak — or refuse to speak —
+ * each output shape the gate must classify. Four folds of one verdict line were filed the
+ * same night: a broken grep read as "no findings" (its `|| true` folded failure into
+ * no-match), a run that exited nonzero while saying NOTHING read as clean (a failed cd
+ * checked no script at all), a severity word the patterns do not know shipped real findings
+ * as advice, and any stderr byte refused a push the findings had cleared. */
+describe.skipIf(!existsSync(CLI) || !realGrep)(
+  "etymd gates — the verdict refuses what it cannot read",
+  () => {
+    /** A checker stand-in with a chosen stdout/stderr/exit shape. --version answers like the
+     * real checker (the re-baseline probe calls it once per push, never as a check). */
+    async function sayShellcheck(out: string, code: number, err = "") {
+      await stub(
+        "shellcheck",
+        [
+          "#!/bin/sh",
+          'if [ "$1" = "--version" ]; then printf "version: 1.0.0\\n"; exit 0; fi',
+          `printf '%s\\n' '${out}'`,
+          err ? `printf '%s\\n' '${err}' >&2` : ":",
+          `exit ${code}`,
+          "",
+        ].join("\n"),
+      )
+    }
+
+    it("PINNED: a grep that fails while reading the verdict refuses the push — a broken reader is not a clean verdict", async () => {
+      // The defect: `blocking=$(printf … | grep -E … || true)` folded grep's failure (2 or
+      // more) into its no-match verdict (1), so a broken grep passed a push carrying a real
+      // warning. The stub fails ONLY the verdict read — the one grep invoked as `-E <the
+      // anchored blocking pattern>`; every other grep in the hook (discovery, the run_gate
+      // scrub, the advice complement) sees different arguments and reaches the real binary.
+      await baseRepo()
+      await write("scripts/run", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: script")
+      await gates()
+      await sayShellcheck("./scripts/run:1:6: warning: forced finding [SC0000]", 1)
+      await stub(
+        "grep",
+        [
+          "#!/bin/sh",
+          'case "$1" in',
+          '  (-E) case "$2" in ("^[^:]+:"*) echo "forced verdict-reader failure" >&2; exit 2 ;; esac ;;',
+          "esac",
+          `exec "${realGrep}" "$@"`,
+          "",
+        ].join("\n"),
+      )
+      const env = await stubEnv()
+
+      await expect(
+        runPrePush(env, update("main", await revParse("HEAD"), await revParse("HEAD~1"))),
+      ).rejects.toMatchObject({
+        code: 1,
+        stderr: expect.stringContaining("could not read the shellcheck verdict"),
+      })
+    })
+
+    it("PINNED: a run that exits nonzero saying nothing refuses — nothing was checked, not nothing was found", async () => {
+      // The failed-cd shape: `out=$( cd "$tree" && … xargs shellcheck … 2> err )` — when the
+      // cd fails, stdout is empty AND the 2> redirect never ran, so the old verdict saw rc 1,
+      // empty everything, and passed. A legal advice-bearing run always has stdout; nonzero
+      // with nothing on either stream is doubt, and doubt blocks.
+      await baseRepo()
+      await write("scripts/run", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: script")
+      await gates()
+      await sayShellcheck("", 1)
+      const env = await stubEnv()
+
+      await expect(
+        runPrePush(env, update("main", await revParse("HEAD"), await revParse("HEAD~1"))),
+      ).rejects.toMatchObject({
+        code: 1,
+        stdout: expect.stringContaining("cannot read as findings"),
+      })
+    })
+
+    it("a run with advice-level findings still passes, and shows them below the bar", async () => {
+      // Doubt must not swallow advice: the checker exits 1 for findings of ANY level, and a
+      // note-level line parses as a finding line, so the run passes with its advice shown.
+      await baseRepo()
+      await write("scripts/run", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: script")
+      await gates()
+      await sayShellcheck("./scripts/run:2:1: note: forced advice [SC0000]", 1)
+      const env = await stubEnv()
+
+      const { stdout } = await runPrePush(
+        env,
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      )
+      expect(stdout).toContain("style/info (not blocking)")
+      expect(stdout).toContain("forced advice")
+    })
+
+    it("PINNED: advice on a finding-shaped PATH no longer blocks — the blocking read is anchored", async () => {
+      // A script named "p:12:3: warning:s.sh" carrying a note-level finding rendered as
+      // "p:12:3: warning:s.sh:2:6: note: …" — the old UNanchored pattern matched ":12:3:
+      // warning:" inside the PATH field and refused a push over advice. The anchored read
+      // starts at the beginning of the line, so the path's own shape cannot cross the bar.
+      await baseRepo()
+      await write("scripts/run", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: script")
+      await gates()
+      await sayShellcheck(
+        "p:12:3: warning:s.sh:2:6: note: Double quote to prevent globbing [SC2086]",
+        1,
+      )
+      const env = await stubEnv()
+
+      const { stdout } = await runPrePush(
+        env,
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      )
+      expect(stdout).toContain("style/info (not blocking)")
+      expect(stdout).toContain("SC2086")
+    })
+
+    it("PINNED: a severity word the gate does not know refuses the push — a renamed level must not ship findings as advice", async () => {
+      // Severity drift: a future checker renaming or adding a level prints real findings on
+      // stdout, exits nonzero, writes nothing to stderr — and every fold of the old verdict
+      // passed them as advice, because the blocking pattern no longer matched the word. The
+      // doubt read accepts the severities the checker is known to emit; anything else refuses.
+      await baseRepo()
+      await write("scripts/run", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: script")
+      await gates()
+      await sayShellcheck(
+        "./scripts/run:2:6: fatal: unset_var is referenced but not assigned. [SC2154]",
+        1,
+      )
+      const env = await stubEnv()
+
+      const failure = await runPrePush(
+        env,
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      ).then(
+        () => {
+          throw new Error("expected the drifted severity to refuse the push")
+        },
+        (error) => error,
+      )
+      expect(failure.code).toBe(1)
+      expect(failure.stdout).toContain("cannot read as findings")
+      // The unread finding is shown, not swallowed.
+      expect(failure.stdout).toContain("fatal:")
+    })
+
+    it("PINNED: stderr without a failure is a diagnosis, not a verdict — a clean-exiting checker does not stop the push", async () => {
+      // The old rule refused on any stderr byte whatever the exit status, so checker noise on
+      // a clean run was an unblockable stop (no inline directive silences stderr). stderr now
+      // prints under a refusal when the run failed, and as a named note when it did not —
+      // never as the verdict itself.
+      await baseRepo()
+      await write("scripts/run", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: script")
+      await gates()
+      await sayShellcheck("", 0, "checker chatter on stderr")
+      const env = await stubEnv()
+
+      const { stdout } = await runPrePush(
+        env,
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      )
+      expect(stdout).toContain("diagnosis, not a verdict")
+      expect(stdout).toContain("checker chatter on stderr")
+    })
+
+    it("a warning-level finding in gcc format still refuses, with the way out", async () => {
+      // The control for every tightening above: a plain warning on a plain path crosses the
+      // anchored bar, and the refusal keeps its remedy line.
+      await baseRepo()
+      await write("scripts/run", "#!/bin/sh\necho ok\n")
+      await commitAll("chore: script")
+      await gates()
+      await sayShellcheck("./scripts/run:1:6: warning: forced finding [SC0000]", 1)
+      const env = await stubEnv()
+
+      const failure = await runPrePush(
+        env,
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      ).then(
+        () => {
+          throw new Error("expected the warning to block the push")
+        },
+        (error) => error,
+      )
+      expect(failure.code).toBe(1)
+      expect(failure.stdout).toContain("forced finding")
+      expect(failure.stdout).toContain("fix, or justify inline")
+    })
+  },
+)
 
 describe.skipIf(!existsSync(CLI))(
   "etymd gates — which binary the content screen resolves to",

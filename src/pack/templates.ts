@@ -1100,26 +1100,85 @@ if command -v shellcheck >/dev/null 2>&1; then
         # over files already read.
         out=$( cd "$tree" && env SHELLCHECK_OPTS="$sc_kept" xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/scripts" 2> "$shellcheck_tmp/err" )
         sc_rc=$?
-        err=$(cat "$shellcheck_tmp/err")
-        blocking=$(printf '%s\\n' "$out" | grep -E ':[0-9]+:[0-9]+: (warning|error):' || true)
-        # xargs folds the checker's own exit status into 1 (BSD) or 123 (GNU), so findings and
-        # "the checker itself failed" can share a number; stderr separates them — and both block,
-        # exactly as a failed run of the old blocking pass always did.
-        if [ -n "$blocking" ] || [ -n "$err" ] || { [ "$sc_rc" -ne 0 ] && [ "$sc_rc" -ne 1 ] && [ "$sc_rc" -ne 123 ]; }; then
+        # The 2> redirect hangs off the checker command, so a failed cd leaves the err file
+        # never created: the read is guarded, and an unread stderr is empty, never fatal.
+        err=$(cat "$shellcheck_tmp/err" 2>/dev/null) || true
+        # The verdict is read in three reads, each closed against a fold that used to pass
+        # pushes: a broken grep (status 2 or more) read as "no findings"; a run that exited
+        # nonzero while saying nothing (nothing was checked — a failed cd) read as clean; a
+        # severity word the patterns do not know (a checker that renamed a level) shipped real
+        # findings as advice. The reads below refuse on all three, and on output that stops
+        # parsing as gcc lines at all — drift is doubt, and doubt blocks.
+        # The blocking read takes the lines the bar sits at, ANCHORED to the start of the line:
+        # the old unanchored pattern also matched a finding-shaped PATH — a script named
+        # "p:12:3: warning:s.sh" put its own name over the bar and refused a push over advice.
+        # The anchor's price: a colon-bearing path whose real warning no longer parses as a
+        # header reads as advice. A tracked path carrying a colon is a rare, pathological
+        # shape, and the doubt read below still refuses when output stops parsing — the
+        # trade is taken with both sides written down.
+        block_pat='^[^:]+:[0-9]+:[0-9]+: (warning|error): '
+        # The doubt read accepts the severities the checker emits at advice level too (note,
+        # style, info) and tolerates colons inside the path — its question is not "is this
+        # blocking?" but "is this a finding line at all?". A severity word outside the set, or
+        # a line that is not a gcc finding, is the checker drifting under the gate.
+        head_pat='^.+:[0-9]+:[0-9]+: (error|warning|note|style|info): '
+        # grep's own status, captured on its own line (the classifier's match/error rule):
+        # "no match" (1) is a verdict — clean of blocking lines; a failure (2 or more) is the
+        # READER failing, and \`|| true\` folded the two into one silence that passed pushes
+        # whose verdict was never read.
+        st=0
+        blocking=$(printf '%s\\n' "$out" | grep -E "$block_pat") || st=$?
+        if [ "$st" -ge 2 ]; then
+          echo "etymd: could not read the shellcheck verdict (grep exited $st) — refusing the push rather than passing a verdict this gate did not read" >&2
+          exit 1
+        fi
+        # Doubt, not clean: a run that exits nonzero while saying nothing on stdout, or while
+        # saying something that is not a finding line, refuses. Advice-only runs (note/style/
+        # info lines) parse fine and pass: the checker exits 1 for findings of ANY level, and
+        # xargs folds that into 1 (BSD) or 123 (GNU) — the statuses of a run that said
+        # something, never of a clean one (a clean run is 0, and a checked-nothing run —
+        # a failed cd — has empty stdout AND nonzero status, which is doubt by definition).
+        doubt=0
+        if [ "$sc_rc" -ne 0 ]; then
+          if [ -z "$out" ]; then
+            doubt=1
+          else
+            st=0
+            printf '%s\\n' "$out" | grep -qEv "$head_pat" || st=$?
+            [ "$st" -ne 1 ] && doubt=1
+          fi
+        fi
+        # stderr is a diagnosis printed UNDER a refusal, never the verdict itself: the checker
+        # crashing writes its reason there, and a nonzero status is what makes that a refusal —
+        # a checker that exits CLEAN while chattering on stderr (a warning it does not count as
+        # a finding) does not stop a push its findings cleared, because stderr alone was never
+        # the old gate's bar either.
+        if [ -n "$blocking" ] || [ "$doubt" -eq 1 ] \\
+          || { [ "$sc_rc" -ne 0 ] && { [ -n "$err" ] || { [ "$sc_rc" -ne 1 ] && [ "$sc_rc" -ne 123 ]; }; }; }; then
           if [ -n "$err" ]; then
             printf '%s\\n' "$err"
           fi
           if [ -n "$blocking" ]; then
             printf '%s\\n' "$blocking"
+            echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
+          else
+            if [ -n "$out" ]; then
+              printf '%s\\n' "$out"
+            fi
+            echo "  the checker exited $sc_rc with output this gate cannot read as findings — nothing was checked, or a severity/format this gate does not know; refusing rather than passing it as advice"
           fi
-          echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
           exit 1
+        fi
+        if [ -n "$err" ]; then
+          echo "  · the checker wrote to stderr but exited clean — diagnosis, not a verdict:"
+          printf '%s\\n' "$err" | sed 's/^/    /'
         fi
         # Everything below the blocking bar, shown once the push is already cleared. Never affects
         # the exit code — advice that can fail a push is not advice. ERE on purpose: the '\\|'
         # alternation this replaced is a GNU-ism BSD grep reads literally, which reprinted the
-        # blocking findings verbatim as "advice" on a BSD desk.
-        advice=$(printf '%s\\n' "$out" | grep -Ev ':[0-9]+:[0-9]+: (warning|error):' || true)
+        # blocking findings verbatim as "advice" on a BSD desk. The same anchored pattern as the
+        # blocking read, complemented: a line over the bar is never also advice.
+        advice=$(printf '%s\\n' "$out" | grep -Ev "$block_pat" || true)
         if [ -n "$advice" ]; then
           echo "  · style/info (not blocking):"
           printf '%s\\n' "$advice" | sed 's/^/    /'
