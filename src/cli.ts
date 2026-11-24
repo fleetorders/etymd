@@ -49,6 +49,10 @@ program
     "--fail-on <tier>",
     "exit non-zero when findings at/above this tier exist (risk|gap|polish)",
   )
+  .option(
+    "--upstream <remote>",
+    "fork's upstream remote: freshness counts fork-authored commits only, and comments inherited from it are not checked",
+  )
   .action((opts, cmd) =>
     action(async () => {
       const { run } = await import("./commands/audit.js")
@@ -59,6 +63,7 @@ program
         lens: opts.lens,
         noLedger: !opts.ledger,
         failOn: opts.failOn,
+        upstream: opts.upstream,
       })
     }),
   )

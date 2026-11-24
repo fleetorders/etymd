@@ -65,6 +65,8 @@ export interface AuditOptions {
   stateBudgets?: Partial<StateBudgets>
   /** Fleet: judge repo freshness on fork-authored commits only (see `ScanOptions`). */
   upstreamRemote?: string
+  /** Fleet: the other entries' names — see `LensContext.siblingNames`. */
+  siblingNames?: string[]
 }
 
 export interface AuditResult {
@@ -111,7 +113,17 @@ export async function runAudit(root: string, opts: AuditOptions = {}): Promise<A
   const reports: LensReport[] = []
   for (const lens of selected) {
     try {
-      reports.push(await lens.run({ root, facts, profile, baseline, config }))
+      reports.push(
+        await lens.run({
+          root,
+          facts,
+          profile,
+          baseline,
+          config,
+          upstreamRemote: opts.upstreamRemote,
+          siblingNames: opts.siblingNames,
+        }),
+      )
     } catch (err) {
       reports.push({
         lens: lens.id,

@@ -231,6 +231,15 @@ const PROBLEM_TIER: Record<string, FindingTier> = {
   "local-missing": "gap",
 }
 
+/** The one line every fleet report carries when the manifest holds archived entries. */
+function archivedDisclosure(manifest: FleetManifest): string[] {
+  const n = manifest.archived.length
+  if (!n) return []
+  return [
+    `${n} archived entr${n === 1 ? "y" : "ies"} (${manifest.archived.map((e) => e.name).join(", ")}) — kept as ${n === 1 ? "a record" : "records"}; not resolved, checked or swept.`,
+  ]
+}
+
 /**
  * Validate the manifest pair itself: parse problems, dangling mappings (the live ghost-entry
  * class), duplicate names, privacy leaks, dead links, machine paths. Pure manifest truth —
@@ -257,7 +266,10 @@ export async function checkManifest(
     )
   }
 
-  const seen = new Set<string>()
+  disclosures.push(...archivedDisclosure(manifest))
+
+  // An archived entry still holds its name: a live entry reusing it is a duplicate.
+  const seen = new Set<string>(manifest.archived.map((e) => e.name))
   const flaggedDup = new Set<string>()
   for (const entry of manifest.entries) {
     if (seen.has(entry.name) && !flaggedDup.has(entry.name)) {
@@ -790,7 +802,7 @@ export async function collectWallFindings(
   manifest: FleetManifest,
 ): Promise<{ findings: Finding[]; disclosures: string[] }> {
   const findings: Finding[] = []
-  const disclosures: string[] = []
+  const disclosures: string[] = archivedDisclosure(manifest)
   await checkGuardedWallArtifacts(manifest.entries, findings)
   await checkCoverage(manifest, findings, disclosures)
   await checkManifestRepoMachinePaths(manifest, findings, disclosures)
@@ -890,6 +902,7 @@ async function sweepEntry(
     ledgerRoot: guarded ? guardedPersistenceRoot(manifest, entry.name) : undefined,
     stateBudgets: stateBudgetsFor(entry),
     upstreamRemote,
+    siblingNames: manifest.entries.filter((e) => e.name !== entry.name).map((e) => e.name),
   })
 
   project.findings = result.findings
@@ -966,6 +979,13 @@ export async function sweepFleet(
   let entries = manifest.entries
   if (opts.only?.length) {
     const known = new Set(entries.map((e) => e.name))
+    const archivedNames = new Set(manifest.archived.map((e) => e.name))
+    const asked = opts.only.filter((n) => archivedNames.has(n))
+    if (asked.length) {
+      throw new Error(
+        `--only names archived entries: ${asked.join(", ")} — an archived entry is a record and is not swept; remove \`archived\` from the manifest to sweep it`,
+      )
+    }
     const unknown = opts.only.filter((n) => !known.has(n))
     if (unknown.length) {
       throw new Error(
@@ -1015,6 +1035,11 @@ export async function fleetLedgerTarget(
   name: string,
 ): Promise<{ entry: FleetEntry; auditRoot: string; ledgerRoot: string; guarded: boolean }> {
   const entry = manifest.entries.find((e) => e.name === name)
+  if (!entry && manifest.archived.some((e) => e.name === name)) {
+    throw new Error(
+      `\`${name}\` is archived in ${path.basename(manifest.manifestPath)} — a record, not audited; its ledger is left as it was`,
+    )
+  }
   if (!entry) {
     throw new Error(
       `no entry \`${name}\` in ${path.basename(manifest.manifestPath)} — registered names: ${manifest.entries

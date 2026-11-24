@@ -410,6 +410,11 @@ export async function add(opts: FleetAddCmdOptions): Promise<void> {
   const absTarget = path.resolve(opts.cwd, opts.target)
   if (!(await pathExists(absTarget))) throw new Error(`no such directory: ${absTarget}`)
   const name = opts.name ?? path.basename(absTarget)
+  if (manifest.archived.some((e) => e.name === name)) {
+    throw new Error(
+      `\`${name}\` is already registered as an archived entry — remove its \`archived\` field to bring it back, or register under another name`,
+    )
+  }
   if (manifest.entries.some((e) => e.name === name)) {
     throw new Error(`\`${name}\` is already registered — resolution is keyed by name`)
   }

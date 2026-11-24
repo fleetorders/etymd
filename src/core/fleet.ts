@@ -79,6 +79,12 @@ export interface FleetEntry {
   /** Remote name of the upstream this repo forks — freshness measures fork-authored commits. */
   upstream?: string
   /**
+   * Set on a closed project kept in the manifest as a record: the declared value (a date by
+   * convention, or `"true"`). An archived entry lives in {@link FleetManifest.archived}, never in
+   * `entries`, so no sweep, check, board or proposal walks it; every consumer discloses the skip.
+   */
+  archived?: string
+  /**
    * How exposed this entry is — see {@link FleetTrust}. `"public-repo"` marks an
    * outside-contribution surface (the private-identifier check applies). Undeclared on a non-guarded entry is a
    * `fleet check` finding, never a silent "private".
@@ -131,6 +137,12 @@ export interface FleetManifest {
   localPath: string
   localPresent: boolean
   entries: FleetEntry[]
+  /**
+   * Entries declared `archived` — closed projects kept as records. Held apart from `entries` so
+   * that nothing operates on them by default; their names still count for uniqueness, and every
+   * report that would have covered them says they were skipped.
+   */
+  archived: FleetEntry[]
   /** Structural problems — disclosed by every consumer, never defaulted away. */
   problems: ManifestProblem[]
 }
@@ -184,6 +196,29 @@ function asStringMap(value: unknown): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(rec)) if (typeof v === "string") out[k] = v
   return out
+}
+
+/**
+ * `archived` marks a closed project kept as a record: `true`, or a non-empty string (the date it
+ * was archived, by convention). `false` and absence mean live. Any other value is reported and
+ * read as live — a typo must never hide a project from every check.
+ */
+function readArchived(
+  value: unknown,
+  name: string,
+  manifest: FleetManifest,
+  manifestFile: string,
+): string | undefined {
+  if (value === undefined || value === null || value === false) return undefined
+  if (value === true) return "true"
+  const text = asString(value)
+  if (text) return text
+  manifest.problems.push({
+    kind: "bad-shape",
+    file: manifestFile,
+    detail: `\`${name}\`.archived must be true or a date string — ignored, the entry is read as live`,
+  })
+  return undefined
 }
 
 async function readLocal(
@@ -272,6 +307,12 @@ function loadRegistryEntries(
       contract,
       links: asStringMap(rec.links),
     }
+    const archived = readArchived(rec.archived, name, manifest, manifestFile)
+    if (archived) {
+      // A record, not a member: resolved nowhere, walked by nothing.
+      manifest.archived.push({ ...entry, archived })
+      continue
+    }
 
     if (entry.profile === "guarded" || entry.private) {
       // Real guarded directories live ONLY in the gitignored local file — a tracked path on a
@@ -333,6 +374,11 @@ function loadSourcesEntries(
       contract: {},
       links: {},
     }
+    const archived = readArchived(rec.archived, name, manifest, manifestFile)
+    if (archived) {
+      manifest.archived.push({ ...entry, archived })
+      continue
+    }
     // Resolution for the older format: the local dir wins, then the declared path,
     // then a same-named sibling of the manifest's parent (whose absence simply skips a smoke).
     const localDir = manifest.localDirs[name]
@@ -371,6 +417,7 @@ export async function loadFleetManifest(manifestPath: string): Promise<FleetMani
     localPath: path.join(dir, "registry.local.json"),
     localPresent: false,
     entries: [],
+    archived: [],
     problems: [],
   }
 

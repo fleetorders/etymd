@@ -20,6 +20,8 @@ export interface AuditOptions {
   noLedger?: boolean
   /** Exit non-zero when a finding at (or above) this tier exists — the CI gate. */
   failOn?: string
+  /** This fork's upstream remote name — see `AuditOptions.upstreamRemote` in the engine. */
+  upstream?: string
 }
 
 export async function run(opts: AuditOptions): Promise<void> {
@@ -29,6 +31,7 @@ export async function run(opts: AuditOptions): Promise<void> {
     kind: opts.truth ? "truth" : undefined,
     lensIds: opts.lens ? [opts.lens] : undefined,
     persistLedger: !opts.noLedger,
+    upstreamRemote: opts.upstream,
   })
 
   if (failOn && meetsFailOn(result.findings, failOn)) {
