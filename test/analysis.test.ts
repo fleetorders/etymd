@@ -678,8 +678,12 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
     // flag is shared with the content screen, which must never be bypassed.
     const hook = generatePrePushHook(facts({ shell: { scripts: 3 } }))
     // One run at the widest severity produces verdict and advice together; only its
-    // error/warning lines are wired to a failure branch...
-    expect(hook).toMatch(/blocking=\$\([\s\S]*?grep -E ':\[0-9\]\+:\[0-9\]\+: \(warning\|error\):'/)
+    // error/warning lines are wired to a failure branch. The pattern is anchored at the
+    // line start (a finding-shaped PATH cannot put advice over the bar, 2026-11-24) and
+    // the grep's own status is captured beside it — a failed read refuses, never passes
+    // as a clean verdict...
+    expect(hook).toContain("block_pat='^[^:]+:[0-9]+:[0-9]+: (warning|error): '")
+    expect(hook).toMatch(/blocking=\$\([\s\S]*?grep -E "\$block_pat"\)[\s\S]*?\|\| st=\$\?/)
     expect(hook).toMatch(/\[ -n "\$blocking" \][\s\S]*?exit 1/)
     // ...while the advice is derived by EXCLUDING those severities and explicitly tolerated
     // with `|| true`, so it has no path to the exit code at all.
