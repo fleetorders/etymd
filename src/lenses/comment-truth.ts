@@ -293,7 +293,7 @@ export const commentTruthLens: Lens = {
     ): Promise<keyof typeof contextSkips | null> => {
       // The word rules decide what any missing PATH in this comment means, and a dangling doc
       // reference is a missing path to the reader — the same mention through the doc-refs
-      // checker must read the same way, or a comment that says "a file like DECISIONS.md"
+      // checker must read the same way, or a comment that says "a file like docs/decisions.md"
       // drops in the path checker and flags in the doc checker (D-014: dropped only when every
       // mention reads the same way). Decision references cite labels ("D-014"), not paths:
       // the path-shaped rules do not read them.
