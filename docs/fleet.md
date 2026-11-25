@@ -94,7 +94,8 @@ Two fields the scan can never derive, so the manifest must declare them:
 One optional field takes an entry out of every command:
 
 - **`archived`** (`true`, or the date it was archived). A closed project you keep as a record.
-  `etymd fleet`, `fleet check` and `propose` skip it and say how many entries they skipped, so a
+  `etymd fleet`, `fleet check`, `propose` and `fleet board` skip it and say how many entries they
+  skipped, so a
   sweep never spends time on a repo nobody works in and never reports its findings as open work.
   The name stays taken: `fleet add` refuses to register a second project under it, and `--only`
   refuses to select it. Remove the field to bring the project back.

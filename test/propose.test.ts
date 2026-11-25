@@ -272,6 +272,14 @@ describe("propose — subject selection (synthetic sweeps)", () => {
 
   const rubric = parseRubric("severity: 1\neconomy: 1\nconfidence: 1\nbreadth: 1\n", "r.txt")
 
+  it("the sweep's archived names reach the disclosures; older stored sweeps stay quiet", () => {
+    const withArchived = buildProposals({ ...sweep([]), archived: ["closed"] }, "r.txt", rubric)
+    expect(withArchived.disclosures.some((d) => d.includes("1 archived entry (closed)"))).toBe(true)
+    expect(
+      buildProposals(sweep([]), "r.txt", rubric).disclosures.some((d) => d.includes("archived")),
+    ).toBe(false)
+  })
+
   it("truth findings never become proposals — a lie is fixed, not ranked", () => {
     const result = buildProposals(
       sweep([

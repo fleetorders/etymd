@@ -108,10 +108,14 @@ program
   .command("doctor")
   .description('Alias for `audit --truth` — "are the recorded instructions still true?"')
   .option("--json", "print findings as JSON")
+  .option(
+    "--upstream <remote>",
+    "fork's upstream remote: comments inherited from it are not checked — without it a fork's doctor flags inherited comments",
+  )
   .action((opts, cmd) =>
     action(async () => {
       const { run } = await import("./commands/doctor.js")
-      await run({ cwd: resolveCwd(cmd), json: opts.json })
+      await run({ cwd: resolveCwd(cmd), json: opts.json, upstream: opts.upstream })
     }),
   )
 

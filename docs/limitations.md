@@ -61,3 +61,11 @@ costs more trust than a missed lie, and every skip class is disclosed in the len
   checkout would have applied them. Recorded rather than fixed until a user needs it; both are
   pinned as known gaps in the checkout-parity table in `test/gates.test.ts`, which turns red the
   day they are fixed.
+
+- **Archived entries are records: resolved nowhere, walked by nothing.** The sweep, gate and
+  state checks skip them and the count is disclosed by every fleet command; the manifest's own
+  text checks (undeclared or unknown trust, a private entry's tracked path) still run on the
+  record, and a guarded archive's checkout counts in the coverage census through its local
+  mapping. Sibling-name context in comments arrives from the fleet sweep alone — a local audit
+  does not know the fleet, so a comment naming a sibling repository's paths is judged by this
+  repo's tree alone there, and findings can differ between the two surfaces.

@@ -264,7 +264,9 @@ are counted, disclosed and not flagged. A finding is dropped only when every men
 in that comment reads the same way.
 
 **Archived entries.** A fleet manifest entry may declare `archived`. Every fleet command skips
-such an entry and discloses the count.
+such an entry and discloses the count. The manifest's own text checks stay on a record:
+undeclared or unknown trust, and a private entry's tracked path, are facts about the
+publishable file, not about the work — archiving silences the sweep, not the leak screen.
 
 **Why:** the reader of a finding list acts on its first few lines. When most lines are wrong, or
 describe a project nobody works in, the list is not read at all, and that costs more than the

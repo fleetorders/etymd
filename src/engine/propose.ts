@@ -1,5 +1,5 @@
 import type { Confidence, Effort, Finding, FindingTier } from "./finding.js"
-import type { FleetProjectSweep } from "./fleet.js"
+import { archivedNamesLine, type FleetProjectSweep } from "./fleet.js"
 
 /**
  * `etymd propose` — the scoring step between the sweep and a filed proposal.
@@ -256,11 +256,15 @@ export function buildProposals(
   sweep: {
     manifest: string
     projects: FleetProjectSweep[]
+    /** Archived entry names, when the sweep result carries them (older stored sweeps do not). */
+    archived?: string[]
   },
   rubricName: string,
   rubric: Rubric,
 ): ProposeResult {
   const disclosures: string[] = []
+  const archivedLine = archivedNamesLine(sweep.archived ?? [])
+  if (archivedLine) disclosures.push(archivedLine)
   const personal = sweep.projects.filter((p) => p.profile === "personal")
   const guarded = sweep.projects.filter((p) => p.profile !== "personal")
   if (guarded.length) {
