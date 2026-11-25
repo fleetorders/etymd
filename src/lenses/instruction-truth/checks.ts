@@ -197,11 +197,12 @@ export interface TextClaimsOptions {
    */
   treatNamespacedPrefixes?: boolean
   /**
-   * Source comments only. A comment is written from where its file sits: in a nested package
-   * (`tools/site/src/build.mjs` saying `src/build.mjs`) the path is relative to that package,
-   * whether or not a workspace manifest declares it. With this set, a claim also resolves from
-   * every directory above the claiming file, and a JavaScript import specifier resolves to its
-   * TypeScript source (`./logs.js` written in a file whose sibling is `logs.ts`).
+   * Source comments only. A comment is written from where its file sits: in a nested package the
+   * path is relative to that package, whether or not a workspace manifest declares it (a file
+   * three directories down may write a path like `src/build.mjs`). With this set, a claim also
+   * resolves from every directory above the claiming file, and a JavaScript import specifier
+   * resolves to its TypeScript source (for example `./logs.js`, written in a file whose sibling
+   * is the `.ts` file of the same name).
    */
   sourceRelative?: boolean
   /**

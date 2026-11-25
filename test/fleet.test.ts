@@ -442,6 +442,70 @@ describe("fleet sweep — pinned invariants", () => {
   })
 })
 
+describe("fleet — archived entries are records, not members", () => {
+  it("an archived entry is skipped by the sweep and the check, and both say so", async () => {
+    await initRepo("alive", { stateAt: "2026-06-01T09:00:00Z" })
+    // The archived entry points nowhere and declares no trust: were it walked, the check would
+    // report a dangling path and an undeclared trust.
+    const manifestPath = await writeHub([
+      personal("alive"),
+      {
+        name: "closed",
+        kind: "repo",
+        profile: "personal",
+        path: "gone/closed",
+        archived: "2026-05-01",
+      },
+    ])
+    const manifest = await manifestAt(manifestPath)
+    expect(manifest.entries.map((e) => e.name)).toEqual(["alive"])
+    expect(manifest.archived.map((e) => [e.name, e.archived])).toEqual([["closed", "2026-05-01"]])
+
+    const check = await checkManifest(manifest)
+    expect(check.findings.some((f) => f.id.includes("closed"))).toBe(false)
+    expect(check.disclosures.some((d) => d.includes("1 archived entry (closed)"))).toBe(true)
+
+    const result = await sweepFleet(manifest, {})
+    expect(result.projects.map((p) => p.name)).toEqual(["alive"])
+    expect(result.outOfScope).not.toContain("closed")
+    expect(result.wallDisclosures.some((d) => d.includes("archived entry (closed)"))).toBe(true)
+  })
+
+  it("an archived name stays taken, and asking for it by name is refused with the reason", async () => {
+    await initRepo("alive", { stateAt: "2026-06-01T09:00:00Z" })
+    const manifestPath = await writeHub([
+      personal("alive"),
+      { ...personal("alive"), archived: true },
+    ])
+    const manifest = await manifestAt(manifestPath)
+    const { findings } = await checkManifest(manifest)
+    expect(findings.some((f) => f.id === "fleet-manifest/duplicate-name:alive")).toBe(true)
+    await expect(sweepFleet(manifest, { only: ["alive"] })).rejects.toThrow(
+      /archived entries: alive/,
+    )
+  })
+
+  it("two archived entries under one name are a duplicate", async () => {
+    const manifestPath = await writeHub([
+      { ...personal("twin"), archived: true },
+      { ...personal("twin"), archived: "2026-05-01" },
+    ])
+    const manifest = await loadFleetManifest(manifestPath)
+    const check = await checkManifest(manifest)
+    expect(check.findings.map((f) => f.id)).toContain("fleet-manifest/duplicate-name:twin")
+  })
+
+  it("a malformed archived value is reported and the entry is read as live", async () => {
+    await initRepo("alive", { stateAt: "2026-06-01T09:00:00Z" })
+    const manifestPath = await writeHub([{ ...personal("alive"), archived: 7 }])
+    const manifest = await manifestAt(manifestPath)
+    expect(manifest.entries.map((e) => e.name)).toEqual(["alive"])
+    expect(
+      manifest.problems.some((p) => p.detail.includes("archived must be true or a date string")),
+    ).toBe(true)
+  })
+})
+
 describe("fleet sweep — honesty and clocks", () => {
   it("discloses manifest problems and unresolved entries — never a silent default", async () => {
     const manifestPath = await writeHub([guarded("c-one"), personal("ghost")], { local: null })

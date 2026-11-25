@@ -59,6 +59,16 @@ export interface LensContext {
   baseline: import("../core/facts.js").Baseline | null
   /** The repo's optional `.etymd/config.json` (scope + budgets); defaults when absent. */
   config?: import("../core/config.js").LoadedConfig
+  /**
+   * The remote this repository forks, when the caller declared one. Lines whose last commit is
+   * reachable from it were written upstream — the fork inherited them and does not answer for them.
+   */
+  upstreamRemote?: string
+  /**
+   * Names of the other repositories audited alongside this one (a fleet sweep). A path a comment
+   * writes directly after one of these names is that repository's path, not this one's.
+   */
+  siblingNames?: string[]
 }
 
 /** Solo vs team changes what counts as a gap (state docs and session archives are solo ritual). */

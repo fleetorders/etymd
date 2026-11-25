@@ -26,6 +26,13 @@ costs more trust than a missed lie, and every skip class is disclosed in the len
 - **Package-relative paths** resolve only against workspace roots plus their `src/` and
   `scripts/` sub-roots. Deeper prose-relative prefixes (relative to `apps/x/src/lib/`, say) are
   not chased.
+- **A comment's own words can clear a missing path.** In source comments a missing path is not
+  flagged when every mention of it is introduced as an example ("a path like `docs/notes/`",
+  "e.g."), is placed inside a built artifact ("out of the APK"), directly follows the name of
+  another repository in the same fleet, exists under a nested package's own directory, or sits
+  in a comment a fork inherited from its upstream remote. Each class is counted and disclosed.
+  The cost: a genuinely stale path written in one of those shapes goes unchecked. One plain
+  mention of the same path in the same comment restores the check.
 - **Workspace-filtered commands** (`pnpm --filter x test`) are skipped, counted and disclosed,
   not resolved into the target package.
 - **Server-side quality thresholds** (Sonar and the like) cannot be read from the repo; findings
