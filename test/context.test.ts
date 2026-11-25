@@ -30,6 +30,28 @@ async function runLens(root: string) {
   })
 }
 
+/** A committed baseline whose facts carry (or predate) the footprint measurement. */
+async function runLensWithBaseline(
+  root: string,
+  baselineFacts: Partial<ProjectFacts> | null,
+): ReturnType<typeof contextEconomyLens.run> {
+  return contextEconomyLens.run({
+    root,
+    facts: { root } as unknown as ProjectFacts,
+    profile: "solo",
+    baseline:
+      baselineFacts === null
+        ? null
+        : {
+            packVersion: "1",
+            etymdVersion: "0.0.0",
+            approvedAt: "2026-01-01T00:00:00.000Z",
+            profile: "solo",
+            facts: { root: ".", ...baselineFacts } as unknown as ProjectFacts,
+          },
+  })
+}
+
 describe("context budget — one file read under two names", () => {
   it("PINNED: a symlinked AGENTS.md is counted once, and both names are reported", async () => {
     // The defect: `AGENTS.md -> CLAUDE.md` is the ordinary way to serve harnesses that read
@@ -80,4 +102,38 @@ describe("context budget — one file read under two names", () => {
     await fs.writeFile(path.join(solo, "CLAUDE.md"), HEAVY, "utf8")
     return solo
   }
+})
+
+describe("context budget — footprint drift vs the committed baseline", () => {
+  it("discloses growth since approval, including while under budget", async () => {
+    // The budget gate alone cannot show this: 7 words is far under 8000, yet it more than
+    // tripled since approval — the growth a committed baseline makes visible.
+    await fs.writeFile(path.join(dir, "AGENTS.md"), "# Contract\n\none two three four five", "utf8")
+    const report = await runLensWithBaseline(dir, {
+      context: { totalWords: 2, totalApproxTokens: 3, files: 1 },
+    })
+    const text = report.disclosures.join("\n")
+    expect(text).toContain("Always-loaded footprint vs the approved baseline: 2w → 7w")
+    expect(text).toContain("(+5w, +250%)")
+  })
+
+  it("says unchanged when the approval already matches the footprint", async () => {
+    await fs.writeFile(path.join(dir, "AGENTS.md"), "# Contract\n\none two three four five", "utf8")
+    const report = await runLensWithBaseline(dir, {
+      context: { totalWords: 7, totalApproxTokens: 9, files: 1 },
+    })
+    expect(report.disclosures.join("\n")).toContain("(unchanged)")
+  })
+
+  it("a baseline that predates the measurement says so instead of inventing a delta", async () => {
+    await fs.writeFile(path.join(dir, "AGENTS.md"), "# Contract\n", "utf8")
+    const report = await runLensWithBaseline(dir, {})
+    expect(report.disclosures.join("\n")).toContain("predates footprint measurement")
+  })
+
+  it("no baseline: this lens stays silent — the no-baseline line is instruction-truth's", async () => {
+    await fs.writeFile(path.join(dir, "AGENTS.md"), "# Contract\n", "utf8")
+    const report = await runLensWithBaseline(dir, null)
+    expect(report.disclosures.join("\n")).not.toContain("approved baseline")
+  })
 })

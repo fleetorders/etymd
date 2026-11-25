@@ -490,6 +490,45 @@ describe("summarizeBaselineDrift", () => {
     expect(drift.dirsRemoved).toEqual([])
     expect(isDriftEmpty(drift)).toBe(false)
   })
+
+  it("carries the always-loaded footprint's move since approval", () => {
+    const old = facts({ context: { totalWords: 3000, totalApproxTokens: 4500, files: 3 } })
+    const fresh = facts({ context: { totalWords: 4800, totalApproxTokens: 7200, files: 4 } })
+    const drift = summarizeBaselineDrift(old, fresh)
+    expect(drift.context).toEqual({
+      from: { totalWords: 3000, totalApproxTokens: 4500, files: 3 },
+      to: { totalWords: 4800, totalApproxTokens: 7200, files: 4 },
+    })
+    expect(isDriftEmpty(drift)).toBe(false)
+  })
+
+  it("a baseline that predates footprint measurement shows no context drift — absent is not zero", () => {
+    // Absent must read as "not measured": a first measurement of 900 words is not a growth
+    // finding, or every repo would drift the day it upgrades etymd.
+    const drift = summarizeBaselineDrift(
+      facts(),
+      facts({ context: { totalWords: 900, totalApproxTokens: 1200, files: 2 } }),
+    )
+    expect(drift.context).toBeUndefined()
+    expect(isDriftEmpty(drift)).toBe(true)
+  })
+
+  it("an unchanged footprint is no change at all", () => {
+    const c = { totalWords: 3000, totalApproxTokens: 4000, files: 3 }
+    expect(isDriftEmpty(summarizeBaselineDrift(facts({ context: c }), facts({ context: c })))).toBe(
+      true,
+    )
+  })
+
+  it("words staying flat while files split or merge still moves the axis", () => {
+    // A pointer file added at the same total still changes what every session loads.
+    const drift = summarizeBaselineDrift(
+      facts({ context: { totalWords: 3000, totalApproxTokens: 4000, files: 3 } }),
+      facts({ context: { totalWords: 3000, totalApproxTokens: 4000, files: 2 } }),
+    )
+    expect(drift.context).toBeDefined()
+    expect(isDriftEmpty(drift)).toBe(false)
+  })
 })
 
 describe("deriveFailOn — a gate that cannot fail is not a gate", () => {

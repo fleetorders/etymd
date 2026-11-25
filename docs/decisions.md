@@ -293,3 +293,25 @@ gate reads cannot carry one.
 its pack regenerates past this version — the same one-time migration every severity-bar change
 pays. The pack version bumps with the classifier; consumers take the widening at their next
 `etymd gates` run.
+
+## D-016 — The always-loaded footprint joins the committed baseline, as visibility not a gate
+
+Facts gain an optional `context` footprint (total words, approximate tokens, distinct files),
+measured at scan time with the default per-file threshold. `etymd approve` shows its move since
+approval beside the command, artifact and layout axes, and every audit's context-economy section
+discloses the standing — growth included, "(unchanged)" included. It is a disclosure, never a
+finding: the budget gate stays the one threshold, and no growth threshold ships.
+
+**Why:** a static budget cannot see growth inside it — a footprint can double while under budget
+and the budget says nothing. A committed number plus a delta makes the cost visible at exactly
+the moment a human blesses a change, which is when acting on it is cheapest. Measured with the
+default threshold on purpose: totals are budget-independent, so drift stays comparable across
+config changes and is never an artefact of a budget someone moved. A baseline approved by an
+older etymd predates the fact — absent reads as "not measured", and the lens says so instead of
+inventing a first-measurement delta.
+
+**Consequences:** no new config, so there is nothing for a user to set and no D-005 predicate to
+answer for. Baselines carry one more additive, optional field; an older etymd reading a newer
+baseline ignores it. Footprint words staying flat while files split or merge still counts as a
+move, because what every session loads changed. Growth under budget is reported, never blocked —
+whether to act stays with the reader, via the extraction findings that already exist.

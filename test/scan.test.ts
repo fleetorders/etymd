@@ -87,6 +87,14 @@ describe("scanProject", () => {
     expect(facts.commands.raw).toEqual({})
   })
 
+  it("records the always-loaded footprint as a fact the baseline can drift against", async () => {
+    await write("AGENTS.md", "word ".repeat(10))
+    await write("CLAUDE.md", "word ".repeat(6))
+    const facts = await scanProject(dir)
+    // Distinct files, distinct inodes: both counted. 16 words → round(16/0.75) ≈ 21 tokens.
+    expect(facts.context).toEqual({ totalWords: 16, totalApproxTokens: 21, files: 2 })
+  })
+
   it("detects pnpm workspace packages", async () => {
     await write("package.json", JSON.stringify({ name: "root", private: true }))
     await write("pnpm-workspace.yaml", "packages:\n  - 'packages/*'\n")

@@ -53,7 +53,8 @@ ignored).
 - **Cross-references**: mentions of AGENTS.md / CLAUDE.md / PROJECT_CONTEXT.md / GEMINI.md must
   resolve to real files.
 - **Baseline drift**: role commands (test/lint/typecheck/format/build), artifacts, and top-level
-  dirs that existed at the approved baseline and are now gone.
+  dirs that existed at the approved baseline and are now gone; the always-loaded instruction
+  footprint's growth since approval is shown too, once the baseline records it.
 
 **`gate-integrity`** — the CI ↔ local gate inventory (GitLab incl. `extends`/`!reference`/local
 includes/script-less jobs, GitHub workflows, husky modern + v3-legacy, lint-staged, `.githooks`),
@@ -85,7 +86,10 @@ committer dates only, never mtime:
 
 **`context-economy`** — the always-loaded footprint as findings: any single file ≥ 4000 words,
 total ≥ 8000 words (defaults; override under `context` in `.etymd/config.json`). Only genuinely
-`alwaysApply` Cursor rules count.
+`alwaysApply` Cursor rules count. The footprint is also recorded in the committed baseline, and
+each audit discloses its move since approval — growth stays visible even while under budget,
+which a static threshold alone never shows; a baseline approved by an older etymd predates the
+measurement and says so.
 
 **`comment-truth`** (truth) — the same four claim checks (command, path, doc-reference,
 decision id) over comments in tracked source files, extracted per language (JS/TS, C-family,

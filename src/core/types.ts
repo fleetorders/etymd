@@ -167,11 +167,29 @@ export interface ProjectFacts {
   shell?: { scripts: number }
   /** Optional: baselines approved by older versions predate this fact. */
   freshness?: FreshnessFacts
+  /**
+   * The always-loaded instruction footprint at scan time — the axis the context-economy lens
+   * gates (docs/decisions.md, D-016). Totals and file count only, budget-independent, so drift
+   * against a committed baseline stays comparable across config changes.
+   *
+   * Optional for the same reason as `freshness`: a baseline approved by an older etymd predates
+   * the field, and absent must read as "not measured" rather than "measured as zero".
+   */
+  context?: ContextFootprintFacts
   tree: {
     dirs: { name: string; files: number }[]
     /** True when the file count hit the walk cap (large repo). */
     truncated: boolean
   }
+}
+
+/** The always-loaded footprint as a fact: what a committed baseline can drift against. */
+export interface ContextFootprintFacts {
+  /** Always-loaded words, an alias counted once with the file it points at. */
+  totalWords: number
+  totalApproxTokens: number
+  /** Distinct always-loaded files behind the totals. */
+  files: number
 }
 
 export interface ContextFile {

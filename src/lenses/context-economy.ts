@@ -1,11 +1,33 @@
 import { CONFIG_FILE, DEFAULT_CONFIG } from "../core/config.js"
 import { contextFileLabel, measureContext } from "../core/context.js"
+import type { ContextFootprintFacts } from "../core/types.js"
 import type { Finding, Lens, LensReport } from "../engine/finding.js"
 
 const LENS_ID = "context-economy"
 
 /** Default total always-loaded words past which the footprint itself becomes a finding. */
 export const TOTAL_BUDGET_WORDS = DEFAULT_CONFIG.context.totalWords
+
+/**
+ * The footprint's standing against the committed baseline, as one disclosure line
+ * (docs/decisions.md, D-016). The budget stays the gate; this makes growth visible even while
+ * under it, which a static threshold cannot — a footprint can double inside budget and the
+ * budget says nothing.
+ */
+function footprintDriftDisclosure(
+  from: ContextFootprintFacts,
+  to: { totalWords: number; files: number },
+): string {
+  const dw = to.totalWords - from.totalWords
+  const pct = from.totalWords > 0 ? Math.round((dw / from.totalWords) * 100) : null
+  const signed = (n: number) => (n >= 0 ? `+${n}` : `${n}`)
+  // Words can stay flat while files split or merge — that is still a move on the axis.
+  const moved = dw !== 0 || to.files !== from.files
+  const delta = moved
+    ? ` (${signed(dw)}w${pct === null ? "" : `, ${signed(pct)}%`})`
+    : " (unchanged)"
+  return `Always-loaded footprint vs the approved baseline: ${from.totalWords}w → ${to.totalWords}w${delta}.`
+}
 
 /**
  * Economy lens: the always-loaded instruction footprint, as findings. Context is the dominant
@@ -66,6 +88,21 @@ export const contextEconomyLens: Lens = {
           (f) =>
             `${contextFileLabel(f)} are one file (same inode) — counted once, at ${f.words} words.`,
         ),
+        // No committed baseline at all is the instruction-truth lens's line to say; a baseline
+        // that predates the footprint fact is this lens's, because only here does the absence
+        // hide an economy number rather than a truth drift.
+        ...(ctx.baseline?.facts.context
+          ? [
+              footprintDriftDisclosure(ctx.baseline.facts.context, {
+                totalWords: budget.totalWords,
+                files: budget.files.length,
+              }),
+            ]
+          : ctx.baseline
+            ? [
+                "The approved baseline predates footprint measurement — footprint drift is not measurable until the next `etymd approve`.",
+              ]
+            : []),
         `Budgets: ${budgets.perFileWords} words/file, ${budgets.totalWords} words total (${
           budgets.perFileWords === DEFAULT_CONFIG.context.perFileWords &&
           budgets.totalWords === DEFAULT_CONFIG.context.totalWords
