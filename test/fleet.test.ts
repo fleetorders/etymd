@@ -1047,6 +1047,23 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
       kind: "no-import",
     },
     {
+      name: "CLAUDE.local.md alone shadows AGENTS.md",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.writeFile(path.join(root, "CLAUDE.local.md"), "personal notes\n", "utf8")
+      },
+      kind: "no-import",
+    },
+    {
+      name: "a CLAUDE.local.md beside an importing CLAUDE.md hides nothing",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.writeFile(path.join(root, "CLAUDE.md"), "# CLAUDE.md\n\n@AGENTS.md\n", "utf8")
+        await fs.writeFile(path.join(root, "CLAUDE.local.md"), "personal notes\n", "utf8")
+      },
+      via: "root-import",
+    },
+    {
       name: "CLAUDE.md exists but never imports AGENTS.md",
       build: async (root) => {
         await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")

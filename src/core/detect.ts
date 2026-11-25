@@ -796,8 +796,9 @@ function mayPredate(a: string, b: string): boolean {
  *
  * Claude Code auto-discovers `CLAUDE.md` and follows its `@` imports. Since 2.1.277 it also reads
  * `AGENTS.md` when a directory has no `CLAUDE.md`; before that it never loaded `AGENTS.md`. So
- * instructions kept in `AGENTS.md` are invisible to it in two shapes: a `CLAUDE.md` that exists
- * and does not import them (every version reads that file instead), and no `CLAUDE.md` at all
+ * instructions kept in `AGENTS.md` are invisible to it in two shapes: a CLAUDE.md-family file
+ * that exists and does not import them — the root file, `.claude/CLAUDE.md`, or a
+ * `CLAUDE.local.md`, which the reader counts as a `CLAUDE.md` — and no family file at all
  * on a Claude Code older than the fallback. The check is the pointer contract both `fleet add`
  * and the fleet sweep (`claude-pointer-missing`) speak — defined once here so the two surfaces
  * cannot drift apart, which is the failure this tool exists to catch.
@@ -805,7 +806,8 @@ function mayPredate(a: string, b: string): boolean {
  * Passes when `AGENTS.md` is absent; either name is a symlink to the other (stat follows
  * links, so same dev:ino covers chains in both directions); the root `CLAUDE.md` carries a
  * full-line `@AGENTS.md` import; `.claude/CLAUDE.md` carries `@../AGENTS.md`; or there is no
- * `CLAUDE.md` in either place and the Claude Code version is at or past the fallback, or no
+ * CLAUDE.md-family file in either place — a `CLAUDE.local.md` counts — and the Claude Code
+ * version is at or past the fallback, or no
  * Claude Code is installed (a machine without it has no reader to warn about — genuinely
  * absent, ENOENT, is a pass; a probe that failed any other way returns `undetermined`, which
  * callers must disclose rather than count as a pass). A declared
@@ -850,17 +852,23 @@ export async function checkClaudePointer(
     return { ok: true, via: "dotclaude-import" }
   }
 
-  if (rootClaude !== null || dotClaude !== null) {
+  const localClaude = await pathExists(path.join(root, "CLAUDE.local.md"))
+  if (rootClaude !== null || dotClaude !== null || localClaude) {
     // `.claude/CLAUDE.md` alone also shadows AGENTS.md — the fallback does not fire beside it.
     // Observed on Claude Code 2.1.283 (headless, markers planted one per file): a project with
     // AGENTS.md and `.claude/CLAUDE.md` but no root CLAUDE.md loaded ONLY the `.claude/CLAUDE.md`.
+    // A `CLAUDE.local.md` shadows the same way: the reader counts it among its CLAUDE.md files
+    // (the vendor's memory page says so outright — adding one stops Claude from reading
+    // AGENTS.md for you), and no import exists to carry the contract instead.
     return {
       ok: false,
       kind: "no-import",
       detail:
         rootClaude !== null
           ? "AGENTS.md and CLAUDE.md both present, but CLAUDE.md does not import it"
-          : "AGENTS.md and .claude/CLAUDE.md both present, but .claude/CLAUDE.md does not import it",
+          : dotClaude !== null
+            ? "AGENTS.md and .claude/CLAUDE.md both present, but .claude/CLAUDE.md does not import it"
+            : "AGENTS.md and CLAUDE.local.md both present — the reader counts a CLAUDE.local.md as a CLAUDE.md, so the fallback does not fire beside it",
     }
   }
 

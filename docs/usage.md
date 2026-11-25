@@ -223,8 +223,9 @@ Walkthrough of the pieces:
   worktree; unregistered guarded-remote checkouts under the fleet root; tracked `/Users/` paths in
   the manifest's own repo; private identifiers in `trust: "public-repo"` entries; guarded-host commit
   emails on personal entries; and repos whose `AGENTS.md` Claude Code cannot see (`claude-pointer-missing`: a risk when
-  a `CLAUDE.md` exists without importing `@AGENTS.md`, since Claude Code then reads only that file
-  and `etymd fleet add` refuses the repo; a gap when there is no `CLAUDE.md` and the installed
+  a `CLAUDE.md` exists without importing `@AGENTS.md` or a `CLAUDE.local.md` sits beside the
+  contract (the reader counts the local file as a `CLAUDE.md`, so the fallback does not fire),
+  since Claude Code then reads only those files and `etymd fleet add` refuses the repo; a gap when there is no `CLAUDE.md` and the installed
   Claude Code predates the 2.1.277 `AGENTS.md` fallback; `ETYMD_CLAUDE_VERSION` pins the version
   checked, `none` for a machine without Claude Code — pin it wherever a sweep must not depend on
   the machine, CI above all, because a box with no readable `claude` counts as no reader and

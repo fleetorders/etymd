@@ -783,7 +783,8 @@ async function checkGateDrift(
 /**
  * The pointer contract (`checkClaudePointer`, the one definition) must hold in every resolved
  * repo, or the repo believes every agent reads a contract Claude Code never receives. A
- * CLAUDE.md that does not import AGENTS.md hides it on every version (risk); a bare AGENTS.md
+ * CLAUDE.md that does not import AGENTS.md — or a bare CLAUDE.local.md beside the contract —
+ * hides it on every version (risk); a bare AGENTS.md
  * hides it only from a Claude Code older than the fallback (gap); a version that could not be
  * established is disclosed, never counted as clean. Runs on every profile: guarded worktrees
  * are read here, never written. Not exempted by `contract.placement: "none"` — that declares
@@ -811,10 +812,10 @@ async function checkClaudePointers(
         ? finding(
             `${FLEET_LENS}/claude-pointer-missing:${entry.name}`,
             "risk",
-            `\`${entry.name}\` has a CLAUDE.md that never imports its AGENTS.md`,
+            `\`${entry.name}\` has a CLAUDE.md or CLAUDE.local.md that hides its AGENTS.md`,
             [`${entry.name}: ${check.detail}`],
-            "Claude Code reads CLAUDE.md when one exists and falls back to AGENTS.md only when none does. A CLAUDE.md without the import shadows AGENTS.md, so the contract looks universal from inside the repo while Claude Code never receives it.",
-            "Add a full-line `@AGENTS.md` import to that CLAUDE.md, symlink either file to the other, or delete the CLAUDE.md if AGENTS.md is the whole contract.",
+            "Claude Code reads CLAUDE.md files — a CLAUDE.local.md counts — and falls back to AGENTS.md only when none does. A CLAUDE.md without the import, or a bare CLAUDE.local.md, shadows AGENTS.md, so the contract looks universal from inside the repo while Claude Code never receives it.",
+            "Add a full-line `@AGENTS.md` import to that CLAUDE.md, symlink either file to the other, or delete the CLAUDE.md if AGENTS.md is the whole contract. To keep a CLAUDE.local.md and still have AGENTS.md read, set Claude Code's Project instructions to `claude-md-and-agents-md`, or carry `@AGENTS.md` from a CLAUDE.md beside it.",
           )
         : finding(
             `${FLEET_LENS}/claude-pointer-missing:${entry.name}`,
