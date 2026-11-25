@@ -771,7 +771,11 @@ for entry do
       exit
     }' "$work/first-line") || exit 1
   case $interp in
-    (sh|bash|dash|sh[0-9]*|bash[0-9]*|dash[0-9]*|sh-[0-9]*|bash-[0-9]*|dash-[0-9]*)
+    (sh|bash|dash|ksh|sh[0-9]*|bash[0-9]*|dash[0-9]*|ksh[0-9]*|sh-[0-9]*|bash-[0-9]*|dash-[0-9]*|ksh-[0-9]*|mksh|pdksh|oksh|lksh)
+      # ksh is in the checked set, not the excluded bucket: the checker parses it natively
+      # (a ksh-shebang file gets real findings, no dialect error), so excluding it was a
+      # policy choice paid as a standing hole on every push of a repo that carries any ksh —
+      # and the mksh/pdksh/oksh/lksh variants ride the same family.
       case $file in
         (*/*) dir=\${file%/*} ;;
         (*) dir=. ;;
@@ -784,12 +788,12 @@ for entry do
       printf . >> "$work/count" || exit 1 ;;
     (zsh|zsh[0-9]*|zsh-[0-9]*)
       printf . >> "$work/zsh-count" || exit 1 ;;
-    (ksh|ksh[0-9]*|ksh-[0-9]*|mksh|pdksh|oksh|lksh|ash|yash|posh|csh|tcsh|fish)
-      # Another shell is a script this gate does not check — by policy, not always by
-      # necessity: the checker parses ksh (only ash warns per file), so the exclusion is a
-      # choice, and the announcement below says so rather than claiming the checker cannot
-      # read what it can. It gets its own bucket, announced by the hook like the zsh
-      # exclusion — a coverage hole that is silent is indistinguishable from coverage.
+    (ash|yash|posh|csh|tcsh|fish)
+      # Another shell is a script this gate does not check: the checker has no dialect mode
+      # for any of them that these raw blobs could name — a per-file directive could force
+      # the sh parser onto some, and the bytes this gate reads carry none. It gets its own
+      # bucket, announced by the hook like the zsh exclusion — a coverage hole that is
+      # silent is indistinguishable from coverage.
       printf . >> "$work/other-count" || exit 1 ;;
     (*)
       # No shebang (data), or an interpreter that is not a shell at all (node, python3, ruby,
@@ -849,8 +853,9 @@ function shellcheckStep(): string {
 # the checker cannot parse it (SC1071 is a parser-level error no inline directive can silence),
 # so checking it would fail every push on the parser, not on the script. Excluded — and said so
 # at run time below, because a coverage hole that is silent is indistinguishable from coverage.
-# Any other shell (ksh, ash) is the same shape: counted in its own bucket and said so below,
-# never silently unread. A first line with no shebang, or a shebang naming an interpreter that is
+# ksh IS in the checked set: the checker parses it natively, so an announced hole there was a
+# standing cost, not a reach limit. Any other shell (ash, csh, fish, …) is the zsh shape:
+# counted in its own bucket and said so below, never silently unread. A first line with no shebang, or a shebang naming an interpreter that is
 # not a shell (node, python3), lands nowhere — not a shell script, so no coverage hole.
 # The same honesty splits the unreadable: a regular file that exists but cannot be read blocks
 # the push (coverage would otherwise silently shrink), while a tracked path with nothing readable
@@ -1153,7 +1158,7 @@ if command -v shellcheck >/dev/null 2>&1; then
         echo "› shellcheck: $((zsh_count)) zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
       fi
       if [ "$other_count" -gt 0 ]; then
-        echo "› shellcheck: $((other_count)) script(s) under another interpreter (ksh, ash, …) — not in the checked set by policy, not by the checker's reach; not checked, not failed"
+        echo "› shellcheck: $((other_count)) script(s) under another interpreter (ash, …) — not in the checked set by policy, not by the checker's reach; not checked, not failed"
       fi
       if [ "$count" -eq 0 ]; then
         echo "› shellcheck: no shell script $where — nothing to check there"

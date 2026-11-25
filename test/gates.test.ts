@@ -1646,10 +1646,10 @@ describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's r
     expect(stdout).toContain("1 zsh script(s) excluded")
   })
 
-  it("PINNED: a ksh script is counted and announced, never silently unread", async () => {
-    // The classifier had two arms — sh-family and zsh; every other shebang (ksh, ash) matched
-    // neither: no bucket, no check, no disclosure. The third bucket counts it and the hook
-    // says so at run time, the same honesty as the zsh exclusion.
+  it("PINNED: a ksh script reaches the checker like an sh script", async () => {
+    // ksh was the announced hole: the checker parses it natively, so the exclusion was
+    // policy, and the policy was retired — a ksh script is staged, handed to the checker
+    // and can block like any sh script. No "another interpreter" line may cover it again.
     await baseRepo()
     await write("tool/run.ksh", "#!/bin/ksh\necho hi\n")
     await write("tool/do.sh", "#!/bin/sh\necho ok\n")
@@ -1666,14 +1666,13 @@ describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's r
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as string[])
-    // The one run sees only the sh script — the ksh one is never handed to the checker.
+    // The one run sees both scripts — ksh is handed to the checker like sh.
     expect(calls).toHaveLength(1)
     for (const args of calls) {
-      expect(args.filter((arg) => arg.startsWith("./"))).toEqual(["./tool/do.sh"])
+      expect(args.filter((arg) => arg.startsWith("./"))).toEqual(["./tool/do.sh", "./tool/run.ksh"])
     }
-    // …and the exclusion is disclosed at run time, not silent.
-    expect(stdout).toContain("1 script(s) under another interpreter")
-    expect(stdout).toContain("not checked, not failed")
+    // …and no exclusion line covers it.
+    expect(stdout).not.toContain("another interpreter")
   })
 
   it("a versioned or suffixed interpreter lands in its family", async () => {
@@ -1707,11 +1706,12 @@ describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's r
     expect(stdout).not.toContain("another interpreter")
   })
 
-  it("PINNED: Node and Python tools are not a shell coverage hole; a ksh script still is", async () => {
+  it("PINNED: Node and Python tools are not a shell coverage hole, and neither is ksh", async () => {
     // The bare `#!` catch-all put every non-sh shebang in the "other" bucket, so a repo with
     // Node and Python tools printed a standing "N script(s) under another interpreter (ksh,
     // ash, …)" line on every push for scripts that were never shell — a line pushers learn to
-    // ignore, the opposite of what an announced hole is for.
+    // ignore, the opposite of what an announced hole is for. ksh left the bucket for the
+    // checked set: a ksh tool is checked, not announced as a hole.
     await baseRepo()
     await write("tool/do.sh", "#!/bin/sh\necho ok\n")
     await write("tool/build.mjs", "#!/usr/bin/env node\nconsole.log(1)\n")
@@ -1737,7 +1737,9 @@ describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's r
       env,
       update("main", await revParse("HEAD"), await revParse("HEAD~1")),
     )
-    expect(second.stdout).toContain("1 script(s) under another interpreter")
+    const secondCalls = (await recorded())[1]?.filter((arg) => arg.startsWith("./")) ?? []
+    expect(secondCalls).toContain("./tool/run.ksh")
+    expect(second.stdout).not.toContain("another interpreter")
   })
 
   it.skipIf(!hasShellcheck)(

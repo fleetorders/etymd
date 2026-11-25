@@ -273,3 +273,21 @@ stale references the dropped shapes would have caught.
 **Consequences:** recall drops in each named shape, recorded in
 [limitations.md](limitations.md). The upstream rule needs the remote fetched and runs `git blame`
 only on comments that already produced a finding, so a clean file costs nothing extra.
+
+## D-015 — ksh joins the checked set; the announced hole is retired
+
+The shell gate's classifier hands sh, bash, dash — and now the ksh families (ksh, ksh93, mksh,
+pdksh, oksh, lksh) — to the checker. The other-shell bucket keeps ash, yash, posh, csh, tcsh and
+fish, still counted and announced.
+
+**Why:** the checker parses ksh natively — a ksh-shebang file gets real findings, no dialect
+error — so excluding it was a policy choice, not a reach limit, and its cost was a standing
+announced hole on every push of a repo that carries any ksh. An announced hole is honest, but
+paying it forever for a dialect the checker reads is the wrong bill. ash stays excluded
+uncontested: the checker has no mode for it without a per-file directive, and the raw blobs this
+gate reads cannot carry one.
+
+**Consequences:** a repo with ksh scripts carrying real findings starts refusing pushes the day
+its pack regenerates past this version — the same one-time migration every severity-bar change
+pays. The pack version bumps with the classifier; consumers take the widening at their next
+`etymd gates` run.
