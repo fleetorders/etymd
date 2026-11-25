@@ -216,6 +216,12 @@ export const commentTruthLens: Lens = {
     // (comment-context.ts); and a comment the fork inherited from its upstream is upstream's to
     // fix. Both are decided per comment, on findings only, so a clean file costs nothing extra.
     const contextSkips = { example: 0, packaged: 0, sibling: 0, wrapped: 0, nested: 0, upstream: 0 }
+    // Per (file, claim): the skip its mentions read as, and whether any mention kept the
+    // finding alive. The counts are taken at the end, over ids that never survived — a claim
+    // read as an example in one comment and plainly in another is flagged, and must not also
+    // be counted "skipped, not flagged" beside its own finding.
+    const skippedIds = new Map<string, keyof typeof contextSkips>()
+    const keptIds = new Set<string>()
     // A missing path that exists under a nested package's own directory was written relative to
     // that package, by a file that does not sit in it (a root script naming a package's file).
     const packageDirs = [
@@ -278,13 +284,14 @@ export const commentTruthLens: Lens = {
       rel: string,
       finding: Finding,
       carry: string,
+      continuesOnNextLine: boolean,
     ): Promise<keyof typeof contextSkips | null> => {
       const prefix = `${stalePathPrefix}${rel}:`
       if (!finding.id.startsWith(prefix)) return null
       const claim = finding.id.slice(prefix.length)
       const mentions = mentionsOf(span.text, claim)
       if (!mentions.length) return (await isInNestedPackage(claim)) ? "nested" : null
-      if (mentions.every((m) => isExampleMention(m.before))) return "example"
+      if (mentions.every((m) => isExampleMention(m.before, m.after))) return "example"
       if (mentions.every((m) => isPackagedMention(m.before, m.after))) return "packaged"
       if (
         siblingNames.size &&
@@ -294,6 +301,7 @@ export const commentTruthLens: Lens = {
       // "(cart/checkout/…/auth/" cut by the line wrap inside an open parenthesis: the phrase
       // continues on the next line, so the token is not the whole of what was written.
       const cutByWrap = (m: { before: string; after: string }) =>
+        continuesOnNextLine &&
         m.after.trim() === "" &&
         m.before.lastIndexOf("(") > m.before.lastIndexOf(")") &&
         span.text.trimEnd().endsWith("/")
@@ -345,7 +353,8 @@ export const commentTruthLens: Lens = {
       }
 
       let previous: { text: string; line: number } | undefined
-      for (const span of spans) {
+      for (let i = 0; i < spans.length; i += 1) {
+        const span = spans[i] as { text: string; line: number }
         commentCount += 1
         const subject = `${rel}:${span.line}`
         const lastLine = span.line + span.text.split("\n").length - 1
@@ -353,21 +362,27 @@ export const commentTruthLens: Lens = {
         // directly above — one sentence wrapped across two line comments.
         const carry = previous && previous.line === span.line - 1 ? previous.text : ""
         previous = { text: span.text, line: lastLine }
+        // A slash-ended phrase cut by a wrap continues only on the comment line directly
+        // below: with no such line the comment simply ends mid-phrase, and "the phrase
+        // continues on the next line" would be a disclosure the text contradicts.
+        const nextSpan = spans[i + 1] as { text: string; line: number } | undefined
+        const continuesOnNextLine = nextSpan !== undefined && nextSpan.line === lastLine + 1
         let inherited: boolean | undefined
         const keep = async (fresh: Finding[]): Promise<Finding[]> => {
           const kept: Finding[] = []
           for (const f of fresh) {
-            const why = await contextSkip(span, rel, f, carry)
+            const why = await contextSkip(span, rel, f, carry, continuesOnNextLine)
             if (why) {
-              contextSkips[why] += 1
+              skippedIds.set(f.id, why)
               continue
             }
             inherited ??= await writtenUpstream(rel, span.line, lastLine)
             if (inherited) {
-              contextSkips.upstream += 1
+              skippedIds.set(f.id, "upstream")
               continue
             }
             kept.push(f)
+            keptIds.add(f.id)
           }
           return kept
         }
@@ -397,7 +412,10 @@ export const commentTruthLens: Lens = {
             lensId: LENS_ID,
             subject,
             missingPathTier: "gap",
-            maxPathFindings: MAX_PATH_FINDINGS_PER_FILE,
+            // No shared cap here: the cap belongs after the comment-context skips below,
+            // or twelve example paths and one stale one would truncate on the examples and
+            // lose the only line worth reading.
+            maxPathFindings: Number.POSITIVE_INFINITY,
             rootedFirstSegments: rootedHere,
             sourceRelative: true,
             skipCommandsWithoutManifest: true,
@@ -438,7 +456,16 @@ export const commentTruthLens: Lens = {
           ),
         )
       }
-      findings.push(...byId.values())
+      // The cap, taken after the skips: what it drops is disclosed — the examined list is
+      // not the findings list.
+      const keptFindings = [...byId.values()]
+      if (keptFindings.length > MAX_PATH_FINDINGS_PER_FILE) {
+        disclosures.push(
+          `${rel}: more than ${MAX_PATH_FINDINGS_PER_FILE} stale-path findings survived the comment-context skips — truncated.`,
+        )
+        keptFindings.length = MAX_PATH_FINDINGS_PER_FILE
+      }
+      findings.push(...keptFindings)
     }
 
     // Honest coverage — every class not checked is named, never silently dropped.
@@ -548,6 +575,7 @@ export const commentTruthLens: Lens = {
         `${counters.noManifestCommandsSkipped} package-manager command(s) in comments were not checked — this repo has no package manifest, so they describe commands of other trees; skipped.`,
       )
     }
+    for (const [id, why] of skippedIds) if (!keptIds.has(id)) contextSkips[why] += 1
     if (contextSkips.example) {
       disclosures.push(
         `${contextSkips.example} missing path(s) in comments are introduced as examples ("a path like …", "e.g. …") — shapes, not references; skipped, not flagged.`,

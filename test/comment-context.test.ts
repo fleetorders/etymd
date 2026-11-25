@@ -37,6 +37,29 @@ describe("comment context — example mentions", () => {
     expect(isExampleMention(before(text, "e/f.ts")[0] as string)).toBe(false)
   })
 
+  it("bare like and say are prose, not example cues", () => {
+    // "the loader looks like `src/gone.ts` used to" and "what the docs say `src/x.ts` holds"
+    // cleared real references until the cues required their shapes.
+    expect(isExampleMention("the loader looks like ")).toBe(false)
+    expect(isExampleMention("what the docs say ")).toBe(false)
+    expect(isExampleMention("nothing like ")).toBe(false)
+    expect(isExampleMention("a file like ")).toBe(true)
+    expect(isExampleMention("files like ")).toBe(true)
+    expect(isExampleMention("named like ")).toBe(true)
+    expect(isExampleMention("let's say ")).toBe(true)
+    expect(isExampleMention("just say ")).toBe(true)
+  })
+
+  it("a bracket holding only spans and separators enumerates examples", () => {
+    expect(isExampleMention("a longer path (`", "`) is that path's text")).toBe(true)
+    expect(isExampleMention("prose — `", "`, `docs/x/` — into spans")).toBe(true)
+    expect(isExampleMention("prose — `src/a.ts`, `", "` — into spans")).toBe(true)
+    expect(isExampleMention("(see `", "`)")).toBe(false)
+    expect(isExampleMention("the map — see `", "` — for details")).toBe(false)
+    expect(isExampleMention("(the build script `", "` runs")).toBe(false)
+    expect(isExampleMention("the old map — `", "` and more — later")).toBe(false)
+  })
+
   it("a plain reference is not an example", () => {
     expect(isExampleMention("the parser lives in ")).toBe(false)
     expect(isExampleMention("unlike ")).toBe(false)
@@ -45,6 +68,14 @@ describe("comment context — example mentions", () => {
 })
 
 describe("comment context — paths inside a built artifact", () => {
+  it("everyday words do not place a path inside a built artifact", () => {
+    // "in the package" and "in the image" prefix real references in monorepos and asset trees.
+    expect(isPackagedMention("the build script in the package ", "")).toBe(false)
+    expect(isPackagedMention("the sprite in the image ", "")).toBe(false)
+    expect(isPackagedMention("reads ", " back out of the container")).toBe(false)
+    expect(isPackagedMention("then reads ", " back out of the APK and refuses")).toBe(true)
+  })
+
   it("reads a path taken out of an artifact as packaged", () => {
     expect(isPackagedMention("then reads ", " back out of the APK and refuses")).toBe(true)
     expect(isPackagedMention("the manifest inside the release bundle, ", "")).toBe(true)

@@ -696,3 +696,84 @@ describe("what a comment says about a missing path", () => {
     expect(report.disclosures.join("\n")).toMatch(/has no fetched refs/)
   })
 })
+
+describe("the comment skip rules read what the words say", () => {
+  const ids = (report: LensReport) => report.findings.map((f) => f.id)
+
+  it("flags a plain reference that only 'looks like' or is 'said'", async () => {
+    // "the loader looks like src/gone.ts used to" was skipped as an example: bare like/say
+    // cleared ordinary prose.
+    await write("src/a.ts", "// the loader looks like src/gone.ts used to\nexport {}\n")
+    await write("src/b.ts", "// do what the docs say src/lost.md holds\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual([
+      "comment-truth/stale-path:src/a.ts:src/gone.ts",
+      "comment-truth/stale-path:src/b.ts:src/lost.md",
+    ])
+  })
+
+  it("flags a real reference after an everyday 'image' word", async () => {
+    await write("assets/keep.txt", "x\n")
+    await write("src/a.ts", "// the sprite in the image assets/hero.png is traced\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/a.ts:assets/hero.png"])
+  })
+
+  it("reads a bare bracket enumeration as examples", async () => {
+    await write("src/a.ts", "// a longer path (`src/out/2.json`) is that path's text\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/introduced as examples/)
+  })
+
+  it("reads a paired-dash list as examples", async () => {
+    await write(
+      "src/a.ts",
+      "// promote prose — `src/x.ts`, `src/design/` — into spans\nexport {}\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/introduced as examples/)
+  })
+
+  it("counts a skip only for claims that never became findings", async () => {
+    // docs/notes is named as an example in one comment and plainly in another: the finding
+    // stands, and the skip disclosure must not also claim it was "skipped, not flagged".
+    await write("docs/readme.md", "# d\n")
+    await write(
+      "src/a.ts",
+      "// a path like docs/notes/ is bold\n// docs/notes/ is also read at boot\nexport {}\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/a.ts:docs/notes"])
+    expect(report.disclosures.join("\n")).not.toMatch(/introduced as examples/)
+  })
+
+  it("reports the one stale path among twelve examples", async () => {
+    // The shared findings cap fired before the context filter, so the examples spent it and
+    // the stale path was truncated away; the cap now lands after the skips.
+    await write("docs/readme.md", "# d\n")
+    const examples = Array.from({ length: 12 }, (_, i) => `docs/e${i}/`).join(", ")
+    await write("src/a.ts", `// paths like ${examples} and docs/truly-gone.md too\nexport {}\n`)
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/a.ts:docs/truly-gone.md"])
+    expect(report.disclosures.join("\n")).toMatch(/12 missing path\(s\) in comments are introduced/)
+  })
+
+  it("does not call a wrap cut where no next comment line exists", async () => {
+    // The disclosure said "the phrase continues on the next line" about a comment that had no
+    // next line: the wrap skip needs the continuation to exist.
+    await write("cart/index.ts", "export {}\n")
+    await write("src/seo.ts", "// private routes (cart/checkout/order/\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/seo.ts:cart/checkout/order"])
+    expect(report.disclosures.join("\n")).not.toMatch(/cut by a line wrap/)
+  })
+})
