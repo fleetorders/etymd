@@ -212,7 +212,11 @@ function readArchived(
   if (value === undefined || value === null || value === false) return undefined
   if (value === true) return "true"
   const text = asString(value)
-  if (text) return text
+  // A string must read as a date, as the problem detail below promises. Any non-empty string
+  // used to archive — "false", "no", "0", a typo — would hide the project from every check
+  // with no bad-shape problem at all, the exact silent-hide failure this reader exists to
+  // prevent.
+  if (text && /^\d{4}-\d{2}-\d{2}/.test(text)) return text
   manifest.problems.push({
     kind: "bad-shape",
     file: manifestFile,

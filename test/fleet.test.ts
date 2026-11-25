@@ -473,6 +473,31 @@ describe("fleet — archived entries are records, not members", () => {
     expect(result.wallDisclosures.some((d) => d.includes("archived entry (closed)"))).toBe(true)
   })
 
+  it("a non-date archived string is reported and the entry stays live", async () => {
+    // Any non-empty string used to archive — "false", "no", "0", a typo — used to hide the
+    // project from every check with no problem raised: the silent-hide failure this reader
+    // exists to prevent. Only "true" and date strings archive.
+    await initRepo("alive", { stateAt: "2026-06-01T09:00:00Z" })
+    const manifestPath = await writeHub([
+      personal("alive"),
+      {
+        name: "closed",
+        kind: "repo",
+        profile: "personal",
+        path: "gone/closed",
+        archived: "false",
+      },
+    ])
+    const manifest = await manifestAt(manifestPath)
+    expect(manifest.entries.map((e) => e.name)).toEqual(["alive", "closed"])
+    expect(manifest.archived).toEqual([])
+    expect(
+      manifest.problems.some(
+        (p) => p.kind === "bad-shape" && p.detail.includes("must be true or a date string"),
+      ),
+    ).toBe(true)
+  })
+
   it("a private archived record still answers for a tracked path", async () => {
     // Archiving silences the work, not the file: a private entry carrying a path in the
     // tracked manifest ties an opaque alias to a real directory for anyone who can read it.
