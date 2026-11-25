@@ -232,13 +232,18 @@ export const commentTruthLens: Lens = {
           .filter((d) => d !== "."),
       ),
     ]
-    const isInNestedPackage = cached(async (claim: string) => {
-      if (claim.startsWith(".")) return false // dot-relative: about the commenting file's own directory
+    const isInNestedPackage = cachedPathResolve(async (claim: string, rel?: string) => {
+      if (!rel || claim.startsWith(".")) return false // dot-relative: about the commenting file's own directory
       const bare = claim.replace(/\/+$/, "")
       if (!bare.includes("/")) return false
       // Asked of the working tree, like every other path check: a file deleted but still in
-      // the index is gone.
-      for (const d of packageDirs) if (await pathExists(path.join(root, d, bare))) return true
+      // the index is gone. Scoped to the commenting file, the same relation sourceRelative
+      // resolves from: only a package the file sits inside may lend its frame. A package an
+      // unrelated subtree carries must not vouch for a root script's stale path — in any
+      // monorepo some package then holds a file at the same relative spot, and a deleted
+      // root-level `src/...` path could no longer be caught anywhere.
+      for (const d of packageDirs)
+        if (rel.startsWith(`${d}/`) && (await pathExists(path.join(root, d, bare)))) return true
       return false
     })
     let upstreamRemote = ctx.upstreamRemote
@@ -286,11 +291,22 @@ export const commentTruthLens: Lens = {
       carry: string,
       continuesOnNextLine: boolean,
     ): Promise<keyof typeof contextSkips | null> => {
-      const prefix = `${stalePathPrefix}${rel}:`
-      if (!finding.id.startsWith(prefix)) return null
-      const claim = finding.id.slice(prefix.length)
+      // The word rules decide what any missing PATH in this comment means, and a dangling doc
+      // reference is a missing path to the reader — the same mention through the doc-refs
+      // checker must read the same way, or a comment that says "a file like DECISIONS.md"
+      // drops in the path checker and flags in the doc checker (D-014: dropped only when every
+      // mention reads the same way). Decision references cite labels ("D-014"), not paths:
+      // the path-shaped rules do not read them.
+      const stalePrefix = `${stalePathPrefix}${rel}:`
+      const docRefPrefix = `${LENS_ID}/dangling-ref:${rel}:`
+      const claim = finding.id.startsWith(stalePrefix)
+        ? finding.id.slice(stalePrefix.length)
+        : finding.id.startsWith(docRefPrefix)
+          ? finding.id.slice(docRefPrefix.length)
+          : null
+      if (claim === null) return null
       const mentions = mentionsOf(span.text, claim)
-      if (!mentions.length) return (await isInNestedPackage(claim)) ? "nested" : null
+      if (!mentions.length) return (await isInNestedPackage(claim, rel)) ? "nested" : null
       if (mentions.every((m) => isExampleMention(m.before, m.after))) return "example"
       if (mentions.every((m) => isPackagedMention(m.before, m.after))) return "packaged"
       if (
@@ -306,7 +322,7 @@ export const commentTruthLens: Lens = {
         m.before.lastIndexOf("(") > m.before.lastIndexOf(")") &&
         span.text.trimEnd().endsWith("/")
       if (mentions.every(cutByWrap)) return "wrapped"
-      if (await isInNestedPackage(claim)) return "nested"
+      if (await isInNestedPackage(claim, rel)) return "nested"
       return null
     }
 
@@ -390,18 +406,18 @@ export const commentTruthLens: Lens = {
         for (const key of Object.keys(promotionSkips) as (keyof typeof promotionSkips)[]) {
           promotionSkips[key] += promoted.skips[key]
         }
-        // A comment whose own claims resolve under a nested package writes from that package's
-        // frame — a root script naming a package's file. Their first segment roots this comment's
-        // other claims too: without it the strict per-file rooting above would read the package's
-        // own `src/...` mentions as quoted from another tree, and the nested-package skip in
-        // contextSkip would never be reached to sort the present from the absent. Only a claim
-        // that IS there anchors — a directory name an unrelated subtree merely carries does not.
+        // A comment whose own claims resolve under the nested package its file sits in writes
+        // from that package's frame. Their first segment roots this comment's other claims too:
+        // without it the strict per-file rooting above would read the package's own `src/...`
+        // mentions as quoted from another tree, and the nested-package skip in contextSkip
+        // would never be reached to sort the present from the absent. Only a claim that IS
+        // there anchors — a directory name an unrelated subtree merely carries does not.
         let rootedHere = rootedDirs
         if (packageDirs.length) {
           const spanClaims = extractPathClaims(promoted.text)
           const anchored = new Set<string>()
           for (const claim of [...spanClaims.paths, ...spanClaims.dirs])
-            if (await isInNestedPackage(claim)) anchored.add(claim.split("/")[0] ?? claim)
+            if (await isInNestedPackage(claim, rel)) anchored.add(claim.split("/")[0] ?? claim)
           if (anchored.size) rootedHere = new Set([...rootedDirs, ...anchored])
         }
         const file = { path: rel, text: promoted.text }
@@ -591,6 +607,15 @@ export const commentTruthLens: Lens = {
         `${contextSkips.sibling} missing path(s) in comments directly follow the name of another repository in this fleet — that repository's paths, not this one's; skipped, not flagged.`,
       )
     }
+    // The sibling names arrive only from the fleet sweep (engine/fleet.ts), so a local audit —
+    // the pre-push gate among them — runs without the class at all. Same tree, same ledger,
+    // different verdict depending on who asks: the asymmetry is kept (duplicating the names
+    // into every consumer's config would drift) and disclosed where it exists.
+    if (!siblingNames.size && filesWithComments) {
+      disclosures.push(
+        "no sibling repositories are known to this run (the fleet sweep supplies their names) — the sibling-name skip could not be applied, so a path written after another repository's name may be flagged here that the sweep would skip.",
+      )
+    }
     if (contextSkips.wrapped) {
       disclosures.push(
         `${contextSkips.wrapped} slash-ended phrase(s) in comments are cut by a line wrap inside an open parenthesis — the phrase continues on the next line; skipped, not flagged.`,
@@ -598,7 +623,7 @@ export const commentTruthLens: Lens = {
     }
     if (contextSkips.nested) {
       disclosures.push(
-        `${contextSkips.nested} missing path(s) in comments exist under a nested package's own directory — written relative to that package; treated as true, not flagged.`,
+        `${contextSkips.nested} missing path(s) in comments exist under the nested package their commenting file sits in — written relative to that package; treated as true, not flagged.`,
       )
     }
     if (contextSkips.upstream) {

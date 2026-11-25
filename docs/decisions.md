@@ -258,7 +258,7 @@ tier where a model earns its place, which must never be able to fail CI.
 **Comments.** A missing path in a comment is a stale reference only when the comment points at
 this repository's tree. The lens reads the words beside each mention before it accuses: a path
 introduced as an example, a path placed inside a built artifact, a path written after a sibling
-repository's name, a path that exists under a nested package's own directory, a slash-ended
+repository's name, a path that exists under the nested package the commenting file sits in, a slash-ended
 phrase cut by a line wrap, and a comment last written by a commit of the fork's upstream remote
 are counted, disclosed and not flagged. A finding is dropped only when every mention of the path
 in that comment reads the same way.

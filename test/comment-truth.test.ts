@@ -662,7 +662,18 @@ describe("what a comment says about a missing path", () => {
     expect(report.disclosures.join("\n")).toMatch(/cut by a line wrap/)
   })
 
-  it("treats a path found under a nested package as written from that package", async () => {
+  it("flags a root script's stale path though a nested package holds a file at the same relative spot", async () => {
+    await write("src/keep.ts", "export {}\n")
+    await write("packages/agent/package.json", JSON.stringify({ name: "agent" }))
+    await write("packages/agent/src/index.ts", "export {}\n")
+    await write("tools/run.ts", "// the entry point is src/index.ts, deleted long ago\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:tools/run.ts:src/index.ts"])
+    expect(report.disclosures.join("\n")).not.toMatch(/nested package/)
+  })
+
+  it("reads a root script's package-relative paths as quoted from elsewhere — its file sits in no package", async () => {
     await write("packages/agent/package.json", JSON.stringify({ name: "agent" }))
     await write("packages/agent/src/tools/voice.ts", "export {}\n")
     await write(
@@ -671,8 +682,29 @@ describe("what a comment says about a missing path", () => {
     )
     await gitStage()
     const report = await runComments()
-    expect(ids(report)).toEqual(["comment-truth/stale-path:scripts/run.ts:src/tools/absent.ts"])
-    expect(report.disclosures.join("\n")).toMatch(/under a nested package's own directory/)
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/start at no directory/)
+    expect(report.disclosures.join("\n")).not.toMatch(/nested package/)
+  })
+
+  it("clears a doc reference introduced as an example, like the same mention through the path checker", async () => {
+    // The doc-refs checker flags the same missing mention the path checker does; the word
+    // rules must read both the same way, or "a file like DECISIONS.md" drops in one and
+    // flags in the other.
+    await write("src/a.ts", "// a file like DECISIONS.md records the rulings\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/introduced as examples/)
+  })
+
+  it("says when no sibling names are known, so the sibling skip could not apply", async () => {
+    await write("src/a.ts", "// see src/gone.ts for the rest\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(report.disclosures.join("\n")).toMatch(/sibling-name skip could not be applied/)
+    const swept = await runWith({ siblingNames: ["sibling-repo"] })
+    expect(swept.disclosures.join("\n")).not.toMatch(/sibling-name skip could not be applied/)
   })
 
   it("leaves a comment the upstream remote wrote to upstream, and checks the fork's own", async () => {
