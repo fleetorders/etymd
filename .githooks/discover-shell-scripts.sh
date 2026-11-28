@@ -51,6 +51,14 @@ case ${1-} in
     for record do
       meta=${record%%"$tab"*}
       file=${record#*"$tab"}
+      # A record path must stay inside the tree before anything consumes it: git's own
+      # writers refuse a tree entry whose name carries .., but a hand-forged or corrupted
+      # object reaches ls-tree verbatim, and an escaping name writes outside the tree.
+      case $file in
+        (""|/*|.|..|./*|../*|*/..|*/../*|*/.|*/./*)
+          echo "etymd: tracked path does not stay inside the checked tree: $file" >&2
+          exit 1 ;;
+      esac
       case $file in
         (.shellcheckrc|*/.shellcheckrc) ;;
         (*) continue ;;
@@ -90,6 +98,13 @@ case ${1-} in
     for record do
       meta=${record%%"$tab"*}
       file=${record#*"$tab"}
+      # The same staying-inside guard as --config: the path is consumed below (mkdir, the
+      # blob write) before any later filter can be trusted to neutralise it.
+      case $file in
+        (""|/*|.|..|./*|../*|*/..|*/../*|*/.|*/./*)
+          echo "etymd: tracked path does not stay inside the checked tree: $file" >&2
+          exit 1 ;;
+      esac
       case ${meta%% *} in
         (100644|100755) ;;
         (*) continue ;;
@@ -121,6 +136,13 @@ sha=$4
 shift 4
 for entry do
   file=${entry#"$sha":}
+  # The path is consumed below (the blob read, the mv into the tree): the same
+  # staying-inside guard as the other arms, checked before any byte moves.
+  case $file in
+    (""|/*|.|..|./*|../*|*/..|*/../*|*/.|*/./*)
+      echo "etymd: tracked path does not stay inside the checked tree: $file" >&2
+      exit 1 ;;
+  esac
   # 4096 bytes bound the classifying read — a binary with no newline would otherwise be copied
   # whole into the next step. The second head restores line-1-only semantics, so a shebang
   # embedded on a LATER line of a document cannot match the patterns below.
@@ -129,13 +151,42 @@ for entry do
     exit 1
   }
   head -n 1 "$work/head-bytes" > "$work/first-line" || exit 1
-  # Trailing whitespace after the interpreter name is still the interpreter: a tab before a
-  # flag (sh<TAB>-e) or a first line committed with a carriage return must classify, or the
-  # script leaves every bucket — unchecked, unexcluded, undisclosed.
-  st=0
-  grep -qE "^#!.*[/ ](ba|da)?sh([[:space:]].*)?$" "$work/first-line" || st=$?
-  case $st in
-    (0)
+  # The interpreter is read ONCE, as a name: the first word after #! with its directory
+  # stripped, or — where that word is env — the first word after env's own options and NAME=value
+  # settings (env -S bash -e is bash), or — where it is busybox — the applet it runs. One name,
+  # one case below, so a versioned or suffixed build (bash5, zsh-5.9) lands in its family
+  # instead of slipping past three near-duplicate patterns. Spaces, tabs and a trailing carriage
+  # return all separate words: a tab before a flag (sh<TAB>-e) or a first line committed with
+  # CRLF must still classify, or the script leaves every bucket — unchecked, unexcluded,
+  # undisclosed. LC_ALL=C: the line is bytes, possibly not text in the caller's locale. A first
+  # line with no shebang prints nothing.
+  interp=$(LC_ALL=C awk 'NR == 1 {
+      if (substr($0, 1, 2) != "#!") exit
+      line = substr($0, 3)
+      gsub(/[\t\r]/, " ", line)
+      n = split(line, w, " ")
+      i = 1
+      name = w[1]
+      sub(/.*\//, "", name)
+      if (name == "env") {
+        for (i = 2; i <= n; i++) {
+          if (w[i] == "-u" || w[i] == "--unset" || w[i] == "-C" || w[i] == "--chdir" || w[i] == "-P") { i++; continue }
+          if (w[i] ~ /^-/ || w[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) continue
+          break
+        }
+        name = (i <= n) ? w[i] : ""
+        sub(/.*\//, "", name)
+      }
+      if (name == "busybox") name = (i + 1 <= n) ? w[i + 1] : ""
+      print name
+      exit
+    }' "$work/first-line") || exit 1
+  case $interp in
+    (sh|bash|dash|ksh|sh[0-9]*|bash[0-9]*|dash[0-9]*|ksh[0-9]*|sh-[0-9]*|bash-[0-9]*|dash-[0-9]*|ksh-[0-9]*)
+      # ksh is in the checked set, not the excluded bucket: the checker names ksh among its
+      # native dialects (a ksh-shebang file gets real findings, no dialect error), so
+      # excluding it was a policy choice paid as a standing hole on every push of a repo
+      # that carries any ksh.
       case $file in
         (*/*) dir=${file%/*} ;;
         (*) dir=. ;;
@@ -146,26 +197,39 @@ for entry do
       }
       printf "./%s\0" "$file" >> "$work/scripts" || exit 1
       printf . >> "$work/count" || exit 1 ;;
-    (1)
-      st=0
-      grep -qE "^#!.*[/ ]zsh([[:space:]].*)?$" "$work/first-line" || st=$?
-      case $st in
-        (0) printf . >> "$work/zsh-count" || exit 1 ;;
-        (1)
-          # Any other shebang (ksh, ash) is a script this gate cannot check; it gets its own
-          # bucket, announced by the hook like the zsh exclusion — a coverage hole that is
-          # silent is indistinguishable from coverage. A first line with no shebang at all is
-          # data, not a script, and lands in no bucket by design.
-          st=0
-          grep -qE "^#!" "$work/first-line" || st=$?
-          case $st in
-            (0) printf . >> "$work/other-count" || exit 1 ;;
-            (1) ;;
-            (*) exit 1 ;;
-          esac ;;
-        (*) exit 1 ;;
-      esac ;;
-    (*) exit 1 ;;
+    (mksh|pdksh|oksh|lksh)
+      # The ksh family's other names are ksh to their authors, and are checked, never
+      # excluded — but the checker's own refusal names only sh/bash/dash/ksh, and a
+      # mksh/pdksh/lksh shebang earns SC1008 at ERROR severity, over this gate's bar, on a
+      # script that is clean. They stage to their own list and the run below reads that
+      # list under the ksh dialect explicitly (--shell=ksh): what the name means, said to
+      # the checker instead of guessed from the shebang it does not know.
+      case $file in
+        (*/*) dir=${file%/*} ;;
+        (*) dir=. ;;
+      esac
+      mkdir -p -- "$tree/$dir" && mv -- "$work/blob" "$tree/$file" || {
+        echo "etymd: cannot stage tracked file for shellcheck: $file" >&2
+        exit 1
+      }
+      printf "./%s\0" "$file" >> "$work/scripts-ksh" || exit 1
+      printf . >> "$work/count" || exit 1
+      printf . >> "$work/ksh-alias-count" || exit 1 ;;
+    (zsh|zsh[0-9]*|zsh-[0-9]*)
+      printf . >> "$work/zsh-count" || exit 1 ;;
+    (ash|yash|posh|csh|tcsh|fish)
+      # Another shell is a script this gate does not check: the checker has no dialect mode
+      # for any of them that these raw blobs could name — a per-file directive could force
+      # the sh parser onto some, and the bytes this gate reads carry none. It gets its own
+      # bucket, announced by the hook like the zsh exclusion — a coverage hole that is
+      # silent is indistinguishable from coverage.
+      printf . >> "$work/other-count" || exit 1 ;;
+    (*)
+      # No shebang (data), or an interpreter that is not a shell at all (node, python3, ruby,
+      # perl, deno …): not a shell script, so no bucket and no announcement — counting every
+      # Node or Python tool as a shell coverage hole printed a standing line pushers learned to
+      # ignore, the opposite of what an announced hole is for.
+      ;;
   esac
 done
-# etymd:generated pack-v28 28ef73acfe6160b4
+# etymd:generated pack-v38 5dc728df1559d84c

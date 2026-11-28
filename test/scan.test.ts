@@ -87,6 +87,14 @@ describe("scanProject", () => {
     expect(facts.commands.raw).toEqual({})
   })
 
+  it("records the always-loaded footprint as a fact the baseline can drift against", async () => {
+    await write("AGENTS.md", "word ".repeat(10))
+    await write("CLAUDE.md", "word ".repeat(6))
+    const facts = await scanProject(dir)
+    // Distinct files, distinct inodes: both counted. 16 words → round(16/0.75) ≈ 21 tokens.
+    expect(facts.context).toEqual({ totalWords: 16, totalApproxTokens: 21, files: 2 })
+  })
+
   it("detects pnpm workspace packages", async () => {
     await write("package.json", JSON.stringify({ name: "root", private: true }))
     await write("pnpm-workspace.yaml", "packages:\n  - 'packages/*'\n")
@@ -315,6 +323,19 @@ describe("detectShellSurface — the executable surface package.json cannot see"
     await write("bin/pytool", "#!/usr/bin/env python3\nprint(1)\n")
     await write("bin/nodetool", "#!/usr/bin/env node\n")
     await write("docs/notes.md", "#!/bin/sh is how you write a shebang\n")
+    await initRepo()
+
+    expect(await detectShellSurface(dir, true)).toEqual({ scripts: 4 })
+  })
+
+  it("counts the ksh family — a ksh-only repo still gets its gate", async () => {
+    // The gate's classifier checks ksh and its aliases; the detector's patterns once
+    // matched neither the .ksh extension nor any ksh shebang, so a repo whose scripts are
+    // all ksh counted zero and the installer silently omitted the step that checks them.
+    await write("tool/run.ksh", "#!/bin/ksh\necho hi\n")
+    await write("tool/mk", "#!/usr/bin/env mksh\necho hi\n")
+    await write("tool/pd", "#!/usr/bin/pdksh\necho hi\n")
+    await write("bin/ninetythree", "#!/bin/ksh93\necho hi\n")
     await initRepo()
 
     expect(await detectShellSurface(dir, true)).toEqual({ scripts: 4 })

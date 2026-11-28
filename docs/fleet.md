@@ -94,7 +94,8 @@ Two fields the scan can never derive, so the manifest must declare them:
 One optional field takes an entry out of every command:
 
 - **`archived`** (`true`, or the date it was archived). A closed project you keep as a record.
-  `etymd fleet`, `fleet check` and `propose` skip it and say how many entries they skipped, so a
+  `etymd fleet`, `fleet check`, `propose` and `fleet board` skip it and say how many entries they
+  skipped, so a
   sweep never spends time on a repo nobody works in and never reports its findings as open work.
   The name stays taken: `fleet add` refuses to register a second project under it, and `--only`
   refuses to select it. Remove the field to bring the project back.
@@ -129,8 +130,9 @@ registers; on a Claude Code older than 2.1.277 it gets a note, since that versio
   tracked `/Users/` paths in the manifest repo, private identifiers from the local file (labels,
   dir names, hosts) inside `trust: "public-repo"` entries, guarded-host commit emails on personal
   entries, and repos whose `AGENTS.md` no `CLAUDE.md` pointer or symlink makes visible to Claude
-  Code (`claude-pointer-missing`: a risk when a `CLAUDE.md` exists and never imports it, a gap
-  when none exists and the installed Claude Code still needs one). The others are risk findings;
+  Code (`claude-pointer-missing`: a risk when a `CLAUDE.md` exists and never imports it — or
+  a `CLAUDE.local.md` sits beside the contract, which the reader counts as a `CLAUDE.md` — a
+  gap when none exists and the installed Claude Code still needs one). The others are risk findings;
   each check that cannot run is disclosed.
   These are not ledger-quietable; the only honest resolution is fixing them.
 - **No global pointer.** `--manifest` is required unless the cwd holds `registry.json`. There

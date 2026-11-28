@@ -23,6 +23,7 @@ import {
   extractComments,
   MIXED_LANGUAGE_EXTS,
 } from "./instruction-truth/comments.js"
+import { extractPathClaims } from "./instruction-truth/claims.js"
 
 // The comment-truth lens: the four claim checkers (script, path, doc, decision) over source-code
 // COMMENTS, not just instruction files — D-013. A comment is a written rule that happens to
@@ -148,12 +149,58 @@ export const commentTruthLens: Lens = {
     }
 
     const env = await buildTruthEnv(root, facts)
-    const pathResolves = cachedPathResolve(env.pathResolves)
+    // Nested package dirs, used twice below with one rule: a package frames only the comments
+    // written inside it. Computed here (before the scoped resolver) because the resolver needs
+    // it too — a path claim must never be FOUND through a package the commenting file does not
+    // sit in, or the frame rule in the skips is unreachable: the claim arrives already resolved.
+    const packageDirs = [
+      ...new Set(
+        tracked
+          .filter((rel) => PACKAGE_MANIFEST_RE.test(rel))
+          .map((rel) => path.posix.dirname(rel))
+          .filter((d) => d !== "."),
+      ),
+    ]
+    // A source comment's paths resolve from where its FILE sits: the repo root, and — only for
+    // a file inside a nested package — that package's own base. The instruction-file monorepo
+    // rule (ANY workspace's copy satisfies any claim) is deliberately not kept for comments:
+    // a root-level comment naming `src/index.ts` means this repo's src, and a package carrying
+    // a file at the same relative spot must not vouch for it — the same frame rule the skips
+    // apply, moved ahead of them so a masked claim never reaches the skip that would frame it.
+    const framePathResolves = async (claim: string, fromDir?: string): Promise<boolean> => {
+      const bases = [root]
+      if (fromDir)
+        for (const d of packageDirs)
+          if (fromDir === d || fromDir.startsWith(`${d}/`)) bases.push(path.join(root, d))
+      for (const base of bases) {
+        if (await pathExists(path.join(base, claim))) return true
+        // Conventional sub-roots instruction prose is written relative to.
+        if (await pathExists(path.join(base, "src", claim))) return true
+        if (await pathExists(path.join(base, "scripts", claim))) return true
+      }
+      // Relative to the commenting file's own directory, like buildTruthEnv.
+      if (fromDir && fromDir !== "." && (await pathExists(path.join(root, fromDir, claim))))
+        return true
+      return false
+    }
+    const pathResolves = cachedPathResolve(framePathResolves)
     const binResolves = cached(env.binResolves)
-    // A comment speaks for the package its file sits in, declared as a workspace or not (a
-    // `server/` with its own manifest beside an app). Every tracked manifest's scripts count.
+    // Nested manifests count whether or not a workspace declares them (a `server/` with its own
+    // manifest beside an app), and their scripts are POOLED into one flat set, not scoped to the
+    // package the commenting file sits in: a root comment naming `pnpm dev` defined only in
+    // `server/` is accepted. That is the monorepo rule instruction files use, kept on purpose —
+    // comments name a sibling package's script bare often enough that a per-package reading
+    // would accuse true text, and a false accusation costs more than a missed one. Manifests
+    // inside the skipped fixture/vendor directories are the exception, on the same line that
+    // keeps their comments out of the scan: their scripts describe the fixtures, never this
+    // repo's own commands.
     const knownScripts = new Set(env.knownScripts)
-    const nestedManifests = tracked.filter((rel) => path.basename(rel) === "package.json")
+    const nestedManifests = tracked.filter(
+      (rel) =>
+        path.basename(rel) === "package.json" &&
+        !SKIP_DIR_RE.test(rel) &&
+        !SKIP_BASENAME_RE.test(rel),
+    )
     for (const rel of nestedManifests) {
       const pkgJson = await readJson<{ scripts?: Record<string, string> }>(path.join(root, rel))
       for (const key of Object.keys(pkgJson?.scripts ?? {})) knownScripts.add(key)
@@ -166,37 +213,64 @@ export const commentTruthLens: Lens = {
       binResolves,
     }
     const ledger = await loadDecisionLedger(root, facts)
-    // Where a missing path may start and still be about this repo: any directory name the
-    // tracked tree carries, at any depth (a comment is written from where its file sits). A path
-    // starting at a name no directory here has is quoted from another tree — a sibling repo, an
-    // upstream project, a device — and its absence here proves nothing.
-    const rootedDirs = await listRootedDirs(env)
+    // Where a missing path may start and still be about this repo: a directory found where the
+    // comment's paths resolve — the root, a workspace package and their src/ scripts/
+    // (listRootedDirs), or the commenting file's own directory and every directory above it (a
+    // comment is written from where its file sits, so a nested package's comment names paths
+    // relative to that package).
+    // Per file, never repo-wide: almost every repo carries `src`, `test` or `docs` somewhere, so
+    // an any-depth set took nearly every path quoted from another tree as this repo's, and a name
+    // living only in an unrelated subtree (an `ios/` inside a mobile package) vouched for a
+    // comment in `server/`. A path starting anywhere else is quoted from another tree — a sibling
+    // repo, an upstream project, a device — and its absence here proves nothing.
+    const baseRooted = await listRootedDirs(env)
+    const childDirs = new Map<string, Set<string>>()
     for (const rel of tracked) {
       const segments = rel.split("/")
-      for (const segment of segments.slice(0, -1)) rootedDirs.add(segment)
+      for (let i = 0; i < segments.length - 1; i += 1) {
+        const parent = segments.slice(0, i).join("/") || "."
+        let names = childDirs.get(parent)
+        if (!names) childDirs.set(parent, (names = new Set()))
+        names.add(segments[i] as string)
+      }
+    }
+    const rootedByDir = new Map<string, ReadonlySet<string>>()
+    const rootedFor = (rel: string): ReadonlySet<string> => {
+      const fromDir = path.posix.dirname(rel)
+      const hit = rootedByDir.get(fromDir)
+      if (hit) return hit
+      const rooted = new Set([...baseRooted, ...(childDirs.get(".") ?? [])])
+      for (let dir = fromDir; dir !== "."; dir = path.posix.dirname(dir))
+        for (const name of childDirs.get(dir) ?? []) rooted.add(name)
+      rootedByDir.set(fromDir, rooted)
+      return rooted
     }
 
     // What a comment says about a missing path decides whether it is a stale reference at all
     // (comment-context.ts); and a comment the fork inherited from its upstream is upstream's to
     // fix. Both are decided per comment, on findings only, so a clean file costs nothing extra.
     const contextSkips = { example: 0, packaged: 0, sibling: 0, wrapped: 0, nested: 0, upstream: 0 }
+    // Per (file, claim): the skip its mentions read as, and whether any mention kept the
+    // finding alive. The counts are taken at the end, over ids that never survived — a claim
+    // read as an example in one comment and plainly in another is flagged, and must not also
+    // be counted "skipped, not flagged" beside its own finding.
+    const skippedIds = new Map<string, keyof typeof contextSkips>()
+    const keptIds = new Set<string>()
     // A missing path that exists under a nested package's own directory was written relative to
     // that package, by a file that does not sit in it (a root script naming a package's file).
-    const packageDirs = [
-      ...new Set(
-        tracked
-          .filter((rel) => PACKAGE_MANIFEST_RE.test(rel))
-          .map((rel) => path.posix.dirname(rel))
-          .filter((d) => d !== "."),
-      ),
-    ]
-    const isInNestedPackage = cached(async (claim: string) => {
-      if (claim.startsWith(".")) return false // dot-relative: about the commenting file's own directory
+    // `packageDirs` is declared above, beside the scoped resolver that shares the frame rule.
+    const isInNestedPackage = cachedPathResolve(async (claim: string, rel?: string) => {
+      if (!rel || claim.startsWith(".")) return false // dot-relative: about the commenting file's own directory
       const bare = claim.replace(/\/+$/, "")
       if (!bare.includes("/")) return false
       // Asked of the working tree, like every other path check: a file deleted but still in
-      // the index is gone.
-      for (const d of packageDirs) if (await pathExists(path.join(root, d, bare))) return true
+      // the index is gone. Scoped to the commenting file, the same relation sourceRelative
+      // resolves from: only a package the file sits inside may lend its frame. A package an
+      // unrelated subtree carries must not vouch for a root script's stale path — in any
+      // monorepo some package then holds a file at the same relative spot, and a deleted
+      // root-level `src/...` path could no longer be caught anywhere.
+      for (const d of packageDirs)
+        if (rel.startsWith(`${d}/`) && (await pathExists(path.join(root, d, bare)))) return true
       return false
     })
     let upstreamRemote = ctx.upstreamRemote
@@ -242,13 +316,25 @@ export const commentTruthLens: Lens = {
       rel: string,
       finding: Finding,
       carry: string,
+      continuesOnNextLine: boolean,
     ): Promise<keyof typeof contextSkips | null> => {
-      const prefix = `${stalePathPrefix}${rel}:`
-      if (!finding.id.startsWith(prefix)) return null
-      const claim = finding.id.slice(prefix.length)
+      // The word rules decide what any missing PATH in this comment means, and a dangling doc
+      // reference is a missing path to the reader — the same mention through the doc-refs
+      // checker must read the same way, or a comment that says "a file like docs/decisions.md"
+      // drops in the path checker and flags in the doc checker (D-014: dropped only when every
+      // mention reads the same way). Decision references cite labels ("D-014"), not paths:
+      // the path-shaped rules do not read them.
+      const stalePrefix = `${stalePathPrefix}${rel}:`
+      const docRefPrefix = `${LENS_ID}/dangling-ref:${rel}:`
+      const claim = finding.id.startsWith(stalePrefix)
+        ? finding.id.slice(stalePrefix.length)
+        : finding.id.startsWith(docRefPrefix)
+          ? finding.id.slice(docRefPrefix.length)
+          : null
+      if (claim === null) return null
       const mentions = mentionsOf(span.text, claim)
-      if (!mentions.length) return (await isInNestedPackage(claim)) ? "nested" : null
-      if (mentions.every((m) => isExampleMention(m.before))) return "example"
+      if (!mentions.length) return (await isInNestedPackage(claim, rel)) ? "nested" : null
+      if (mentions.every((m) => isExampleMention(m.before, m.after))) return "example"
       if (mentions.every((m) => isPackagedMention(m.before, m.after))) return "packaged"
       if (
         siblingNames.size &&
@@ -258,11 +344,12 @@ export const commentTruthLens: Lens = {
       // "(cart/checkout/…/auth/" cut by the line wrap inside an open parenthesis: the phrase
       // continues on the next line, so the token is not the whole of what was written.
       const cutByWrap = (m: { before: string; after: string }) =>
+        continuesOnNextLine &&
         m.after.trim() === "" &&
         m.before.lastIndexOf("(") > m.before.lastIndexOf(")") &&
         span.text.trimEnd().endsWith("/")
       if (mentions.every(cutByWrap)) return "wrapped"
-      if (await isInNestedPackage(claim)) return "nested"
+      if (await isInNestedPackage(claim, rel)) return "nested"
       return null
     }
 
@@ -288,6 +375,7 @@ export const commentTruthLens: Lens = {
       const spans = extractComments(text, style)
       if (!spans.length) continue
       filesWithComments += 1
+      const rootedDirs = rootedFor(rel)
 
       // One finding per (file, claim): the first occurrence names the line, later ones append
       // theirs to the evidence (capped) — 600 comments citing one deleted decision are one
@@ -308,7 +396,8 @@ export const commentTruthLens: Lens = {
       }
 
       let previous: { text: string; line: number } | undefined
-      for (const span of spans) {
+      for (let i = 0; i < spans.length; i += 1) {
+        const span = spans[i] as { text: string; line: number }
         commentCount += 1
         const subject = `${rel}:${span.line}`
         const lastLine = span.line + span.text.split("\n").length - 1
@@ -316,27 +405,47 @@ export const commentTruthLens: Lens = {
         // directly above — one sentence wrapped across two line comments.
         const carry = previous && previous.line === span.line - 1 ? previous.text : ""
         previous = { text: span.text, line: lastLine }
+        // A slash-ended phrase cut by a wrap continues only on the comment line directly
+        // below: with no such line the comment simply ends mid-phrase, and "the phrase
+        // continues on the next line" would be a disclosure the text contradicts.
+        const nextSpan = spans[i + 1] as { text: string; line: number } | undefined
+        const continuesOnNextLine = nextSpan !== undefined && nextSpan.line === lastLine + 1
         let inherited: boolean | undefined
         const keep = async (fresh: Finding[]): Promise<Finding[]> => {
           const kept: Finding[] = []
           for (const f of fresh) {
-            const why = await contextSkip(span, rel, f, carry)
+            const why = await contextSkip(span, rel, f, carry, continuesOnNextLine)
             if (why) {
-              contextSkips[why] += 1
+              skippedIds.set(f.id, why)
               continue
             }
             inherited ??= await writtenUpstream(rel, span.line, lastLine)
             if (inherited) {
-              contextSkips.upstream += 1
+              skippedIds.set(f.id, "upstream")
               continue
             }
             kept.push(f)
+            keptIds.add(f.id)
           }
           return kept
         }
-        const promoted = promoteBareTokens(span.text, { rootedDirs })
+        const promoted = promoteBareTokens(span.text, { rootedDirs, knownScripts })
         for (const key of Object.keys(promotionSkips) as (keyof typeof promotionSkips)[]) {
           promotionSkips[key] += promoted.skips[key]
+        }
+        // A comment whose own claims resolve under the nested package its file sits in writes
+        // from that package's frame. Their first segment roots this comment's other claims too:
+        // without it the strict per-file rooting above would read the package's own `src/...`
+        // mentions as quoted from another tree, and the nested-package skip in contextSkip
+        // would never be reached to sort the present from the absent. Only a claim that IS
+        // there anchors — a directory name an unrelated subtree merely carries does not.
+        let rootedHere = rootedDirs
+        if (packageDirs.length) {
+          const spanClaims = extractPathClaims(promoted.text)
+          const anchored = new Set<string>()
+          for (const claim of [...spanClaims.paths, ...spanClaims.dirs])
+            if (await isInNestedPackage(claim, rel)) anchored.add(claim.split("/")[0] ?? claim)
+          if (anchored.size) rootedHere = new Set([...rootedDirs, ...anchored])
         }
         const file = { path: rel, text: promoted.text }
         const claims = await checkTextClaims(
@@ -346,8 +455,11 @@ export const commentTruthLens: Lens = {
             lensId: LENS_ID,
             subject,
             missingPathTier: "gap",
-            maxPathFindings: MAX_PATH_FINDINGS_PER_FILE,
-            rootedFirstSegments: rootedDirs,
+            // No shared cap here: the cap belongs after the comment-context skips below,
+            // or twelve example paths and one stale one would truncate on the examples and
+            // lose the only line worth reading.
+            maxPathFindings: Number.POSITIVE_INFINITY,
+            rootedFirstSegments: rootedHere,
             sourceRelative: true,
             skipCommandsWithoutManifest: true,
             whyCommand:
@@ -387,7 +499,18 @@ export const commentTruthLens: Lens = {
           ),
         )
       }
-      findings.push(...byId.values())
+      // No truncation. A finding this lens drops is a finding the ledger reads as fixed
+      // (absent from the run means done), so the list handed onward is complete however long
+      // it gets: the cap this replaced once spent itself on ten stale paths and let a
+      // still-broken command behind them be marked done by the next audit. The reader's
+      // economy is served by the disclosure below, never by hiding evidence.
+      const keptFindings = [...byId.values()]
+      findings.push(...keptFindings)
+      if (keptFindings.length > MAX_PATH_FINDINGS_PER_FILE) {
+        disclosures.push(
+          `${rel}: ${keptFindings.length} findings survived the comment-context skips — all reported, none truncated; a file this far from its own tree is one repair, not many.`,
+        )
+      }
     }
 
     // Honest coverage — every class not checked is named, never silently dropped.
@@ -474,7 +597,7 @@ export const commentTruthLens: Lens = {
     }
     if (counters.outsideRepoSkipped) {
       disclosures.push(
-        `${counters.outsideRepoSkipped} missing path(s) in comments start at no directory this repo has, at the root or above the commenting file — quoted from another tree; skipped, not flagged.`,
+        `${counters.outsideRepoSkipped} missing path(s) in comments start at no directory found where the comment's paths resolve (the root, a workspace package, their src/ scripts/, or a directory at or above the commenting file) — quoted from another tree; skipped, not flagged.`,
       )
     }
     if (counters.alternativesSkipped) {
@@ -484,12 +607,12 @@ export const commentTruthLens: Lens = {
     }
     if (counters.flagValueSkipped) {
       disclosures.push(
-        `${counters.flagValueSkipped} missing path(s) in comments appear only as the value of a command-line flag (\`--out build/x.json\`) — a usage example's input; skipped, not flagged.`,
+        `${counters.flagValueSkipped} missing path(s) in comments appear only right after a command-line flag (\`--out build/x.json\`, \`node --watch src/x.ts\`) — the flag's value or a usage line's operand, an example's input either way; skipped, not flagged.`,
       )
     }
     if (counters.userLevelDocSkipped) {
       disclosures.push(
-        `${counters.userLevelDocSkipped} bare CLAUDE.md / AGENTS.md mention(s) in comments have no file here and may mean the reader's user-level file — unverifiable from the repo; skipped, not flagged.`,
+        `${counters.userLevelDocSkipped} bare mention(s) of CLAUDE.md / AGENTS.md / GEMINI.md in comments have no file here and may mean the reader's user-level file — unverifiable from the repo; skipped, not flagged.`,
       )
     }
     if (counters.noManifestCommandsSkipped) {
@@ -497,6 +620,7 @@ export const commentTruthLens: Lens = {
         `${counters.noManifestCommandsSkipped} package-manager command(s) in comments were not checked — this repo has no package manifest, so they describe commands of other trees; skipped.`,
       )
     }
+    for (const [id, why] of skippedIds) if (!keptIds.has(id)) contextSkips[why] += 1
     if (contextSkips.example) {
       disclosures.push(
         `${contextSkips.example} missing path(s) in comments are introduced as examples ("a path like …", "e.g. …") — shapes, not references; skipped, not flagged.`,
@@ -512,6 +636,15 @@ export const commentTruthLens: Lens = {
         `${contextSkips.sibling} missing path(s) in comments directly follow the name of another repository in this fleet — that repository's paths, not this one's; skipped, not flagged.`,
       )
     }
+    // The sibling names arrive only from the fleet sweep (engine/fleet.ts), so a local audit —
+    // the pre-push gate among them — runs without the class at all. Same tree, same ledger,
+    // different verdict depending on who asks: the asymmetry is kept (duplicating the names
+    // into every consumer's config would drift) and disclosed where it exists.
+    if (!siblingNames.size && filesWithComments) {
+      disclosures.push(
+        "no sibling repositories are known to this run (the fleet sweep supplies their names) — the sibling-name skip could not be applied, so a path written after another repository's name may be flagged here that the sweep would skip.",
+      )
+    }
     if (contextSkips.wrapped) {
       disclosures.push(
         `${contextSkips.wrapped} slash-ended phrase(s) in comments are cut by a line wrap inside an open parenthesis — the phrase continues on the next line; skipped, not flagged.`,
@@ -519,7 +652,7 @@ export const commentTruthLens: Lens = {
     }
     if (contextSkips.nested) {
       disclosures.push(
-        `${contextSkips.nested} missing path(s) in comments exist under a nested package's own directory — written relative to that package; treated as true, not flagged.`,
+        `${contextSkips.nested} missing path(s) in comments exist under the nested package their commenting file sits in — written relative to that package; treated as true, not flagged.`,
       )
     }
     if (contextSkips.upstream) {

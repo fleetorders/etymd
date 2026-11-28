@@ -490,6 +490,45 @@ describe("summarizeBaselineDrift", () => {
     expect(drift.dirsRemoved).toEqual([])
     expect(isDriftEmpty(drift)).toBe(false)
   })
+
+  it("carries the always-loaded footprint's move since approval", () => {
+    const old = facts({ context: { totalWords: 3000, totalApproxTokens: 4500, files: 3 } })
+    const fresh = facts({ context: { totalWords: 4800, totalApproxTokens: 7200, files: 4 } })
+    const drift = summarizeBaselineDrift(old, fresh)
+    expect(drift.context).toEqual({
+      from: { totalWords: 3000, totalApproxTokens: 4500, files: 3 },
+      to: { totalWords: 4800, totalApproxTokens: 7200, files: 4 },
+    })
+    expect(isDriftEmpty(drift)).toBe(false)
+  })
+
+  it("a baseline that predates footprint measurement shows no context drift — absent is not zero", () => {
+    // Absent must read as "not measured": a first measurement of 900 words is not a growth
+    // finding, or every repo would drift the day it upgrades etymd.
+    const drift = summarizeBaselineDrift(
+      facts(),
+      facts({ context: { totalWords: 900, totalApproxTokens: 1200, files: 2 } }),
+    )
+    expect(drift.context).toBeUndefined()
+    expect(isDriftEmpty(drift)).toBe(true)
+  })
+
+  it("an unchanged footprint is no change at all", () => {
+    const c = { totalWords: 3000, totalApproxTokens: 4000, files: 3 }
+    expect(isDriftEmpty(summarizeBaselineDrift(facts({ context: c }), facts({ context: c })))).toBe(
+      true,
+    )
+  })
+
+  it("words staying flat while files split or merge still moves the axis", () => {
+    // A pointer file added at the same total still changes what every session loads.
+    const drift = summarizeBaselineDrift(
+      facts({ context: { totalWords: 3000, totalApproxTokens: 4000, files: 3 } }),
+      facts({ context: { totalWords: 3000, totalApproxTokens: 4000, files: 2 } }),
+    )
+    expect(drift.context).toBeDefined()
+    expect(isDriftEmpty(drift)).toBe(false)
+  })
 })
 
 describe("deriveFailOn — a gate that cannot fail is not a gate", () => {
@@ -639,7 +678,9 @@ describe("preservation is a property of generation, not of the command", () => {
 describe("shell correctness gate — the surface package.json cannot see", () => {
   it("writes a shellcheck step for a repo with a shell surface", () => {
     const hook = generatePrePushHook(facts({ shell: { scripts: 12 } }))
-    expect(hook).toContain("shellcheck -S style -f gcc")
+    // The invocation takes its dialect flags as "$@" so the ksh-alias list can run with
+    // --shell=ksh through the same reader — the flags sit after the parameter.
+    expect(hook).toContain('shellcheck "$@" -S style -f gcc')
     // Discovery happens IN the hook, at push time, over the commits being pushed. A baked-in
     // file list is correct the day it is generated and silently wrong the first time someone
     // adds a script; a working-tree read certifies bytes that never ship.
@@ -654,7 +695,7 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
     // Step-precise marker: every hook now MENTIONS shellcheck (the scrub helper's disable
     // directive), so the bare word can no longer prove the step's presence or absence.
     expect(hook).not.toContain("command -v shellcheck")
-    expect(hook).not.toContain("shellcheck -S style -f gcc")
+    expect(hook).not.toContain('shellcheck "$@" -S style -f gcc')
   })
 
   it("treats an absent `shell` fact as not-measured, not as zero", () => {
@@ -662,7 +703,7 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
     // crash, and must not claim a surface it never looked for.
     const hook = generatePrePushHook(facts({ shell: undefined }))
     expect(hook).not.toContain("command -v shellcheck")
-    expect(hook).not.toContain("shellcheck -S style -f gcc")
+    expect(hook).not.toContain('shellcheck "$@" -S style -f gcc')
   })
 
   it("PINNED: a missing shellcheck binary skips LOUDLY and never blocks", () => {
@@ -678,8 +719,12 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
     // flag is shared with the content screen, which must never be bypassed.
     const hook = generatePrePushHook(facts({ shell: { scripts: 3 } }))
     // One run at the widest severity produces verdict and advice together; only its
-    // error/warning lines are wired to a failure branch...
-    expect(hook).toMatch(/blocking=\$\([\s\S]*?grep -E ':\[0-9\]\+:\[0-9\]\+: \(warning\|error\):'/)
+    // error/warning lines are wired to a failure branch. The pattern is anchored at the
+    // line start (a finding-shaped PATH cannot put advice over the bar, 2026-11-24) and
+    // the grep's own status is captured beside it — a failed read refuses, never passes
+    // as a clean verdict...
+    expect(hook).toContain("block_pat='^[^:]+:[0-9]+:[0-9]+: (warning|error): '")
+    expect(hook).toMatch(/blocking=\$\([\s\S]*?grep -E "\$block_pat"\)[\s\S]*?\|\| st=\$\?/)
     expect(hook).toMatch(/\[ -n "\$blocking" \][\s\S]*?exit 1/)
     // ...while the advice is derived by EXCLUDING those severities and explicitly tolerated
     // with `|| true`, so it has no path to the exit code at all.

@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs"
 import path from "node:path"
 
 import type { WorkflowProfile } from "../engine/finding.js"
-import type { ProjectFacts } from "./types.js"
+import type { ContextFootprintFacts, ProjectFacts } from "./types.js"
 import { readJson } from "./util.js"
 
 // Two stores with opposite lifecycles:
@@ -93,6 +93,13 @@ export interface BaselineDrift {
   artifactsRemoved: string[]
   dirsAdded: string[]
   dirsRemoved: string[]
+  /**
+   * The always-loaded instruction footprint's move since approval — the cost of growth made
+   * visible before a human blesses it (docs/decisions.md, D-016). Present only when BOTH sides
+   * measured it (a baseline approved by an older etymd predates the fact) and it actually
+   * moved; an unchanged footprint is no change.
+   */
+  context?: { from: ContextFootprintFacts; to: ContextFootprintFacts }
 }
 
 /**
@@ -124,7 +131,16 @@ export function summarizeBaselineDrift(old: ProjectFacts, fresh: ProjectFacts): 
   const dirsAdded = [...freshDirs].filter((d) => !oldDirs.has(d))
   const dirsRemoved = [...oldDirs].filter((d) => !freshDirs.has(d))
 
-  return { commands, artifactsAdded, artifactsRemoved, dirsAdded, dirsRemoved }
+  // Words alone can stay flat while files split or merge (an alias resolved, a pointer file
+  // added), so the file count moves the axis too. approxTokens derives from words and follows.
+  const moved =
+    old.context &&
+    fresh.context &&
+    (old.context.totalWords !== fresh.context.totalWords ||
+      old.context.files !== fresh.context.files)
+  const context = moved ? { from: old.context!, to: fresh.context! } : undefined
+
+  return { commands, artifactsAdded, artifactsRemoved, dirsAdded, dirsRemoved, context }
 }
 
 /** True when nothing on the baseline's measured axes changed. */
@@ -134,6 +150,7 @@ export function isDriftEmpty(d: BaselineDrift): boolean {
     d.artifactsAdded.length === 0 &&
     d.artifactsRemoved.length === 0 &&
     d.dirsAdded.length === 0 &&
-    d.dirsRemoved.length === 0
+    d.dirsRemoved.length === 0 &&
+    d.context === undefined
   )
 }

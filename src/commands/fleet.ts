@@ -17,6 +17,7 @@ import { git, pathExists, readText } from "../core/util.js"
 import { meetsFailOn, parseFailOnTier, type Finding, type FindingTier } from "../engine/finding.js"
 import {
   checkManifest,
+  archivedNamesLine,
   ensureFindingRecorded,
   fleetLedgerTarget,
   sweepFleet,
@@ -695,6 +696,14 @@ export interface FleetBoardCmdOptions {
 
 export async function board(opts: FleetBoardCmdOptions): Promise<void> {
   const { manifest, autoNote } = await loadManifest(opts.cwd, opts.manifest)
+  // The board skips archived records like every fleet command — and says so (D-014). The
+  // archived disclosure runs through the same personal-project filter as the rows above it:
+  // the board is a publishable artifact of the personal side, and an archived guarded entry
+  // is exactly the content the profile split exists to keep out of it — closing a project
+  // must not publish what its live row never showed. One filtered list feeds the note, the
+  // JSON and the saved Markdown, so no surface disagrees with another.
+  const archivedNames = manifest.archived.filter((e) => e.profile !== "guarded").map((e) => e.name)
+  const archivedNote = archivedNamesLine(archivedNames)
   const projects: BoardProject[] = []
   for (const entry of manifest.entries) {
     // Guarded entries never reach a board: the board is a publishable artifact of the personal
@@ -749,6 +758,7 @@ export async function board(opts: FleetBoardCmdOptions): Promise<void> {
   const input = {
     generatedOn,
     manifest: path.basename(manifest.manifestPath),
+    archived: archivedNames,
     initiatives,
     initiativesProblems,
     projects,
@@ -775,6 +785,7 @@ export async function board(opts: FleetBoardCmdOptions): Promise<void> {
           ? `, ${initiatives.length} initiative${initiatives.length === 1 ? "" : "s"}`
           : ""),
     )
+    if (archivedNote) print(`  ${theme.dim(`◦ ${archivedNote}`)}`)
     for (const p of trouble) {
       print(
         `  ${TIER_BADGE.gap} ${p.name}: ${p.state === "missing" ? `\`${p.file}\` declared and absent` : p.problems.join("; ")}`,
@@ -783,5 +794,6 @@ export async function board(opts: FleetBoardCmdOptions): Promise<void> {
     for (const problem of initiativesProblems) print(`  ${TIER_BADGE.gap} initiatives: ${problem}`)
     return
   }
+  if (archivedNote) print(`  ${theme.dim(`◦ ${archivedNote}`)}`)
   print(markdown)
 }

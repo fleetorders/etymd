@@ -2,6 +2,7 @@ import path from "node:path"
 
 import { PACK_VERSION } from "../pack/version.js"
 import { VERSION } from "../version.js"
+import { measureContext } from "./context.js"
 import {
   classifyCommands,
   detectArtifacts,
@@ -162,6 +163,11 @@ export async function scanProject(root: string, opts: ScanOptions = {}): Promise
   // which keeps build output and vendored scripts out of a repo's own correctness gate.
   const shell = await detectShellSurface(abs, isRepo)
   const freshness = await collectFreshness(abs, isRepo, artifacts, opts.upstreamRemote)
+  // Measured at the default per-file threshold on purpose: totals and file count are
+  // budget-independent (the threshold only picks extraction candidates), so a committed
+  // baseline stays comparable across config changes — drift must not be an artefact of a
+  // budget someone moved.
+  const footprint = await measureContext(abs)
   const packages = workspace.packageGlobs.length
     ? await listWorkspacePackages(abs, workspace.packageGlobs)
     : []
@@ -199,6 +205,11 @@ export async function scanProject(root: string, opts: ScanOptions = {}): Promise
     artifacts,
     shell,
     freshness,
+    context: {
+      totalWords: footprint.totalWords,
+      totalApproxTokens: footprint.totalApproxTokens,
+      files: footprint.files.length,
+    },
     tree,
   }
 }

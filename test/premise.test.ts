@@ -48,6 +48,13 @@ async function noSrcFixture() {
 const ctx = { rootedDirs: new Set(["src", "docs"]) }
 
 describe("promoteBareTokens", () => {
+  it("promotes a stop word as a script only where the repo has a script of that name", () => {
+    expect(promoteBareTokens("then npm run script", ctx).text).not.toContain("`npm run script`")
+    expect(
+      promoteBareTokens("then npm run script", { ...ctx, knownScripts: new Set(["script"]) }).text,
+    ).toContain("`npm run script`")
+  })
+
   it("wraps bare paths, dirs and `run` invocations, leaving code spans alone", () => {
     const { text: out, skips } = promoteBareTokens(
       "Fix src/a.ts and docs/design/, then run npm run build; keep `src/b.ts` and Node.js as is. Skim docs/ too.",

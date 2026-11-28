@@ -2,7 +2,7 @@ import path from "node:path"
 
 import type { Finding, FindingTier } from "../../engine/finding.js"
 import type { ProjectFacts } from "../../core/types.js"
-import { git, pathExists, readJson, readText } from "../../core/util.js"
+import { git, isDirectory, pathExists, readJson, readText } from "../../core/util.js"
 import { parseDecisionEntries } from "../state-freshness.js"
 import {
   extractCommandClaims,
@@ -119,7 +119,11 @@ export interface ClaimCounters {
   userLevelDocSkipped: number
   /** Command mentions in a repo with no package manifest at all — they describe other trees. */
   noManifestCommandsSkipped: number
-  /** Missing paths written only as the value of a command-line flag — a usage example's input. */
+  /**
+   * Missing paths written only right after a command-line flag — the flag's value or, after a
+   * boolean flag, an operand of the usage line (`node --watch src/x.ts`). The text cannot tell
+   * which, so both are skipped: a usage example's input either way, and precision over recall.
+   */
   flagValueSkipped: number
 }
 
@@ -180,10 +184,11 @@ export interface TextClaimsOptions {
   actionPath?: string
   /**
    * Directories a missing path may start from and still be plausibly repo-relative — the root,
-   * workspace packages, and their src/ scripts/. Supplied by the task surface (`etymd premise`)
-   * only: a task quoting a path from ANOTHER repository (a clone elsewhere on the machine) starts where
-   * no directory of this repo does, and its absence here proves nothing. Instruction files keep
-   * the stricter reading — their references are written against this repo.
+   * workspace packages, and their src/ scripts/; for source comments also the directories at and
+   * above the commenting file, per file. Supplied by the task surface (`etymd premise`) and the
+   * comment lens: a task or comment quoting a path from ANOTHER tree starts where no directory of
+   * this repo does, and its absence here proves nothing. Instruction files keep the stricter
+   * reading — their references are written against this repo.
    */
   rootedFirstSegments?: ReadonlySet<string>
   /**
@@ -210,7 +215,10 @@ export interface TextClaimsOptions {
 
 // A non-final segment that ends in a file extension: `order.ts/order.data.ts`, `AGENTS.md/CLAUDE.md`.
 // Nothing is inside a file, so the slash joins alternatives. Judged on missing claims only — a
-// real `conf.d/x` or `My.app/Contents` resolves before this is ever asked.
+// real `conf.d/x` or `My.app/Contents` resolves before this is ever asked. An extension is one
+// to five characters, a letter first (`ts`, `json`, `plist`, `swift`): a longer dotted suffix
+// (`.config`, `.template`, `.backup`) names directories and versions as often as file types, so
+// `web.config/web.template` is judged as one path — a deliberate cut-off, not an oversight.
 const FILE_SEGMENT_RE = /[^./]\.[A-Za-z][A-Za-z0-9]{0,4}$/
 async function isAlternativesList(
   claim: string,
@@ -235,7 +243,12 @@ const TS_FOR_JS: Record<string, string[]> = {
 }
 // `--out build/report.json`, `--from=staged/2.json`: in a usage line the path is a value the
 // caller supplies, shown as an example. Only when EVERY mention of the claim sits behind a flag.
-const FLAG_BEFORE_RE = /(?:^|[\s[(|])--?[A-Za-z][A-Za-z0-9-]*(?:=|\s+)[`"']?$/
+// Whether the flag takes a value is unknowable from text, so an operand after a boolean flag
+// (`node --watch src/x.ts`) reads the same way — the stated rule is "right after a flag", and the
+// disclosure says so; a dead script named only that way is a missed finding, never a false one.
+// The flag may open a quoted span (`` `--out x.json` ``): a quote or backtick before the dashes
+// is a boundary exactly like whitespace, or that span's own mention would read as a bare path.
+const FLAG_BEFORE_RE = /(?:^|[\s[(|`'"])--?[A-Za-z][A-Za-z0-9-]*(?:=|\s+)[`"']?$/
 const PATH_CHAR_RE = /[A-Za-z0-9_./-]/
 function isOnlyFlagValue(text: string, claim: string): boolean {
   let at = text.indexOf(claim)
@@ -257,14 +270,23 @@ function isOnlyFlagValue(text: string, claim: string): boolean {
 }
 
 /**
- * Does a missing path start somewhere this repo has? In a source comment a leading `./` is
- * relative to the commenting file: a sibling name such as `./absent.js` is rooted by definition,
- * while a longer path like `./vendor-lib/x.wasm` is judged by the directory it names.
+ * Does a missing path start somewhere this repo has? In a source comment a leading `./` or `../`
+ * is relative to the commenting file, so the reference is about this tree by construction —
+ * deleting the directory it names must not reclassify the mention as quoted from another repo.
+ * A multi-segment claim without one is judged by the directory it names. The construction has a
+ * boundary: a `../` claim in a file at the repo root (or enough `../` segments anywhere) names a
+ * path OUTSIDE the tree — a sibling checkout, not this repo — so it is resolved from the
+ * claiming file's directory first and read as quoted-from-elsewhere when it escapes.
  */
-function startsInRepo(claim: string, opts: TextClaimsOptions): boolean {
+function startsInRepo(claim: string, opts: TextClaimsOptions, fromDir: string): boolean {
   const rooted = opts.rootedFirstSegments
   if (!rooted) return true
   if (!opts.sourceRelative) return rooted.has(claim.split("/")[0] ?? claim)
+  if (/^\.\.?\//.test(claim)) {
+    if (claim.startsWith("./")) return true
+    const resolved = path.posix.normalize(path.posix.join(fromDir, claim))
+    return !resolved.startsWith("../")
+  }
   const segments = claim.replace(/^(?:\.\.?\/)+/, "").split("/")
   if (segments.length < 2) return true
   return rooted.has(segments[0] as string)
@@ -310,7 +332,7 @@ export async function checkTextClaims(
   const subject = opts.subject ?? file.path
 
   // Command claims: a script the text tells agents to run must exist somewhere real.
-  const { scripts: claimed, filteredSkipped } = extractCommandClaims(file.text)
+  const { scripts: claimed, filteredSkipped } = extractCommandClaims(file.text, env.knownScripts)
   counters.filteredSkipped += filteredSkipped
   for (const [script, raw] of claimed) {
     if (opts.skipCommandsWithoutManifest && !env.manifestExists) {
@@ -420,9 +442,27 @@ export async function checkTextClaims(
     for (const line of (dirOut ?? "").split("\n").filter(Boolean))
       gitignored.add(line.replace(/\/$/, ""))
   }
+  // A dotted segment continues the alternatives walk only when its prefix names a real DIRECTORY:
+  // a claim like `src/a.ts/b.ts`, whose dotted prefix names a file nothing sits inside, is the
+  // alternatives list it shapes — and the search looks everywhere the claim itself could resolve (the bases
+  // and their src/ scripts/ sub-roots, the claiming file's directory, and for source comments
+  // every directory above it), so a nested `conf.d/` protects its missing file as firmly as a
+  // root one. The old existence probe passed files and missed nested packages on both counts.
+  const dirProbes: string[] = []
+  for (const base of env.bases)
+    dirProbes.push(base, path.join(base, "src"), path.join(base, "scripts"))
+  if (fromDir && fromDir !== ".") {
+    dirProbes.push(path.join(env.root, fromDir))
+    if (opts.sourceRelative)
+      for (const dir of ancestorDirs(fromDir)) dirProbes.push(path.join(env.root, dir))
+  }
+  const prefixIsDir = async (prefix: string): Promise<boolean> => {
+    for (const probe of dirProbes) if (await isDirectory(path.join(probe, prefix))) return true
+    return false
+  }
   let pathFindings = 0
   for (const claim of missing) {
-    if (await isAlternativesList(claim, (prefix) => env.pathResolves(prefix, fromDir))) {
+    if (await isAlternativesList(claim, prefixIsDir)) {
       counters.alternativesSkipped += 1
       examined.push({ kind: "path", value: claim, exists: null })
       continue
@@ -434,7 +474,7 @@ export async function checkTextClaims(
     }
     // Outside this repo (task surface and source comments): a path that starts at no directory the repo has
     // is quoted from elsewhere, and "missing here" would be a false accusation.
-    if (opts.rootedFirstSegments && !startsInRepo(claim, opts)) {
+    if (opts.rootedFirstSegments && !startsInRepo(claim, opts, fromDir)) {
       counters.outsideRepoSkipped += 1
       examined.push({ kind: "path", value: claim, exists: null })
       continue
@@ -480,10 +520,13 @@ export interface RefsResult {
 }
 
 // Docs a coding agent also reads from the user's own config directory (`~/.claude/CLAUDE.md`,
-// `~/.codex/AGENTS.md`). A source comment naming one bare may mean that file, which no repo
-// carries — unverifiable from here. Instruction files keep the check: there the name is a pointer
-// an agent follows inside this repo.
-const USER_LEVEL_DOCS = new Set(["CLAUDE.md", "AGENTS.md"])
+// `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`). Kept in step with KNOWN_DOC_REFS in claims.ts:
+// every doc name extracted there with a config-directory twin belongs here too, or a bare
+// mention of it is accused on the very "may mean the reader's own file" reasoning this set
+// exists to exempt. A source comment naming one bare may mean that file, which no repo carries —
+// unverifiable from here. Instruction files keep the check: there the name is a pointer an agent
+// follows inside this repo.
+const USER_LEVEL_DOCS = new Set(["CLAUDE.md", "AGENTS.md", "GEMINI.md"])
 
 /** Cross-references to well-known docs (AGENTS.md, CLAUDE.md, …) must resolve to real files. */
 export async function checkDocRefs(

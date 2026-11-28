@@ -30,13 +30,27 @@ const OPENERS_RE = /[\s`'"(\[]+$/
 // One earlier member of a list the mention closes: a code span or a bare token, then a separator.
 const LIST_ITEM_RE =
   /(?:`[^`\n]*`|[A-Za-z0-9_.$~/-]+)\s*(?:,|\band\b|\bor\b|,\s*and\b|,\s*or\b)\s*$/i
-const EXAMPLE_CUE_RE = /(?:\b(?:e\.g\.?|for example|for instance|such as|like)|\bsay)[,:]?$/i
+// `like` and `say` clear ordinary prose when bare ("the loader looks like", "what the docs
+// say"), so they cue an example only in shape: a noun for what is exemplified in front of
+// `like` ("a path like", "files like"), "named/called like", or let's/just/or say.
+// Case-insensitive: a cue opening its own sentence capitalises it ("For example, `src/x.ts`") —
+// the same words marking the same example, only the initial letter different.
+const EXAMPLE_CUE_RE =
+  /(?:\b(?:e\.g\.?|for example|for instance|such as)|\b(?:a|an|the)?\s*(?:path|file|dir|directory|folder|script|module|package|library|name|pattern|shape|token|word|mention|example|extension|suffix|prefix)s?\s+like|\b(?:named|called)\s+like|\b(?:let'?s|just|or)\s+say)[,:]?$/i
+// The only content a bare enumeration carries: code spans, list separators, conjunctions. A
+// bracket holding a word (see, in, e.g., the build script) is a worded bracket — a
+// reference's parenthetical, not an enumeration.
+const ENUM_CONTENT_RE = /^(?:`[^`\n]*`|\b(?:and|or)\b|[\s,.;:—-])*$/i
 
 /**
- * Is this mention introduced as an example? "a path like `docs/notes/`", "e.g. `src/x.ts`", and
- * every later member of the list such a cue opens ("such as `a/b.ts`, `c/d/` and `e/f.ts`").
+ * Is this mention introduced as an example? "a path like `docs/notes/`", "e.g. `src/x.ts`",
+ * every later member of the list such a cue opens ("such as `a/b.ts`, `c/d/` and `e/f.ts`"),
+ * and a mention set off inside brackets — parentheses or a paired em-dash — holding nothing
+ * but code spans and separators: an appositive enumeration exemplifies the class the prose
+ * names ("a longer path (`backup/src/out/2.json`)", "prose — `src/x.ts`, `docs/x/` — into").
  */
-export function isExampleMention(before: string): boolean {
+export function isExampleMention(before: string, after = ""): boolean {
+  if (bareEnumeration(before, after)) return true
   let lead = before.replace(OPENERS_RE, "")
   for (let i = 0; i < 12; i += 1) {
     if (EXAMPLE_CUE_RE.test(lead)) return true
@@ -47,8 +61,29 @@ export function isExampleMention(before: string): boolean {
   return false
 }
 
-const ARTIFACT =
-  "(?:apk|aab|ipa|zip|tarball|tar|tgz|archive|jar|war|wheel|bundle|image|container|package|artifact)"
+/** The mention's bracket, when its content from the opening mark to the closing one is only
+ * spans and separators — with this mention's own span openers stripped at the seams. */
+function bracketIsBare(before: string, open: number, after: string, closer: string): boolean {
+  const close = after.indexOf(closer)
+  if (close === -1) return false
+  return (
+    ENUM_CONTENT_RE.test(before.slice(open + 1).replace(/[\s`'"]+$/, "")) &&
+    ENUM_CONTENT_RE.test(after.slice(0, close).replace(/^[\s`'"]+/, ""))
+  )
+}
+
+function bareEnumeration(before: string, after: string): boolean {
+  const paren = before.lastIndexOf("(")
+  if (paren !== -1 && bracketIsBare(before, paren, after, ")")) return true
+  const dash = before.lastIndexOf("—")
+  if (dash !== -1 && bracketIsBare(before, dash, after, "—")) return true
+  return false
+}
+
+// `package`, `image` and `container` are everyday repo words: a path after them ("the build
+// script in the package …", "the sprite in the image …") is more often a real reference than a
+// build layout, so they do not carry the rule.
+const ARTIFACT = "(?:apk|aab|ipa|zip|tarball|tar|tgz|archive|jar|war|wheel|bundle|artifact)"
 const PACKAGED_AFTER_RE = new RegExp(
   `^[\\s\`'")\\]]*(?:back\\s+)?(?:out of|from inside|from within|inside|within|in)\\s+(?:the|an?|each|every)\\s+(?:[A-Za-z-]+\\s+)?${ARTIFACT}\\b`,
   "i",

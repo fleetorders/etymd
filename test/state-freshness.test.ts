@@ -9,7 +9,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { readConfig } from "../src/core/config.js"
 import { scanProject } from "../src/core/scan.js"
 import type { LensContext } from "../src/engine/finding.js"
-import { stateFreshnessLens } from "../src/lenses/state-freshness.js"
+import { normaliseDecisionOrder, stateFreshnessLens } from "../src/lenses/state-freshness.js"
+import { run as runAuditCommand } from "../src/commands/audit.js"
 
 const pExecFile = promisify(execFile)
 
@@ -469,5 +470,83 @@ describe("state-freshness — ADR conventions are recognized as decisions artifa
     const adr = facts.artifacts.find((a) => a.id === "adr-files")
     expect(adr?.exists).toBe(true)
     expect(adr?.kind).toBe("decisions")
+  })
+})
+
+describe("state-freshness — id order and audit --fix", () => {
+  const block = (n: number, title: string) =>
+    `## D-${String(n).padStart(3, "0")} ${title}\n\nbody of ${n} — keeps its words\n\nScope: repo.\n`
+
+  it("flags ids out of append order", async () => {
+    await write(
+      "DECISIONS.md",
+      `# Decisions\n\n${block(499, "one")}${block(501, "three")}${block(500, "two")}`,
+    )
+    const report = await stateFreshnessLens.run(await ctx())
+    expect(report.findings.map((f) => f.id)).toEqual([
+      "state-freshness/id-order:DECISIONS.md:D-500",
+    ])
+  })
+
+  it("moves whole blocks into id order byte-exactly and reports the moves", async () => {
+    const text = `# Decisions\n\n${block(499, "one")}${block(501, "three")}${block(500, "two")}${block(502, "four")}`
+    const res = normaliseDecisionOrder(text)
+    expect(res.kind).toBe("fixed")
+    if (res.kind !== "fixed") return
+    expect(res.text).toBe(
+      `# Decisions\n\n${block(499, "one")}${block(500, "two")}${block(501, "three")}${block(502, "four")}`,
+    )
+    // Position-based report, listed in file order: 499, 501, 500, 502 — the middle pair swaps.
+    expect(res.moves).toEqual([
+      { id: "D-501", from: 2, to: 3 },
+      { id: "D-500", from: 3, to: 2 },
+    ])
+    // And re-running the normaliser on its own output is a clean no-op.
+    expect(normaliseDecisionOrder(res.text)).toEqual({ kind: "clean" })
+  })
+
+  it("keeps duplicate ids adjacent in file order — ordering never renames", async () => {
+    const text = `# Decisions\n\n${block(5, "first five")}${block(4, "four")}${block(5, "second five")}`
+    const res = normaliseDecisionOrder(text)
+    expect(res.kind).toBe("fixed")
+    if (res.kind !== "fixed") return
+    expect(res.text).toBe(
+      `# Decisions\n\n${block(4, "four")}${block(5, "first five")}${block(5, "second five")}`,
+    )
+  })
+
+  it("refuses a file whose D-entries have a non-decision ## section between them", async () => {
+    const text = `# Decisions\n\n${block(4, "four")}\n## Appendix\n\nnotes\n\n${block(5, "five")}`
+    expect(normaliseDecisionOrder(text)).toEqual({
+      kind: "refused",
+      reason: expect.stringContaining("## Appendix"),
+    })
+  })
+
+  it("leaves trailing non-decision sections last and still orders the entries", async () => {
+    const tail = "## Appendix\n\nnotes after the last entry\n"
+    const text = `# Decisions\n\n${block(3, "three")}${block(2, "two")}${tail}`
+    const res = normaliseDecisionOrder(text)
+    expect(res.kind).toBe("fixed")
+    if (res.kind !== "fixed") return
+    expect(res.text).toBe(`# Decisions\n\n${block(2, "two")}${block(3, "three")}${tail}`)
+  })
+
+  it("PINNED: audit --fix rewrites the file and the re-audit shows no id-order finding; a plain audit does not touch it", async () => {
+    await gitAt(null, ["init", "-q"])
+    const text = `# Decisions\n\n${block(499, "one")}${block(501, "three")}${block(500, "two")}${block(502, "four")}`
+    await write("DECISIONS.md", text)
+    await commitAll("decisions", "2026-11-01T10:00:00Z")
+
+    // A plain audit reports the disorder and writes nothing.
+    await runAuditCommand({ cwd: dir })
+    expect(await fs.readFile(path.join(dir, "DECISIONS.md"), "utf8")).toBe(text)
+
+    await runAuditCommand({ cwd: dir, fix: true })
+    expect(await fs.readFile(path.join(dir, "DECISIONS.md"), "utf8")).toBe(
+      `# Decisions\n\n${block(499, "one")}${block(500, "two")}${block(501, "three")}${block(502, "four")}`,
+    )
+    const report = await stateFreshnessLens.run(await ctx())
+    expect(report.findings.filter((f) => f.id.includes("/id-order:"))).toEqual([])
   })
 })

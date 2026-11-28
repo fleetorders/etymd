@@ -13,7 +13,7 @@ import { readConfig } from "../src/core/config.js"
 import { planWorkflow } from "../src/core/generate.js"
 import { scanProject } from "../src/core/scan.js"
 import { parseFailOnTier } from "../src/engine/finding.js"
-import { sweep as sweepCmd, dismiss as fleetDismiss, add } from "../src/commands/fleet.js"
+import { sweep as sweepCmd, dismiss as fleetDismiss, add, board } from "../src/commands/fleet.js"
 import {
   checkManifest,
   collectWallFindings,
@@ -445,8 +445,9 @@ describe("fleet sweep — pinned invariants", () => {
 describe("fleet — archived entries are records, not members", () => {
   it("an archived entry is skipped by the sweep and the check, and both say so", async () => {
     await initRepo("alive", { stateAt: "2026-06-01T09:00:00Z" })
-    // The archived entry points nowhere and declares no trust: were it walked, the check would
-    // report a dangling path and an undeclared trust.
+    // The archived entry points nowhere and declares no trust: the sweep never walks it (no
+    // dangling-path finding), but the manifest's own text checks stay on a record — an
+    // undeclared trust is a fact about the publishable file, not about the work.
     const manifestPath = await writeHub([
       personal("alive"),
       {
@@ -462,13 +463,129 @@ describe("fleet — archived entries are records, not members", () => {
     expect(manifest.archived.map((e) => [e.name, e.archived])).toEqual([["closed", "2026-05-01"]])
 
     const check = await checkManifest(manifest)
-    expect(check.findings.some((f) => f.id.includes("closed"))).toBe(false)
+    expect(check.findings.some((f) => f.id === "fleet-manifest/undeclared-trust:closed")).toBe(true)
+    expect(check.findings.some((f) => f.id.includes("dangling"))).toBe(false)
     expect(check.disclosures.some((d) => d.includes("1 archived entry (closed)"))).toBe(true)
 
     const result = await sweepFleet(manifest, {})
     expect(result.projects.map((p) => p.name)).toEqual(["alive"])
     expect(result.outOfScope).not.toContain("closed")
     expect(result.wallDisclosures.some((d) => d.includes("archived entry (closed)"))).toBe(true)
+  })
+
+  it("a non-date archived string is reported and the entry stays live", async () => {
+    // Any non-empty string used to archive — "false", "no", "0", a typo — used to hide the
+    // project from every check with no problem raised: the silent-hide failure this reader
+    // exists to prevent. Only "true" and date strings archive.
+    await initRepo("alive", { stateAt: "2026-06-01T09:00:00Z" })
+    const manifestPath = await writeHub([
+      personal("alive"),
+      {
+        name: "closed",
+        kind: "repo",
+        profile: "personal",
+        path: "gone/closed",
+        archived: "false",
+      },
+    ])
+    const manifest = await manifestAt(manifestPath)
+    expect(manifest.entries.map((e) => e.name)).toEqual(["alive", "closed"])
+    expect(manifest.archived).toEqual([])
+    expect(
+      manifest.problems.some(
+        (p) => p.kind === "bad-shape" && p.detail.includes("must be true or a date string"),
+      ),
+    ).toBe(true)
+  })
+
+  it("a date-shaped string that is no calendar date is reported and stays live", async () => {
+    // `2026-99-99typo` matched the old prefix test — month 99, trailing junk — and archived
+    // the project silently. The whole string must be a real calendar date, or the entry is
+    // read as live with a problem, exactly like "false" or a bare typo.
+    await initRepo("alive", { stateAt: "2026-06-01T09:00:00Z" })
+    const manifestPath = await writeHub([
+      personal("alive"),
+      {
+        name: "typo-month",
+        kind: "repo",
+        profile: "personal",
+        path: "gone/typo-month",
+        archived: "2026-99-99typo",
+      },
+      {
+        name: "impossible-day",
+        kind: "repo",
+        profile: "personal",
+        path: "gone/impossible-day",
+        archived: "2026-02-30",
+      },
+    ])
+    const manifest = await manifestAt(manifestPath)
+    expect(manifest.entries.map((e) => e.name)).toEqual(["alive", "typo-month", "impossible-day"])
+    expect(manifest.archived).toEqual([])
+    expect(
+      manifest.problems.filter(
+        (p) => p.kind === "bad-shape" && p.detail.includes("must be true or a date string"),
+      ).length,
+    ).toBe(2)
+  })
+
+  it("a private archived record still answers for a tracked path", async () => {
+    // Archiving silences the work, not the file: a private entry carrying a path in the
+    // tracked manifest ties an opaque alias to a real directory for anyone who can read it.
+    await initRepo("alive", { stateAt: "2026-06-01T09:00:00Z" })
+    const manifestPath = await writeHub([
+      personal("alive"),
+      {
+        name: "closed",
+        kind: "repo",
+        profile: "personal",
+        private: true,
+        path: "gone/closed",
+        archived: true,
+      },
+    ])
+    const { findings } = await checkManifest(await manifestAt(manifestPath))
+    expect(findings.some((f) => f.id === "fleet-manifest/private-path-leak:closed")).toBe(true)
+  })
+
+  it("an archived guarded entry's mapped checkout is a record, not an unregistered remote", async () => {
+    // The checkout stays under the fleet root after archiving, mapped in the local file (a
+    // tracked path is forbidden on a guarded entry): the census must know it, or every check
+    // reports the closed project's own worktree as guarded material nobody registered.
+    await initRepo("alpha")
+    await initRepo("zz-closed")
+    await gitIn(path.join(dir, "zz-closed"), null, [
+      "remote",
+      "add",
+      "origin",
+      "https://git.zz-fixture-guarded.example/zz-closed.git",
+    ])
+    const manifestPath = await writeHub(
+      [personal("alpha"), { ...guarded("zz-closed"), archived: "2026-05-01" }],
+      {
+        root: dir,
+        local: {
+          machineProfile: "guarded",
+          guardedHosts: ["git.zz-fixture-guarded.example"],
+          dirs: { "zz-closed": path.join(dir, "zz-closed") },
+        },
+      },
+    )
+    const { findings } = await collectWallFindings(await manifestAt(manifestPath))
+    expect(
+      findings.some((f) => f.id === "fleet-manifest/unregistered-guarded-remote:zz-closed"),
+    ).toBe(false)
+  })
+
+  it("the sweep result carries the archived names for every renderer to disclose", async () => {
+    await initRepo("alive", { stateAt: "2026-06-01T09:00:00Z" })
+    const manifestPath = await writeHub([
+      personal("alive"),
+      { name: "closed", kind: "repo", profile: "personal", archived: "2026-05-01" },
+    ])
+    const result = await sweepFleet(await manifestAt(manifestPath), {})
+    expect(result.archived).toEqual(["closed"])
   })
 
   it("an archived name stays taken, and asking for it by name is refused with the reason", async () => {
@@ -985,6 +1102,39 @@ describe("the Claude Code pointer contract — one definition, two callers", () 
         await fs.writeFile(path.join(root, ".claude", "CLAUDE.md"), "own content\n", "utf8")
       },
       kind: "no-import",
+    },
+    {
+      name: "CLAUDE.local.md alone shadows AGENTS.md",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.writeFile(path.join(root, "CLAUDE.local.md"), "personal notes\n", "utf8")
+      },
+      kind: "no-import",
+    },
+    {
+      name: "a CLAUDE.local.md importing AGENTS.md carries the contract",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.writeFile(path.join(root, "CLAUDE.local.md"), "# local\n\n@AGENTS.md\n", "utf8")
+      },
+      via: "local-import",
+    },
+    {
+      name: "a CLAUDE.local.md symlinked to AGENTS.md is the same file",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.symlink("AGENTS.md", path.join(root, "CLAUDE.local.md"))
+      },
+      via: "same-file",
+    },
+    {
+      name: "a CLAUDE.local.md beside an importing CLAUDE.md hides nothing",
+      build: async (root) => {
+        await fs.writeFile(path.join(root, "AGENTS.md"), AGENTS, "utf8")
+        await fs.writeFile(path.join(root, "CLAUDE.md"), "# CLAUDE.md\n\n@AGENTS.md\n", "utf8")
+        await fs.writeFile(path.join(root, "CLAUDE.local.md"), "personal notes\n", "utf8")
+      },
+      via: "root-import",
     },
     {
       name: "CLAUDE.md exists but never imports AGENTS.md",
@@ -1794,6 +1944,45 @@ describe("fleet sweep — the milestones contract (board input, shape-checked)",
       "`planned` MILESTONES.md: line 1: first heading is `# Plan`; it must be `# Milestones`",
       "`planned` MILESTONES.md: line 3: table columns are `id | milestone`; the standard is `id | milestone | goal | status | next | effort | depends-on`",
     ])
+  })
+
+  it("an archived guarded entry never reaches the board — not the note, the JSON or the markdown", async () => {
+    // The board is a publishable artifact of the personal side; closing a guarded project
+    // must not publish what its live row never showed. The archived disclosure runs through
+    // the same profile filter as the rows, and one filtered list feeds every surface.
+    await initRepo("live")
+    const manifestPath = await writeHub([
+      personal("live", { contract: { milestones: "none" } }),
+      {
+        name: "closed-personal",
+        kind: "repo",
+        profile: "personal",
+        path: "gone/closed-personal",
+        archived: "2026-05-01",
+      },
+      {
+        name: "c-guarded-archived",
+        kind: "repo",
+        profile: "guarded",
+        path: "gone/guarded",
+        archived: "2026-05-02",
+      },
+    ])
+    const chunks: string[] = []
+    const spy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation((s: string | Uint8Array): boolean => {
+        chunks.push(String(s))
+        return true
+      })
+    try {
+      await board({ cwd: path.join(dir, "hub"), manifest: manifestPath, json: true })
+    } finally {
+      spy.mockRestore()
+    }
+    const parsed = JSON.parse(chunks.join("")) as { archived?: string[] }
+    expect(parsed.archived).toEqual(["closed-personal"])
+    expect(chunks.join("")).not.toContain("c-guarded-archived")
   })
 
   it('PINNED: `milestones: "none"` and an undeclared key both stay silent — absence is a decision, not a gap', async () => {

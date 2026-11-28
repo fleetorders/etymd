@@ -2,7 +2,9 @@
 
 A deeper walkthrough than the README. Every command is read-only unless it says it writes. The
 writes are: the `.etymd` cache/baseline/ledger, the files you approve in `init`/`gates`, the
-briefing `brief` emits, and the brief `premise` writes where `.etymd/` already exists. Probing a repo that never opted in (`audit --no-ledger`) leaves zero trace.
+briefing `brief` emits, the brief `premise` writes where `.etymd/` already exists, and the
+decision blocks `audit --fix` moves into id order. Probing a repo that never opted in
+(`audit --no-ledger`) leaves zero trace.
 
 ## Global options
 
@@ -31,7 +33,11 @@ Findings reconcile against the **committed ledger**: the diff shows new / still-
 `--truth`) never marks unexamined findings resolved.
 
 Flags: `--lens <id>` · `--truth` (doctor subset) · `--json` (machine-stable) · `--no-ledger`
-(read-only) · `--fail-on <risk|gap|polish>` (exit non-zero at/above the tier — the CI gate) ·
+(read-only) · `--fix` (apply the mechanical fixes etymd owns: a decisions file whose `## D-NNN`
+blocks landed out of append order is rewritten with whole blocks moved into id order — no word
+and no id changed, each move reported; the audit then re-runs on the fixed files. A non-decision
+`##` section between D-entries makes the reorder refuse and say why) ·
+`--fail-on <risk|gap|polish>` (exit non-zero at/above the tier — the CI gate) ·
 `--upstream <remote>` (this repo is a fork of that remote: freshness counts fork-authored commits
 only, and a source comment last written by one of the remote's commits is not checked, because
 the fork inherited it; run `git fetch <remote>` first, an unfetched remote is disclosed and
@@ -53,7 +59,8 @@ ignored).
 - **Cross-references**: mentions of AGENTS.md / CLAUDE.md / PROJECT_CONTEXT.md / GEMINI.md must
   resolve to real files.
 - **Baseline drift**: role commands (test/lint/typecheck/format/build), artifacts, and top-level
-  dirs that existed at the approved baseline and are now gone.
+  dirs that existed at the approved baseline and are now gone; the always-loaded instruction
+  footprint's growth since approval is shown too, once the baseline records it.
 
 **`gate-integrity`** — the CI ↔ local gate inventory (GitLab incl. `extends`/`!reference`/local
 includes/script-less jobs, GitHub workflows, husky modern + v3-legacy, lint-staged, `.githooks`),
@@ -85,7 +92,10 @@ committer dates only, never mtime:
 
 **`context-economy`** — the always-loaded footprint as findings: any single file ≥ 4000 words,
 total ≥ 8000 words (defaults; override under `context` in `.etymd/config.json`). Only genuinely
-`alwaysApply` Cursor rules count.
+`alwaysApply` Cursor rules count. The footprint is also recorded in the committed baseline, and
+each audit discloses its move since approval — growth stays visible even while under budget,
+which a static threshold alone never shows; a baseline approved by an older etymd predates the
+measurement and says so.
 
 **`comment-truth`** (truth) — the same four claim checks (command, path, doc-reference,
 decision id) over comments in tracked source files, extracted per language (JS/TS, C-family,
@@ -223,8 +233,9 @@ Walkthrough of the pieces:
   worktree; unregistered guarded-remote checkouts under the fleet root; tracked `/Users/` paths in
   the manifest's own repo; private identifiers in `trust: "public-repo"` entries; guarded-host commit
   emails on personal entries; and repos whose `AGENTS.md` Claude Code cannot see (`claude-pointer-missing`: a risk when
-  a `CLAUDE.md` exists without importing `@AGENTS.md`, since Claude Code then reads only that file
-  and `etymd fleet add` refuses the repo; a gap when there is no `CLAUDE.md` and the installed
+  a `CLAUDE.md` exists without importing `@AGENTS.md` or a `CLAUDE.local.md` sits beside the
+  contract (the reader counts the local file as a `CLAUDE.md`, so the fallback does not fire),
+  since Claude Code then reads only those files and `etymd fleet add` refuses the repo; a gap when there is no `CLAUDE.md` and the installed
   Claude Code predates the 2.1.277 `AGENTS.md` fallback; `ETYMD_CLAUDE_VERSION` pins the version
   checked, `none` for a machine without Claude Code — pin it wherever a sweep must not depend on
   the machine, CI above all, because a box with no readable `claude` counts as no reader and

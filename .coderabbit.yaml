@@ -1,4 +1,6 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-# CodeRabbit comments on pull requests; it never requests changes.
-reviews:
-  request_changes_workflow: false
+# All review behaviour is inherited from the organisation settings
+# (profile quiet, min_blocking_severity: major, auto_incremental_review: false,
+# three custom pre-merge checks). A repository file without inheritance
+# REPLACES all of it, so this file stays a single line.
+inheritance: true

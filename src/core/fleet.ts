@@ -212,7 +212,22 @@ function readArchived(
   if (value === undefined || value === null || value === false) return undefined
   if (value === true) return "true"
   const text = asString(value)
-  if (text) return text
+  // A string must BE a calendar date, whole and real, as the problem detail below promises.
+  // A prefix match alone archived on `2026-99-99typo` — month 99, trailing junk — hiding the
+  // project from every check with no bad-shape problem at all, the exact silent-hide failure
+  // this reader exists to prevent. A trailing note is refused too: the field is a date, not a
+  // date-shaped prefix of something else.
+  if (text) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text)
+    if (m) {
+      const [, ys, ms, ds] = m
+      const year = Number(ys)
+      const month = Number(ms)
+      const day = Number(ds)
+      const last = new Date(Date.UTC(year, month, 0)).getUTCDate()
+      if (month >= 1 && month <= 12 && day >= 1 && day <= last) return text
+    }
+  }
   manifest.problems.push({
     kind: "bad-shape",
     file: manifestFile,

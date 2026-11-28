@@ -7,7 +7,7 @@ import { DEFAULT_CONFIG, type StateBudgets } from "../core/config.js"
 import { CLAUDE_AGENTS_FALLBACK_VERSION, checkClaudePointer } from "../core/detect.js"
 import { ETYMD_DIR } from "../core/facts.js"
 import type { FleetEntry, FleetManifest } from "../core/fleet.js"
-import { FLEET_TRUST_VALUES } from "../core/fleet.js"
+import { expandTilde, FLEET_TRUST_VALUES } from "../core/fleet.js"
 import { git, isDirectory, pathExists, readText } from "../core/util.js"
 import type { Finding, FindingTier, LensKind } from "./finding.js"
 import { readLedger } from "./ledger.js"
@@ -67,6 +67,8 @@ export interface FleetSweepResult {
   /** Entry names that could not be audited — named here, never silently dropped. */
   outOfScope: string[]
   /** Manifest problems, verbatim — disclosed by every renderer, never defaulted away. */
+  /** Archived entry names — records the sweep never touches; every renderer discloses them. */
+  archived: string[]
   problems: string[]
   /** Defect classes open in ≥2 projects — the class-fix candidates (see recurringClasses()). */
   recurringClasses: RecurringClass[]
@@ -231,13 +233,17 @@ const PROBLEM_TIER: Record<string, FindingTier> = {
   "local-missing": "gap",
 }
 
+/** The one line every fleet report carries over these names, or null when there are none. */
+export function archivedNamesLine(names: string[]): string | null {
+  const n = names.length
+  if (!n) return null
+  return `${n} archived entr${n === 1 ? "y" : "ies"} (${names.join(", ")}) — kept as ${n === 1 ? "a record" : "records"}; not resolved, checked or swept.`
+}
+
 /** The one line every fleet report carries when the manifest holds archived entries. */
 function archivedDisclosure(manifest: FleetManifest): string[] {
-  const n = manifest.archived.length
-  if (!n) return []
-  return [
-    `${n} archived entr${n === 1 ? "y" : "ies"} (${manifest.archived.map((e) => e.name).join(", ")}) — kept as ${n === 1 ? "a record" : "records"}; not resolved, checked or swept.`,
-  ]
+  const line = archivedNamesLine(manifest.archived.map((e) => e.name))
+  return line ? [line] : []
 }
 
 /**
@@ -285,14 +291,11 @@ export async function checkManifest(
       ),
     )
   }
-  for (const entry of manifest.archived) {
-    if (seen.has(entry.name)) flagDuplicate(entry.name)
-    seen.add(entry.name)
-  }
-  for (const entry of manifest.entries) {
-    if (seen.has(entry.name)) flagDuplicate(entry.name)
-    seen.add(entry.name)
-
+  /** The checks about the manifest's own text. They hold for a record as much as for a member:
+   * closing a project says nothing about what the publishable file ties together — trust gates
+   * content screening, and a private entry's tracked path is a leak whether or not anyone works
+   * in it. */
+  const checkEntryText = (entry: FleetEntry): void => {
     // Trust is a SAFETY PREDICATE gating content screening, so "unanswered" must never collapse
     // into the permissive answer. Guarded entries are exempt: `profile: "guarded"` already implies it.
     // The declared-but-unknown case is separated from the undeclared one — a typo silently
@@ -325,6 +328,16 @@ export async function checkManifest(
         ),
       )
     }
+  }
+  for (const entry of manifest.archived) {
+    if (seen.has(entry.name)) flagDuplicate(entry.name)
+    seen.add(entry.name)
+    checkEntryText(entry)
+  }
+  for (const entry of manifest.entries) {
+    if (seen.has(entry.name)) flagDuplicate(entry.name)
+    seen.add(entry.name)
+    checkEntryText(entry)
 
     // Dangling resolution: a mapping that points at nothing is the manifest lying about the
     // fleet — the exact class a stale personal path or a renamed worktree produces.
@@ -485,9 +498,17 @@ async function checkCoverage(
   for (const entry of manifest.entries) {
     if (entry.resolvedRoot) registered.add(await realpathOr(entry.resolvedRoot))
   }
-  // An archived entry's checkout is registered too: a record is not an unregistered repository.
+  // An archived entry's checkout is registered too: a record is not an unregistered
+  // repository. A guarded archive carries no tracked path (that is the leak rule) — its
+  // checkout is mapped in the local file like a live one, so both shapes count.
   for (const entry of manifest.archived) {
-    if (entry.path) registered.add(await realpathOr(path.resolve(manifest.root, entry.path)))
+    const mapped = manifest.localDirs[entry.name]
+    const dir = mapped
+      ? path.resolve(manifest.dir, expandTilde(mapped))
+      : entry.path
+        ? path.resolve(manifest.root ?? manifest.dir, expandTilde(entry.path))
+        : undefined
+    if (dir) registered.add(await realpathOr(dir))
   }
   registered.add(await realpathOr(manifest.dir))
 
@@ -762,7 +783,8 @@ async function checkGateDrift(
 /**
  * The pointer contract (`checkClaudePointer`, the one definition) must hold in every resolved
  * repo, or the repo believes every agent reads a contract Claude Code never receives. A
- * CLAUDE.md that does not import AGENTS.md hides it on every version (risk); a bare AGENTS.md
+ * CLAUDE.md that does not import AGENTS.md — or a bare CLAUDE.local.md beside the contract —
+ * hides it on every version (risk); a bare AGENTS.md
  * hides it only from a Claude Code older than the fallback (gap); a version that could not be
  * established is disclosed, never counted as clean. Runs on every profile: guarded worktrees
  * are read here, never written. Not exempted by `contract.placement: "none"` — that declares
@@ -790,10 +812,10 @@ async function checkClaudePointers(
         ? finding(
             `${FLEET_LENS}/claude-pointer-missing:${entry.name}`,
             "risk",
-            `\`${entry.name}\` has a CLAUDE.md that never imports its AGENTS.md`,
+            `\`${entry.name}\` has a CLAUDE.md or CLAUDE.local.md that hides its AGENTS.md`,
             [`${entry.name}: ${check.detail}`],
-            "Claude Code reads CLAUDE.md when one exists and falls back to AGENTS.md only when none does. A CLAUDE.md without the import shadows AGENTS.md, so the contract looks universal from inside the repo while Claude Code never receives it.",
-            "Add a full-line `@AGENTS.md` import to that CLAUDE.md, symlink either file to the other, or delete the CLAUDE.md if AGENTS.md is the whole contract.",
+            "Claude Code reads CLAUDE.md files — a CLAUDE.local.md counts — and falls back to AGENTS.md only when none does. A CLAUDE.md without the import, or a bare CLAUDE.local.md, shadows AGENTS.md, so the contract looks universal from inside the repo while Claude Code never receives it.",
+            "Add a full-line `@AGENTS.md` import to that CLAUDE.md, symlink either file to the other, or delete the CLAUDE.md if AGENTS.md is the whole contract. To keep a CLAUDE.local.md and still have AGENTS.md read, set Claude Code's Project instructions to `claude-md-and-agents-md`, or carry `@AGENTS.md` from a CLAUDE.md beside it.",
           )
         : finding(
             `${FLEET_LENS}/claude-pointer-missing:${entry.name}`,
@@ -1027,6 +1049,7 @@ export async function sweepFleet(
     wallDisclosures: wall.disclosures,
     outOfScope: projects.filter((p) => !p.resolvedRoot || p.unresolved).map((p) => p.name),
     problems: manifest.problems.map((p) => `${p.file}: ${p.detail}`),
+    archived: manifest.archived.map((e) => e.name),
     recurringClasses: recurringClasses(projects),
   }
 }

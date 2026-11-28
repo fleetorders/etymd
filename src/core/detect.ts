@@ -581,11 +581,15 @@ async function firstLine(file: string): Promise<string> {
   }
 }
 
-/** `sh`, `bash`, `dash`, `zsh` — via a direct path or `env`. Not `python`, not `node`. */
-const SHELL_SHEBANG = /^#!\s*\/\S*\b(?:ba|da|z)?sh\b|^#!\s*\/usr\/bin\/env\s+(?:ba|da|z)?sh\b/
+/** `sh`, `bash`, `dash`, `zsh` and the ksh family — via a direct path or `env`. Not `python`,
+ * not `node`. The family list mirrors the generated gate's classifier (templates.ts): whatever
+ * that gate stages for checking counts here, or a repo whose scripts are all ksh counts zero
+ * and the installer silently omits the very step that would have checked them. */
+const SHELL_SHEBANG =
+  /^#!\s*\/\S*\b(?:(?:ba|da|z)?sh|ksh[0-9-]*|(?:mk|pdk|ok|lk)sh)\b|^#!\s*\/usr\/bin\/env\s+(?:(?:ba|da|z)?sh|ksh[0-9-]*|(?:mk|pdk|ok|lk)sh)\b/
 
 /** Extensions we treat as shell without opening the file. */
-const SHELL_EXT = /\.(?:sh|bash|zsh)$/
+const SHELL_EXT = /\.(?:sh|bash|zsh|ksh)$/
 
 /**
  * Count tracked files a shell executes.
@@ -699,7 +703,13 @@ export function readsAgentsNatively(version: string): boolean {
 export type ClaudePointerResult =
   | {
       ok: true
-      via: "no-agents" | "same-file" | "root-import" | "dotclaude-import" | "native-fallback"
+      via:
+        | "no-agents"
+        | "same-file"
+        | "root-import"
+        | "dotclaude-import"
+        | "local-import"
+        | "native-fallback"
     }
   | {
       ok: false
@@ -796,8 +806,9 @@ function mayPredate(a: string, b: string): boolean {
  *
  * Claude Code auto-discovers `CLAUDE.md` and follows its `@` imports. Since 2.1.277 it also reads
  * `AGENTS.md` when a directory has no `CLAUDE.md`; before that it never loaded `AGENTS.md`. So
- * instructions kept in `AGENTS.md` are invisible to it in two shapes: a `CLAUDE.md` that exists
- * and does not import them (every version reads that file instead), and no `CLAUDE.md` at all
+ * instructions kept in `AGENTS.md` are invisible to it in two shapes: a CLAUDE.md-family file
+ * that exists and does not import them — the root file, `.claude/CLAUDE.md`, or a
+ * `CLAUDE.local.md`, which the reader counts as a `CLAUDE.md` — and no family file at all
  * on a Claude Code older than the fallback. The check is the pointer contract both `fleet add`
  * and the fleet sweep (`claude-pointer-missing`) speak — defined once here so the two surfaces
  * cannot drift apart, which is the failure this tool exists to catch.
@@ -805,7 +816,8 @@ function mayPredate(a: string, b: string): boolean {
  * Passes when `AGENTS.md` is absent; either name is a symlink to the other (stat follows
  * links, so same dev:ino covers chains in both directions); the root `CLAUDE.md` carries a
  * full-line `@AGENTS.md` import; `.claude/CLAUDE.md` carries `@../AGENTS.md`; or there is no
- * `CLAUDE.md` in either place and the Claude Code version is at or past the fallback, or no
+ * CLAUDE.md-family file in either place — a `CLAUDE.local.md` counts — and the Claude Code
+ * version is at or past the fallback, or no
  * Claude Code is installed (a machine without it has no reader to warn about — genuinely
  * absent, ENOENT, is a pass; a probe that failed any other way returns `undetermined`, which
  * callers must disclose rather than count as a pass). A declared
@@ -850,17 +862,42 @@ export async function checkClaudePointer(
     return { ok: true, via: "dotclaude-import" }
   }
 
-  if (rootClaude !== null || dotClaude !== null) {
+  // A `CLAUDE.local.md` shadows AGENTS.md the same way the files above do — but only when it
+  // carries nothing of the contract. Pointing at AGENTS.md from the local file works exactly
+  // like pointing from CLAUDE.md: a symlink makes the two names one file, and the same
+  // `@AGENTS.md` import line carries the contract through it. Testing bare existence alone
+  // refused repos whose pointer was precisely the suggested remedy, living in the local file.
+  const localAbs = path.join(root, "CLAUDE.local.md")
+  const localSt = await statOrNone(localAbs)
+  if (
+    localSt &&
+    agentsSt &&
+    agentsSt.ino !== 0 &&
+    agentsSt.ino === localSt.ino &&
+    agentsSt.dev === localSt.dev
+  ) {
+    return { ok: true, via: "same-file" }
+  }
+  const localClaude = await readText(localAbs)
+  if (localClaude !== null && ROOT_POINTER_IMPORT_RE.test(withoutFencedCode(localClaude))) {
+    return { ok: true, via: "local-import" }
+  }
+  if (rootClaude !== null || dotClaude !== null || localClaude !== null) {
     // `.claude/CLAUDE.md` alone also shadows AGENTS.md — the fallback does not fire beside it.
     // Observed on Claude Code 2.1.283 (headless, markers planted one per file): a project with
     // AGENTS.md and `.claude/CLAUDE.md` but no root CLAUDE.md loaded ONLY the `.claude/CLAUDE.md`.
+    // A `CLAUDE.local.md` shadows the same way: the reader counts it among its CLAUDE.md files
+    // (the vendor's memory page says so outright — adding one stops Claude from reading
+    // AGENTS.md for you), and no import exists to carry the contract instead.
     return {
       ok: false,
       kind: "no-import",
       detail:
         rootClaude !== null
           ? "AGENTS.md and CLAUDE.md both present, but CLAUDE.md does not import it"
-          : "AGENTS.md and .claude/CLAUDE.md both present, but .claude/CLAUDE.md does not import it",
+          : dotClaude !== null
+            ? "AGENTS.md and .claude/CLAUDE.md both present, but .claude/CLAUDE.md does not import it"
+            : "AGENTS.md and CLAUDE.local.md both present without importing it — the reader counts a CLAUDE.local.md as a CLAUDE.md, so the fallback does not fire beside it",
     }
   }
 

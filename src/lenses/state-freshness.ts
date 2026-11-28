@@ -135,6 +135,85 @@ export function parseDecisionEntries(text: string): DecisionEntry[] {
   return entries
 }
 
+/** One whole-block move the normaliser made: `from`/`to` are 1-based positions among the
+ * file's `## D-NNN` entries, before and after. */
+export interface DecisionOrderMove {
+  id: string
+  from: number
+  to: number
+}
+
+export type DecisionOrderResult =
+  | { kind: "fixed"; text: string; moves: DecisionOrderMove[] }
+  | { kind: "clean" }
+  | { kind: "refused"; reason: string }
+
+/**
+ * Put a decisions file's `## D-NNN` blocks into id order by moving whole blocks — no word,
+ * no id, no heading changed, only their order (`audit --fix` calls this; appends that land
+ * out of order are exactly the case it exists for). The rewrite is byte-exact per block:
+ * the file is cut on its `## ` headings and reassembled from the same slices, so nothing
+ * outside the ordering is touched.
+ *
+ * Refused, not guessed, where order alone cannot decide: a non-decision `## ` section
+ * sitting BETWEEN D-entries has no unambiguous home once the entries move (it may document
+ * the neighbour it follows), so the file is left alone with the reason named. Sections after
+ * the LAST D-entry stay last — they are appendix material, not interleaved. Duplicate ids
+ * stay adjacent in their current relative order (a stable sort): renaming ids is a different
+ * repair than ordering them, and `--fix` must never make it implicitly.
+ */
+export function normaliseDecisionOrder(text: string): DecisionOrderResult {
+  const headings = [...text.matchAll(/^## .*$/gm)]
+  const sections: { start: number; end: number; id?: string; num?: number }[] = []
+  for (let i = 0; i < headings.length; i++) {
+    const h = headings[i] as RegExpMatchArray
+    const m = /^## (D-(\d+))\b/.exec(h[0])
+    sections.push({
+      start: h.index ?? 0,
+      end:
+        i + 1 < headings.length
+          ? ((headings[i + 1] as RegExpMatchArray).index ?? text.length)
+          : text.length,
+      id: m?.[1],
+      num: m ? Number(m[2]) : undefined,
+    })
+  }
+  const firstD = sections.findIndex((s) => s.id !== undefined)
+  if (firstD === -1) return { kind: "clean" }
+  const lastD = sections.reduce((acc, s, i) => (s.id !== undefined ? i : acc), -1)
+  // A non-D section between D-entries: moving the entries around it would move it too, or
+  // strand it beside a new neighbour it never described — refuse and name it.
+  const interleaved = sections.slice(firstD, lastD + 1).find((s) => s.id === undefined)
+  if (interleaved) {
+    const heading = text.slice(interleaved.start, text.indexOf("\n", interleaved.start))
+    return {
+      kind: "refused",
+      reason: `a non-decision section (${heading.trim()}) sits between D-entries — the blocks cannot be reordered around it unambiguously; move it by hand`,
+    }
+  }
+  const order = sections
+    .map((s, i) => ({ i, num: s.num as number }))
+    .filter((s) => sections[s.i]?.id !== undefined)
+  const sorted = [...order].sort((a, b) => a.num - b.num) // Array.sort is stable: duplicates keep file order
+  if (order.every((s, idx) => s.i === sorted[idx]?.i)) return { kind: "clean" }
+  const prelude = text.slice(0, sections[firstD]?.start)
+  let rebuilt = prelude
+  for (const s of sorted) {
+    const sec = sections[s.i] as { start: number; end: number }
+    rebuilt += text.slice(sec.start, sec.end)
+  }
+  for (const s of sections.slice(lastD + 1)) {
+    rebuilt += text.slice(s.start, s.end)
+  }
+  const moves: DecisionOrderMove[] = order
+    .map((s, idx) => {
+      const to = sorted.findIndex((t) => t.i === s.i)
+      return to === idx ? null : { id: sections[s.i]?.id as string, from: idx + 1, to: to + 1 }
+    })
+    .filter((m): m is DecisionOrderMove => m !== null)
+  return { kind: "fixed", text: rebuilt, moves }
+}
+
 /**
  * Id-sequence checks (duplicate ids, append order) on any file using `## D-NNN` headings.
  * Deliberately NOT marker-gated: an append race is a defect in the file's own chosen
@@ -173,7 +252,7 @@ function checkIdSequence(file: string, entries: DecisionEntry[]): Finding[] {
           claim: `${file} lists ${entry.id} after ${prev.id} — ids out of append order`,
           evidence: [`${file}: ${prev.id} precedes ${entry.id}`],
           why: "An append-only record reads in id order; out-of-order ids make the newest decision hard to find and the next id hard to pick.",
-          action: `Rename the out-of-order entry into sequence (next free id: D-${String(nextFree).padStart(3, "0")}).`,
+          action: `Move the whole block into id order, changing no word and no id (\`etymd audit --fix\` does this mechanically).`,
           effort: "S",
           confidence: "high",
         })

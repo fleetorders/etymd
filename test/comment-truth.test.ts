@@ -260,8 +260,11 @@ describe("comment-truth lens", () => {
     await write("docs/guide.ts", "// The table lives in tables/sizes.json.\n")
     await write("docs/tables/sizes.json", "{}\n")
     // The SAME claim string from a directory that does not carry it: a real finding, whose
-    // probe must not inherit the answer the docs/ probe cached for the identical string.
+    // probe must not inherit the answer the docs/ probe cached for the identical string. Its
+    // own `tables/` (holding another file) keeps the claim rooted where that comment sits —
+    // without it the path would start at no directory there, a skip rather than a finding.
     await write("other/none.ts", "// The table lives in tables/sizes.json.\n")
+    await write("other/tables/widths.json", "{}\n")
     await gitStage()
 
     const report = await runComments()
@@ -453,6 +456,141 @@ describe("review follow-ups on the skip rules", () => {
   })
 })
 
+describe("review follow-ups, round two (2026-11-23)", () => {
+  const ids = (report: LensReport) => report.findings.map((f) => f.id)
+
+  it("reads a flag opening a quoted span as a flag value, not a bare path", async () => {
+    await write(
+      "src/tool.mjs",
+      "// pass --out src/out/2.json, i.e. `--out src/out/2.json`, to override\nexport {}\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/right after a command-line flag/)
+  })
+
+  it("keeps a missing file under a dotted directory of a nested package a finding", async () => {
+    await write("tools/site/config.d/base.json", "{}\n")
+    await write("tools/site/src/a.ts", "// reads config.d/missing.json at boot\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual([
+      "comment-truth/stale-path:tools/site/src/a.ts:config.d/missing.json",
+    ])
+  })
+
+  it("reads a dotted FILE prefix as alternatives — nothing is inside a file", async () => {
+    await write("src/a.ts", "export {}\n")
+    await write("src/notes.ts", "// see src/a.ts/b.ts for the shape\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/list of alternatives/)
+  })
+
+  it("does not let a fixture manifest's scripts satisfy a production comment", async () => {
+    await write("package.json", JSON.stringify({ name: "app", scripts: { build: "x" } }))
+    await write("node_modules/.keep", "")
+    await write(".gitignore", "node_modules\n")
+    await write(
+      "test/fixtures/package.json",
+      JSON.stringify({ name: "fx", scripts: { "old-lint": "x" } }),
+    )
+    await write("src/a.ts", "// run `npm run old-lint` after the sweep\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-command:src/a.ts:old-lint"])
+  })
+
+  it("does not accuse a bare GEMINI.md mention that may be the user-level file", async () => {
+    await write(
+      "scripts/sync.sh",
+      "#!/bin/sh\n# mirrors the rules the agent reads from GEMINI.md\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/user-level file/)
+  })
+
+  it("keeps a finding when the same path also appears bare beside its flag use", async () => {
+    await write(
+      "src/tool.mjs",
+      "// node src/tool.mjs --from src/out/2.json; src/out/2.json holds the map\nexport {}\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/tool.mjs:src/out/2.json"])
+  })
+
+  it("keeps an explicitly relative reference a finding even when its directory is gone", async () => {
+    await write("src/a.ts", "// moved from ./legacy/helper.ts\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/a.ts:./legacy/helper.ts"])
+  })
+
+  it("still checks `pnpm run test` against the manifest — a builtin-named script is a claim", async () => {
+    await write("package.json", JSON.stringify({ name: "app", scripts: { build: "x" } }))
+    await write("node_modules/.keep", "")
+    await write(".gitignore", "node_modules\n")
+    await write("src/a.ts", "// `pnpm run test` is the gate\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-command:src/a.ts:test"])
+  })
+})
+
+describe("review follow-ups, round three (2026-11-24)", () => {
+  const ids = (report: LensReport) => report.findings.map((f) => f.id)
+
+  it("roots a comment's paths per file — a directory deep in an unrelated subtree vouches for nothing", async () => {
+    // The outside-repo set took every directory name at any depth, repo-wide: an `ios/` inside
+    // a mobile package made `ios/Bridge.swift` quoted in `server/` read as this repo's.
+    await write("packages/mobile/ios/App.swift", "// app\n")
+    await write("server/a.ts", "// mirrors ios/Bridge.swift upstream\nexport {}\n")
+    await write("packages/mobile/src/b.ts", "// the native half is ios/Bridge.swift\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    // From inside the mobile package `ios/` is where the comment's paths resolve: a finding.
+    expect(ids(report)).toEqual([
+      "comment-truth/stale-path:packages/mobile/src/b.ts:ios/Bridge.swift",
+    ])
+    expect(report.disclosures.join("\n")).toMatch(
+      /1 missing path\(s\) in comments start at no directory/,
+    )
+  })
+
+  it("verifies a script literally named `script` instead of reading the word as a stand-in", async () => {
+    await write(
+      "package.json",
+      JSON.stringify({ name: "app", scripts: { script: "x", build: "x" } }),
+    )
+    await write("node_modules/.keep", "")
+    await write(".gitignore", "node_modules\n")
+    await write(
+      "src/a.ts",
+      "// `pnpm run script` regenerates it, then `pnpm run nope`\nexport {}\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-command:src/a.ts:nope"])
+  })
+
+  it("survives a nested manifest that is not valid JSON", async () => {
+    await write("package.json", JSON.stringify({ name: "app", scripts: { build: "x" } }))
+    await write("node_modules/.keep", "")
+    await write(".gitignore", "node_modules\n")
+    await write("server/package.json", "{ not json\n")
+    await write("src/a.ts", "// `npm run nope` first\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(report.status).toBe("ran")
+    expect(ids(report)).toEqual(["comment-truth/stale-command:src/a.ts:nope"])
+  })
+})
+
 describe("what a comment says about a missing path", () => {
   const ids = (report: LensReport) => report.findings.map((f) => f.id)
   const gitEnv = {
@@ -524,7 +662,18 @@ describe("what a comment says about a missing path", () => {
     expect(report.disclosures.join("\n")).toMatch(/cut by a line wrap/)
   })
 
-  it("treats a path found under a nested package as written from that package", async () => {
+  it("flags a root script's stale path though a nested package holds a file at the same relative spot", async () => {
+    await write("src/keep.ts", "export {}\n")
+    await write("packages/agent/package.json", JSON.stringify({ name: "agent" }))
+    await write("packages/agent/src/index.ts", "export {}\n")
+    await write("tools/run.ts", "// the entry point is src/index.ts, deleted long ago\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:tools/run.ts:src/index.ts"])
+    expect(report.disclosures.join("\n")).not.toMatch(/nested package/)
+  })
+
+  it("reads a root script's package-relative paths as quoted from elsewhere — its file sits in no package", async () => {
     await write("packages/agent/package.json", JSON.stringify({ name: "agent" }))
     await write("packages/agent/src/tools/voice.ts", "export {}\n")
     await write(
@@ -533,8 +682,29 @@ describe("what a comment says about a missing path", () => {
     )
     await gitStage()
     const report = await runComments()
-    expect(ids(report)).toEqual(["comment-truth/stale-path:scripts/run.ts:src/tools/absent.ts"])
-    expect(report.disclosures.join("\n")).toMatch(/under a nested package's own directory/)
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/start at no directory/)
+    expect(report.disclosures.join("\n")).not.toMatch(/nested package/)
+  })
+
+  it("clears a doc reference introduced as an example, like the same mention through the path checker", async () => {
+    // The doc-refs checker flags the same missing mention the path checker does; the word
+    // rules must read both the same way, or "a file like DECISIONS.md" drops in one and
+    // flags in the other.
+    await write("src/a.ts", "// a file like DECISIONS.md records the rulings\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/introduced as examples/)
+  })
+
+  it("says when no sibling names are known, so the sibling skip could not apply", async () => {
+    await write("src/a.ts", "// see src/gone.ts for the rest\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(report.disclosures.join("\n")).toMatch(/sibling-name skip could not be applied/)
+    const swept = await runWith({ siblingNames: ["sibling-repo"] })
+    expect(swept.disclosures.join("\n")).not.toMatch(/sibling-name skip could not be applied/)
   })
 
   it("leaves a comment the upstream remote wrote to upstream, and checks the fork's own", async () => {
@@ -556,5 +726,153 @@ describe("what a comment says about a missing path", () => {
     const report = await runWith({ upstreamRemote: "upstream" })
     expect(ids(report)).toEqual(["comment-truth/stale-path:src/a.ts:src/gone.ts"])
     expect(report.disclosures.join("\n")).toMatch(/has no fetched refs/)
+  })
+})
+
+describe("the comment skip rules read what the words say", () => {
+  const ids = (report: LensReport) => report.findings.map((f) => f.id)
+
+  it("flags a plain reference that only 'looks like' or is 'said'", async () => {
+    // "the loader looks like src/gone.ts used to" was skipped as an example: bare like/say
+    // cleared ordinary prose.
+    await write("src/a.ts", "// the loader looks like src/gone.ts used to\nexport {}\n")
+    await write("src/b.ts", "// do what the docs say src/lost.md holds\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual([
+      "comment-truth/stale-path:src/a.ts:src/gone.ts",
+      "comment-truth/stale-path:src/b.ts:src/lost.md",
+    ])
+  })
+
+  it("flags a real reference after an everyday 'image' word", async () => {
+    await write("assets/keep.txt", "x\n")
+    await write("src/a.ts", "// the sprite in the image assets/hero.png is traced\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/a.ts:assets/hero.png"])
+  })
+
+  it("reads a bare bracket enumeration as examples", async () => {
+    await write("src/a.ts", "// a longer path (`src/out/2.json`) is that path's text\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/introduced as examples/)
+  })
+
+  it("reads a paired-dash list as examples", async () => {
+    await write(
+      "src/a.ts",
+      "// promote prose — `src/x.ts`, `src/design/` — into spans\nexport {}\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(report.findings).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/introduced as examples/)
+  })
+
+  it("counts a skip only for claims that never became findings", async () => {
+    // docs/notes is named as an example in one comment and plainly in another: the finding
+    // stands, and the skip disclosure must not also claim it was "skipped, not flagged".
+    await write("docs/readme.md", "# d\n")
+    await write(
+      "src/a.ts",
+      "// a path like docs/notes/ is bold\n// docs/notes/ is also read at boot\nexport {}\n",
+    )
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/a.ts:docs/notes"])
+    expect(report.disclosures.join("\n")).not.toMatch(/introduced as examples/)
+  })
+
+  it("reports the one stale path among twelve examples", async () => {
+    // The shared findings cap fired before the context filter, so the examples spent it and
+    // the stale path was truncated away; the cap now lands after the skips.
+    await write("docs/readme.md", "# d\n")
+    const examples = Array.from({ length: 12 }, (_, i) => `docs/e${i}/`).join(", ")
+    await write("src/a.ts", `// paths like ${examples} and docs/truly-gone.md too\nexport {}\n`)
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/a.ts:docs/truly-gone.md"])
+    expect(report.disclosures.join("\n")).toMatch(/12 missing path\(s\) in comments are introduced/)
+  })
+
+  it("keeps every finding past the per-file flood — the ledger must not read truncation as repair", async () => {
+    // The per-file cap once dropped findings silently: a still-broken command behind twelve
+    // stale paths vanished from the run, and the ledger marked it done on the next audit —
+    // an unfixed risk read as resolved. All findings now flow onward, and the disclosure
+    // names the flood instead of hiding evidence.
+    await write("package.json", JSON.stringify({ name: "flood", scripts: { build: "node x" } }))
+    await write("docs/readme.md", "# d\n")
+    const paths = Array.from({ length: 12 }, (_, i) => `docs/g${i}.md`).join(" and ")
+    await write("src/a.ts", `// stale ${paths}\n// Rebuild with npm run build:old.\nexport {}\n`)
+    await write("node_modules/.gitkeep", "")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report).filter((id) => id.includes("stale-path"))).toHaveLength(12)
+    expect(ids(report)).toContain("comment-truth/stale-command:src/a.ts:build:old")
+    expect(report.disclosures.join("\n")).toMatch(
+      /13 findings survived the comment-context skips — all reported, none truncated/,
+    )
+    expect(report.disclosures.join("\n")).not.toMatch(/— truncated\./)
+  })
+
+  it("a capitalised For example still marks its path an example", async () => {
+    // The example-cue pattern lost its case-insensitive flag at a rewrite: the same words
+    // with a capital F turned an illustrative path into a stale-path finding.
+    await write("docs/readme.md", "# d\n")
+    await write("src/a.ts", "// For example, docs/shape.md is dropped at load\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/introduced as examples/)
+  })
+
+  it("a parent-relative path that leaves the repository is quoted from elsewhere, not stale here", async () => {
+    // A `../` claim in a root-level file names something outside this tree: the old rule
+    // called every dot-relative claim "about this tree by construction", so a path that
+    // lives in no repository of the reader was reported missing INSIDE this one.
+    await write("run.ts", "// see ../elsewhere/guide.md for the outside docs\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/quoted from another tree/)
+  })
+
+  it("a parent-relative path from a nested file stays this repo's to lose", async () => {
+    // The control: from src/ the same words point at the repo root's own parent-relative
+    // target — inside the tree, so its absence is a real stale path, not a quote from
+    // elsewhere.
+    await write("src/b.ts", "// see ../elsewhere/guide.md\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/b.ts:../elsewhere/guide.md"])
+  })
+
+  it("a workspace's copy does not vouch for a root comment's path", async () => {
+    // The instruction-file monorepo rule (any package's copy satisfies any claim) masked
+    // source comments: a root-level `src/index.ts` passed while only
+    // packages/shared/src/index.ts existed. A package frames only the comments written
+    // inside it — at the resolver too, or the frame rule in the skips is unreachable.
+    await write("package.json", JSON.stringify({ name: "r", workspaces: ["packages/*"] }))
+    await write("packages/shared/package.json", JSON.stringify({ name: "@r/shared" }))
+    await write("packages/shared/src/index.ts", "export {}\n")
+    await write("packages/shared/cli.ts", "// calls src/index.ts at boot\nexport {}\n")
+    await write("tools/run.ts", "// loads src/index.ts at boot\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:tools/run.ts:src/index.ts"])
+  })
+
+  it("does not call a wrap cut where no next comment line exists", async () => {
+    // The disclosure said "the phrase continues on the next line" about a comment that had no
+    // next line: the wrap skip needs the continuation to exist.
+    await write("cart/index.ts", "export {}\n")
+    await write("src/seo.ts", "// private routes (cart/checkout/order/\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/seo.ts:cart/checkout/order"])
+    expect(report.disclosures.join("\n")).not.toMatch(/cut by a line wrap/)
   })
 })

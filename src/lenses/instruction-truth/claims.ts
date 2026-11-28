@@ -183,8 +183,12 @@ const PM_BUILTINS = new Set([
   "help",
 ])
 
-/** Script names referenced via `<pm> run <script>` invocations, plus `npm test` and `npm start`. */
-export function extractCommandClaims(text: string): CommandClaims {
+/**
+ * Script names referenced via `<pm> run <script>` invocations, plus `npm test` and `npm start`.
+ * `known` is the repo's script set: a stand-in word (`run script`) is read as a name only where a
+ * script of that literal name exists, so a real `script` script stays verifiable.
+ */
+export function extractCommandClaims(text: string, known?: ReadonlySet<string>): CommandClaims {
   const scripts = new Map<string, string>()
   let filteredSkipped = 0
   for (const token of extractCodeTokens(text)) {
@@ -209,9 +213,10 @@ export function extractCommandClaims(text: string): CommandClaims {
         continue
       if (ranExplicit && PM_BUILTINS.has(arg)) continue
       // `pnpm run` named for itself, and `pnpm run script` with the word standing in for a
-      // name, describe the invocation shape — no script is claimed.
+      // name, describe the invocation shape — no script is claimed, unless the repo really has a
+      // script of that name. ranExplicit is this match's own `run` group, never a carried state.
       if (!ranExplicit && arg === "run") continue
-      if (ranExplicit && (arg === "script" || arg === "scripts")) continue
+      if (ranExplicit && (arg === "script" || arg === "scripts") && !known?.has(arg)) continue
       scripts.set(arg, token)
     }
   }

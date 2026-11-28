@@ -258,13 +258,15 @@ tier where a model earns its place, which must never be able to fail CI.
 **Comments.** A missing path in a comment is a stale reference only when the comment points at
 this repository's tree. The lens reads the words beside each mention before it accuses: a path
 introduced as an example, a path placed inside a built artifact, a path written after a sibling
-repository's name, a path that exists under a nested package's own directory, a slash-ended
+repository's name, a path that exists under the nested package the commenting file sits in, a slash-ended
 phrase cut by a line wrap, and a comment last written by a commit of the fork's upstream remote
 are counted, disclosed and not flagged. A finding is dropped only when every mention of the path
 in that comment reads the same way.
 
 **Archived entries.** A fleet manifest entry may declare `archived`. Every fleet command skips
-such an entry and discloses the count.
+such an entry and discloses the count. The manifest's own text checks stay on a record:
+undeclared or unknown trust, and a private entry's tracked path, are facts about the
+publishable file, not about the work — archiving silences the sweep, not the leak screen.
 
 **Why:** the reader of a finding list acts on its first few lines. When most lines are wrong, or
 describe a project nobody works in, the list is not read at all, and that costs more than the
@@ -273,3 +275,49 @@ stale references the dropped shapes would have caught.
 **Consequences:** recall drops in each named shape, recorded in
 [limitations.md](limitations.md). The upstream rule needs the remote fetched and runs `git blame`
 only on comments that already produced a finding, so a clean file costs nothing extra.
+
+## D-015 — ksh joins the checked set; the announced hole is retired
+
+The shell gate's classifier hands sh, bash, dash — and now the ksh families (ksh, ksh93, mksh,
+pdksh, oksh, lksh) — to the checker. The other-shell bucket keeps ash, yash, posh, csh, tcsh and
+fish, still counted and announced.
+
+**Why:** the checker parses ksh natively — a ksh-shebang file gets real findings, no dialect
+error — so excluding it was a policy choice, not a reach limit, and its cost was a standing
+announced hole on every push of a repo that carries any ksh. An announced hole is honest, but
+paying it forever for a dialect the checker reads is the wrong bill. ash stays excluded
+uncontested: the checker has no mode for it without a per-file directive, and the raw blobs this
+gate reads cannot carry one.
+
+**Amended (pack 37):** "natively" covers `ksh` alone. The checker's own refusal names only
+sh/bash/dash/ksh, and a `mksh`, `pdksh`, `oksh` or `lksh` shebang earns SC1008 at error severity
+— over the gate's bar — on a clean script. The aliases stay in the checked set and now run as
+their own list with the ksh dialect named explicitly (`--shell=ksh`): checked under what the
+names mean, never a standing refusal over nothing.
+
+**Consequences:** a repo with ksh scripts carrying real findings starts refusing pushes the day
+its pack regenerates past this version — the same one-time migration every severity-bar change
+pays. The pack version bumps with the classifier; consumers take the widening at their next
+`etymd gates` run.
+
+## D-016 — The always-loaded footprint joins the committed baseline, as visibility not a gate
+
+Facts gain an optional `context` footprint (total words, approximate tokens, distinct files),
+measured at scan time with the default per-file threshold. `etymd approve` shows its move since
+approval beside the command, artifact and layout axes, and every audit's context-economy section
+discloses the standing — growth included, "(unchanged)" included. It is a disclosure, never a
+finding: the budget gate stays the one threshold, and no growth threshold ships.
+
+**Why:** a static budget cannot see growth inside it — a footprint can double while under budget
+and the budget says nothing. A committed number plus a delta makes the cost visible at exactly
+the moment a human blesses a change, which is when acting on it is cheapest. Measured with the
+default threshold on purpose: totals are budget-independent, so drift stays comparable across
+config changes and is never an artefact of a budget someone moved. A baseline approved by an
+older etymd predates the fact — absent reads as "not measured", and the lens says so instead of
+inventing a first-measurement delta.
+
+**Consequences:** no new config, so there is nothing for a user to set and no D-005 predicate to
+answer for. Baselines carry one more additive, optional field; an older etymd reading a newer
+baseline ignores it. Footprint words staying flat while files split or merge still counts as a
+move, because what every session loads changed. Growth under budget is reported, never blocked —
+whether to act stays with the reader, via the extraction findings that already exist.

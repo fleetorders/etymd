@@ -320,6 +320,19 @@ export function renderBaselineDrift(drift: BaselineDrift): void {
   for (const d of drift.dirsAdded) line(theme.ok("+"), "top-level", theme.info(d + "/"))
   for (const d of drift.dirsRemoved)
     line(theme.bad("−"), "top-level", `${theme.info(d + "/")} ${theme.dim("(gone)")}`)
+  if (drift.context) {
+    const { from, to } = drift.context
+    const dw = to.totalWords - from.totalWords
+    const pct = from.totalWords > 0 ? Math.round((dw / from.totalWords) * 100) : null
+    const signed = (n: number) => (n >= 0 ? `+${n}` : `${n}`)
+    line(
+      glyph.arrow,
+      "always-loaded",
+      `${theme.code(`${from.totalWords}w`)} → ${theme.code(`${to.totalWords}w`)} ${theme.dim(
+        `(${signed(dw)}w${pct === null ? "" : `, ${signed(pct)}%`}; ${to.files} file(s))`,
+      )}`,
+    )
+  }
 }
 
 /** The `etymd ledger` list: every tracked finding grouped by status, newest decisions first. */
