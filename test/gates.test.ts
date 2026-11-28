@@ -826,12 +826,19 @@ describe.skipIf(!existsSync(CLI))(
       // since its base — each at its own tree, where later fixes do not exist, so a push of
       // a clean branch was refused on warnings a later commit had already fixed. A remote
       // already gated those commits when they landed there; the same subtraction the
-      // new-branch case uses bounds this range too.
+      // new-branch case uses bounds this range too — for a push NAMING that remote, the
+      // only shape where the gate may trust a remote's tracking refs. A push naming no
+      // configured remote (a URL) bounds by the destination sha alone instead and may
+      // re-check those commits: the cost is paid in checking, never in skipping.
       await baseRepo()
       await write("tool/main-side.sh", "#!/bin/sh\necho main\n")
       await commitAll("chore: main-side script")
       const mainSide = await revParse("HEAD")
-      // The remote-tracking ref says a remote already has this commit.
+      // origin is the configured remote the push names; its tracking ref says origin
+      // already has this commit.
+      await pExecFile("git", ["remote", "add", "origin", path.join(dir, "origin.git")], {
+        cwd: dir,
+      })
       await pExecFile("git", ["update-ref", "refs/remotes/origin/main", mainSide], { cwd: dir })
       await pExecFile("git", ["checkout", "-q", "-b", "topic", "HEAD~1"], {
         cwd: dir,
@@ -849,7 +856,7 @@ describe.skipIf(!existsSync(CLI))(
       await recordShellcheck()
       const env = await stubEnv({ ETYMD_RECORD: path.join(dir, "shellcheck.jsonl") })
 
-      const { stdout } = await runPrePush(env, update("topic", merged, topicTip))
+      const { stdout } = await runPrePushRemote(env, "origin", update("topic", merged, topicTip))
       // The old range said "2 commit(s)" — the merge AND the already-remote main commit,
       // each re-checked at its own tree. One commit is left: the merge itself.
       expect(stdout).toContain("1 commit(s) in the pushed range")
@@ -926,6 +933,41 @@ describe.skipIf(!existsSync(CLI))(
         )
         expect(stdout).toContain("1 commit(s) in the pushed range")
         expect(stdout).not.toContain("SC2034")
+      },
+    )
+
+    it.skipIf(!hasShellcheck)(
+      "PINNED: a URL push to an existing branch bounds its range by the destination sha alone",
+      async () => {
+        // The failure being fixed: where $1 named no configured remote (a URL or path
+        // push), the existing-branch range subtracted EVERY remote's tracking refs — so a
+        // tip an unrelated remote happened to hold subtracted itself out of its own push,
+        // and the exact bytes being pushed skipped the checker with "no commit in the
+        // pushed refs". The destination sha alone bounds what that destination will
+        // receive; nobody else's refs speak for it.
+        await baseRepo()
+        await write("tool/do.sh", "#!/bin/sh\necho base\n")
+        await commitAll("chore: base script")
+        const base = await revParse("HEAD")
+        await write("tool/do.sh", "#!/bin/sh\nnever_used=1\necho bad\n")
+        await commitAll("chore: bad script")
+        const bad = await revParse("HEAD")
+        await gates()
+        const env = await stubEnv()
+        // The destination's current tip (base) is one behind the push, and an unrelated
+        // remote's tracking ref already holds the pushed tip — the fetch shape that zeroed
+        // the wide-subtraction range.
+        await pExecFile("git", ["remote", "add", "origin", path.join(dir, "origin.git")], {
+          cwd: dir,
+        })
+        await pExecFile("git", ["update-ref", "refs/remotes/other/main", bad], { cwd: dir })
+
+        await expect(
+          runPrePushRemote(env, path.join(dir, "origin.git"), update("main", bad, base)),
+        ).rejects.toMatchObject({
+          code: 1,
+          stdout: expect.stringContaining("1 commit(s) in the pushed range"),
+        })
       },
     )
 
@@ -2575,6 +2617,32 @@ describe.skipIf(!existsSync(CLI))("etymd gates — the push-time audit reads the
     expect(Number(auditCount?.split(" ")[1])).toBeGreaterThan(0)
   })
 
+  it("PINNED: a ref that resolves to no commit is skipped with disclosure, never refused", async () => {
+    // The failure being fixed: worktree add cannot stand up a blob or a tree, so a push
+    // carrying a tag that points at one failed the materialisation and REFUSED a valid
+    // push — the audit half rejected what the shell half already tolerated (rev-list on a
+    // blob is silently empty). A ref with no commit has no tree of scripts to audit: it is
+    // skipped with a disclosure line, not failed and not silent.
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await commitAll("chore: script")
+    await gates()
+    const env = await stubEnv()
+    const blob = spawnSync("git", ["hash-object", "-w", "--stdin"], {
+      cwd: dir,
+      input: "not a commit\n",
+      encoding: "utf8",
+    }).stdout?.trim()
+    await pExecFile("git", ["update-ref", "refs/tags/notcommit", blob], { cwd: dir })
+
+    const { stdout } = await runPrePush(
+      env,
+      `refs/tags/notcommit ${blob} refs/tags/notcommit ${ZERO}`,
+    )
+    expect(stdout).toContain("resolves to no commit")
+    expect(stdout).toContain("not audited, not failed")
+  })
+
   it("PINNED: distinct-case tree entries cannot write one destination or ride a symlink out of the audit tree", async (ctx) => {
     // The lexical staying-inside guard reads names; a case-insensitive filesystem (the
     // default APFS) resolves them: Foo and foo are one destination, and a symlink staged
@@ -2760,6 +2828,101 @@ describe.skipIf(!existsSync(CLI))("etymd gates — the push-time audit reads the
     expect(logText).toContain("committed-present")
     expect(logText).not.toContain("nested-link-present")
     expect(logText).not.toContain("node_modules-is-link")
+  })
+
+  it("PINNED: a committed node_modules symlink stays the commit's — the link is not written through it", async () => {
+    // `ln -s target dst` with dst a symlink to an existing directory writes INSIDE the
+    // target: a tip that tracked node_modules as a symlink had the checkout's live tree
+    // grafted through it, OUTSIDE the audit tree, into whatever the link named. The link
+    // is made only where the destination entry is absent — -e reads through a link whose
+    // target exists, -L catches the dangling one — so a committed link keeps the commit's
+    // bytes and the target gains nothing.
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    // The committed symlink names a sibling of the checkout; it dangles until the target
+    // exists, which is what git stores either way.
+    await fs.symlink(path.join(dir, "nm-target"), path.join(dir, "node_modules"))
+    await commitAll("chore: script and a committed node_modules symlink")
+    await gates()
+    const log = path.join(dir, "audit-nm-link.log")
+    await stub(
+      "etymd",
+      [
+        "#!/bin/sh",
+        'if [ "$1" = "--version" ]; then printf "version: 0.0.0-stub\\n"; exit 0; fi',
+        '[ "$1" = "audit" ] || exit 0',
+        '[ -L node_modules ] && printf "node_modules-is-link\\n" >> "$ETYMD_RECORD"',
+        '[ -e node_modules/node_modules ] && printf "written-through\\n" >> "$ETYMD_RECORD"',
+        "exit 0",
+      ].join("\n") + "\n",
+    )
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      PATH: `${path.join(dir, ".stub-bin")}${path.delimiter}${process.env.PATH}`,
+      ETYMD_RECORD: log,
+    }
+    // The target now exists, so the audit tree's symlink resolves and the checkout's own
+    // node_modules (the same link) reads as a directory — exactly the shape ln wrote through.
+    await fs.mkdir(path.join(dir, "nm-target"), { recursive: true })
+
+    const { stdout } = await runPrePush(
+      env,
+      update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+    )
+    expect(stdout).toContain("the pushed tip")
+    const logText = await fs.readFile(log, "utf8")
+    expect(logText).toContain("node_modules-is-link")
+    expect(logText).not.toContain("written-through")
+    // And the write-through stayed outside the audit tree too: the link's target is clean.
+    expect(existsSync(path.join(dir, "nm-target", "node_modules"))).toBe(false)
+  })
+
+  it("PINNED: an exported GIT_WORK_TREE cannot redirect the node_modules link — show-toplevel runs scrubbed", async () => {
+    // git exports its names to every hook, and rev-parse --show-toplevel answers
+    // GIT_WORK_TREE over the cwd: unscrubbed, the checkout root resolved to the exporting
+    // repo's work tree, the node_modules link was looked for in the wrong place, missed,
+    // and silently skipped — the audit read a tree with no installed binaries and degraded
+    // command claims to unverifiable. The lookup runs through the same scrub as the
+    // materialisation.
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await commitAll("chore: script")
+    await gates()
+    const log = path.join(dir, "audit-nm-scrub.log")
+    await stub(
+      "etymd",
+      [
+        "#!/bin/sh",
+        'if [ "$1" = "--version" ]; then printf "version: 0.0.0-stub\\n"; exit 0; fi',
+        // Only the audit call counts: the content screen also runs etymd, from the
+        // checkout root, where node_modules exists regardless of the audit tree's link.
+        '[ "$1" = "audit" ] || exit 0',
+        '[ -e node_modules/.bin ] && printf "audit-linked\\n" >> "$ETYMD_RECORD"',
+        "exit 0",
+      ].join("\n") + "\n",
+    )
+    const decoy = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-decoy-"))
+    try {
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        PATH: `${path.join(dir, ".stub-bin")}${path.delimiter}${process.env.PATH}`,
+        ETYMD_RECORD: log,
+        // The live shape: git's exported names riding along on the push, with a work tree
+        // that is not the checkout the link must come from.
+        GIT_DIR: path.join(dir, ".git"),
+        GIT_WORK_TREE: decoy,
+      }
+      await fs.mkdir(path.join(dir, "node_modules", ".bin"), { recursive: true })
+
+      const { stdout } = await runPrePush(
+        env,
+        update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+      )
+      expect(stdout).toContain("the pushed tip")
+      expect(await fs.readFile(log, "utf8")).toContain("audit-linked")
+    } finally {
+      await fs.rm(decoy, { recursive: true, force: true })
+    }
   })
 
   it("PINNED: a tree entry whose name escapes the tree refuses the push — no write outside the audit tree", async () => {

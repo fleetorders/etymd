@@ -109,9 +109,13 @@ if command -v shellcheck >/dev/null 2>&1; then
     # (a fetch runs no hooks), so they stay in the range and are read here. $1 carries the
     # pushed-to remote's name, but a push can name a URL instead (git push <url>), and --remotes=<url>
     # matches no refs — it would negate nothing and check a fresh clone's entire history, the
-    # exact cost blowup this range design exists to avoid — so the narrow bound applies only
-    # where $1 names a remote this clone has configured; a URL push keeps the wide bound and
-    # its old residue. A NAMED remote this clone never fetched negates nothing either (no refs
+    # exact cost blowup this range design exists to avoid — so the tracking-ref subtraction
+    # applies only where $1 names a remote this clone has configured. A URL push keeps the
+    # wide bound and its old residue on a NEW branch, where no destination sha exists to
+    # bound anything; on an EXISTING branch the destination sha bounds the range ALONE:
+    # subtracting every remote's tracking refs there once zeroed a range whose commits the
+    # destination lacked but an unrelated remote happened to hold — exactly the pushed bytes,
+    # left unchecked. A NAMED remote this clone never fetched negates nothing either (no refs
     # under refs/remotes/<name>/), so the range is the whole history — deliberate, not the
     # wide bound: negating every remote's refs here would let a commit merely FETCHED from a
     # second remote (gated by nobody on its way in) ship unchecked, the exact hole the bound
@@ -122,7 +126,8 @@ if command -v shellcheck >/dev/null 2>&1; then
     # refusing a push the gate could have read. The same subtraction bounds the EXISTING-branch
     # range: a branch that merged the upstream drags commits a remote already holds into
     # "$rsha..$lsha", and each was re-checked at its own tree, where later fixes do not exist —
-    # so that range is the local sha minus the remote sha AND the remote-tracking refs.
+    # so that range is the local sha minus the remote sha AND the remote-tracking refs —
+    # but only the configured remote's refs, never everyone's (the URL case above).
     # Enumeration failure refuses the push: a range
     # the gate could not list is a range it did not read.
     # (pattern) with both parens: bash 3.2 (macOS /bin/sh) cannot parse an unbalanced )
@@ -144,7 +149,13 @@ if command -v shellcheck >/dev/null 2>&1; then
       case "$rsha" in
         (*[!0]*)
           if git cat-file -e "${rsha}^{commit}" 2>/dev/null; then
-            git rev-list "$lsha" --not "$rsha" "$bound"
+            if [ "$bound" = "--remotes" ]; then
+              # URL/path push: no configured remote's tracking refs to subtract —
+              # the destination sha alone bounds what that destination will receive.
+              git rev-list "$lsha" --not "$rsha"
+            else
+              git rev-list "$lsha" --not "$rsha" "$bound"
+            fi
           else
             git rev-list "$lsha" --not "$bound"
           fi ;;
@@ -543,7 +554,11 @@ fi
 # sees the repo's own config. The materialisation and the audit both run scrubbed (run_gate):
 # a child git inheriting git's exported names ignores the worktree it stands in, so read-tree
 # would write the pushing checkout's index while the audit tree's stayed empty. A push that carries no commits
-# (deletes only) audits nothing, and says so. Every exit — a refused audit, a failed
+# (deletes only) audits nothing, and says so. A ref that resolves to no commit — a tag
+# pointing at a blob or a tree — has no tree of scripts to audit either: worktree add
+# cannot stand one up, and refusing the push for that rejects a valid tag, so it is
+# skipped with the same disclosure the shell gate gives its unparsable dialects. Every
+# exit — a refused audit, a failed
 # materialisation, a signal — deregisters the tip's worktree before its directory goes:
 # removing only the directory left a registration pointing at nothing behind every failed
 # push. Only this hook's own worktree is named, never a prune, which would also drop the
@@ -568,6 +583,12 @@ if command -v etymd >/dev/null 2>&1; then
     [ -n "$tips" ] || echo "› etymd audit: no commit in the pushed refs (deletes only, or nothing new) — nothing to audit"
     tab=$(printf '\t')
     for tip in $tips; do
+      # Only a ref that resolves to a commit has a tree to audit (see the block comment);
+      # anything else is skipped with disclosure, never refused and never silent.
+      if ! git cat-file -e "${tip}^{commit}" 2>/dev/null; then
+        echo "› etymd audit: $(git rev-parse --short "$tip" 2>/dev/null || echo "$tip") resolves to no commit (a tagged blob or tree?) — no tree to audit; not audited, not failed"
+        continue
+      fi
       wt=$(mktemp -d "$audit_tmp/tip.XXXXXX") || exit 1
       # Materialised through run_gate, like the audit itself: git exports GIT_DIR and friends
       # to this hook, and a child git that inherits them ignores its cwd — an unscrubbed
@@ -640,14 +661,18 @@ if command -v etymd >/dev/null 2>&1; then
       fi
       # The checkout's installed binaries, linked in for the audit run (see the block
       # comment): any failure here only restores the skip-with-disclosure behaviour, never
-      # blocks a push. The link is skipped when the tip tracks anything under node_modules/
-      # itself: `ln -s target dir` with an EXISTING directory grafts the link INSIDE it
-      # ($wt/node_modules/node_modules), handing the audit the checkout's live bytes under
-      # the pushed tree's name — a committed node_modules path stays the commit's, exactly
-      # as the block comment claims.
-      checkout_root=$(git rev-parse --show-toplevel 2>/dev/null) \
+      # blocks a push. The link is made only where the audit tree has no node_modules entry
+      # of its own: `ln -s target dir` with an EXISTING directory grafts the link INSIDE it
+      # ($wt/node_modules/node_modules), and through a symlinked one the write follows it
+      # OUTSIDE the audit tree — a committed node_modules entry, file, directory or link,
+      # stays the commit's, exactly as the block comment claims. -e reads through a link
+      # whose target exists; -L catches the dangling one where -e reads absent — either way
+      # the destination entry is present and the link is not made. show-toplevel runs
+      # through the scrub like the materialisation: an exported GIT_WORK_TREE answers for
+      # the exporting repo, and the link would be looked for in the wrong checkout.
+      checkout_root=$(run_gate git rev-parse --show-toplevel 2>/dev/null) \
         && [ -d "$checkout_root/node_modules" ] \
-        && [ ! -e "$wt/node_modules" ] \
+        && [ ! -e "$wt/node_modules" ] && [ ! -L "$wt/node_modules" ] \
         && ln -s "$checkout_root/node_modules" "$wt/node_modules" || :
       echo "› etymd audit --no-ledger --fail-on risk (at $(git rev-parse --short "$tip" 2>/dev/null || echo "$tip"), the pushed tip)"
       if ! (cd "$wt" && run_gate etymd audit --no-ledger --fail-on risk); then
@@ -688,4 +713,4 @@ fi
 [ "${manual_run:-0}" -eq 1 ] && echo "› manual run: no refs arrived on stdin — the shellcheck and audit gates checked nothing; this exit 0 carries no verdict"
 
 exit 0
-# etymd:generated pack-v37 83f17894413af775
+# etymd:generated pack-v38 685d73f42df75fc1
