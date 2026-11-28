@@ -696,8 +696,14 @@ export interface FleetBoardCmdOptions {
 
 export async function board(opts: FleetBoardCmdOptions): Promise<void> {
   const { manifest, autoNote } = await loadManifest(opts.cwd, opts.manifest)
-  // The board skips archived records like every fleet command — and says so (D-014).
-  const archivedNote = archivedNamesLine(manifest.archived.map((e) => e.name))
+  // The board skips archived records like every fleet command — and says so (D-014). The
+  // archived disclosure runs through the same personal-project filter as the rows above it:
+  // the board is a publishable artifact of the personal side, and an archived guarded entry
+  // is exactly the content the profile split exists to keep out of it — closing a project
+  // must not publish what its live row never showed. One filtered list feeds the note, the
+  // JSON and the saved Markdown, so no surface disagrees with another.
+  const archivedNames = manifest.archived.filter((e) => e.profile !== "guarded").map((e) => e.name)
+  const archivedNote = archivedNamesLine(archivedNames)
   const projects: BoardProject[] = []
   for (const entry of manifest.entries) {
     // Guarded entries never reach a board: the board is a publishable artifact of the personal
@@ -752,7 +758,7 @@ export async function board(opts: FleetBoardCmdOptions): Promise<void> {
   const input = {
     generatedOn,
     manifest: path.basename(manifest.manifestPath),
-    archived: manifest.archived.map((e) => e.name),
+    archived: archivedNames,
     initiatives,
     initiativesProblems,
     projects,

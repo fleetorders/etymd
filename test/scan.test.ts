@@ -328,6 +328,19 @@ describe("detectShellSurface — the executable surface package.json cannot see"
     expect(await detectShellSurface(dir, true)).toEqual({ scripts: 4 })
   })
 
+  it("counts the ksh family — a ksh-only repo still gets its gate", async () => {
+    // The gate's classifier checks ksh and its aliases; the detector's patterns once
+    // matched neither the .ksh extension nor any ksh shebang, so a repo whose scripts are
+    // all ksh counted zero and the installer silently omitted the step that checks them.
+    await write("tool/run.ksh", "#!/bin/ksh\necho hi\n")
+    await write("tool/mk", "#!/usr/bin/env mksh\necho hi\n")
+    await write("tool/pd", "#!/usr/bin/pdksh\necho hi\n")
+    await write("bin/ninetythree", "#!/bin/ksh93\necho hi\n")
+    await initRepo()
+
+    expect(await detectShellSurface(dir, true)).toEqual({ scripts: 4 })
+  })
+
   it("counts only TRACKED files — an untracked or ignored script is not the repo's surface", async () => {
     await write("tracked.sh", "#!/bin/sh\nexit 0\n")
     await initRepo()
