@@ -46,6 +46,10 @@ program
   )
   .option("--no-ledger", "read-only: do not persist the reconciled ledger")
   .option(
+    "--fix",
+    "apply the mechanical fixes etymd owns (decision blocks into id order, whole blocks moved) before reporting; the audit re-runs on the fixed files",
+  )
+  .option(
     "--fail-on <tier>",
     "exit non-zero when findings at/above this tier exist (risk|gap|polish)",
   )
@@ -62,6 +66,7 @@ program
         truth: opts.truth,
         lens: opts.lens,
         noLedger: !opts.ledger,
+        fix: opts.fix,
         failOn: opts.failOn,
         upstream: opts.upstream,
       })

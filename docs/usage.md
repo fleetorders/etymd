@@ -2,7 +2,9 @@
 
 A deeper walkthrough than the README. Every command is read-only unless it says it writes. The
 writes are: the `.etymd` cache/baseline/ledger, the files you approve in `init`/`gates`, the
-briefing `brief` emits, and the brief `premise` writes where `.etymd/` already exists. Probing a repo that never opted in (`audit --no-ledger`) leaves zero trace.
+briefing `brief` emits, the brief `premise` writes where `.etymd/` already exists, and the
+decision blocks `audit --fix` moves into id order. Probing a repo that never opted in
+(`audit --no-ledger`) leaves zero trace.
 
 ## Global options
 
@@ -31,7 +33,11 @@ Findings reconcile against the **committed ledger**: the diff shows new / still-
 `--truth`) never marks unexamined findings resolved.
 
 Flags: `--lens <id>` · `--truth` (doctor subset) · `--json` (machine-stable) · `--no-ledger`
-(read-only) · `--fail-on <risk|gap|polish>` (exit non-zero at/above the tier — the CI gate) ·
+(read-only) · `--fix` (apply the mechanical fixes etymd owns: a decisions file whose `## D-NNN`
+blocks landed out of append order is rewritten with whole blocks moved into id order — no word
+and no id changed, each move reported; the audit then re-runs on the fixed files. A non-decision
+`##` section between D-entries makes the reorder refuse and say why) ·
+`--fail-on <risk|gap|polish>` (exit non-zero at/above the tier — the CI gate) ·
 `--upstream <remote>` (this repo is a fork of that remote: freshness counts fork-authored commits
 only, and a source comment last written by one of the remote's commits is not checked, because
 the fork inherited it; run `git fetch <remote>` first, an unfetched remote is disclosed and
