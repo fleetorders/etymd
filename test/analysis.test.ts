@@ -678,7 +678,9 @@ describe("preservation is a property of generation, not of the command", () => {
 describe("shell correctness gate — the surface package.json cannot see", () => {
   it("writes a shellcheck step for a repo with a shell surface", () => {
     const hook = generatePrePushHook(facts({ shell: { scripts: 12 } }))
-    expect(hook).toContain("shellcheck -S style -f gcc")
+    // The invocation takes its dialect flags as "$@" so the ksh-alias list can run with
+    // --shell=ksh through the same reader — the flags sit after the parameter.
+    expect(hook).toContain('shellcheck "$@" -S style -f gcc')
     // Discovery happens IN the hook, at push time, over the commits being pushed. A baked-in
     // file list is correct the day it is generated and silently wrong the first time someone
     // adds a script; a working-tree read certifies bytes that never ship.
@@ -693,7 +695,7 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
     // Step-precise marker: every hook now MENTIONS shellcheck (the scrub helper's disable
     // directive), so the bare word can no longer prove the step's presence or absence.
     expect(hook).not.toContain("command -v shellcheck")
-    expect(hook).not.toContain("shellcheck -S style -f gcc")
+    expect(hook).not.toContain('shellcheck "$@" -S style -f gcc')
   })
 
   it("treats an absent `shell` fact as not-measured, not as zero", () => {
@@ -701,7 +703,7 @@ describe("shell correctness gate — the surface package.json cannot see", () =>
     // crash, and must not claim a surface it never looked for.
     const hook = generatePrePushHook(facts({ shell: undefined }))
     expect(hook).not.toContain("command -v shellcheck")
-    expect(hook).not.toContain("shellcheck -S style -f gcc")
+    expect(hook).not.toContain('shellcheck "$@" -S style -f gcc')
   })
 
   it("PINNED: a missing shellcheck binary skips LOUDLY and never blocks", () => {

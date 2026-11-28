@@ -771,11 +771,11 @@ for entry do
       exit
     }' "$work/first-line") || exit 1
   case $interp in
-    (sh|bash|dash|ksh|sh[0-9]*|bash[0-9]*|dash[0-9]*|ksh[0-9]*|sh-[0-9]*|bash-[0-9]*|dash-[0-9]*|ksh-[0-9]*|mksh|pdksh|oksh|lksh)
-      # ksh is in the checked set, not the excluded bucket: the checker parses it natively
-      # (a ksh-shebang file gets real findings, no dialect error), so excluding it was a
-      # policy choice paid as a standing hole on every push of a repo that carries any ksh —
-      # and the mksh/pdksh/oksh/lksh variants ride the same family.
+    (sh|bash|dash|ksh|sh[0-9]*|bash[0-9]*|dash[0-9]*|ksh[0-9]*|sh-[0-9]*|bash-[0-9]*|dash-[0-9]*|ksh-[0-9]*)
+      # ksh is in the checked set, not the excluded bucket: the checker names ksh among its
+      # native dialects (a ksh-shebang file gets real findings, no dialect error), so
+      # excluding it was a policy choice paid as a standing hole on every push of a repo
+      # that carries any ksh.
       case $file in
         (*/*) dir=\${file%/*} ;;
         (*) dir=. ;;
@@ -786,6 +786,24 @@ for entry do
       }
       printf "./%s\\0" "$file" >> "$work/scripts" || exit 1
       printf . >> "$work/count" || exit 1 ;;
+    (mksh|pdksh|oksh|lksh)
+      # The ksh family's other names are ksh to their authors, and are checked, never
+      # excluded — but the checker's own refusal names only sh/bash/dash/ksh, and a
+      # mksh/pdksh/lksh shebang earns SC1008 at ERROR severity, over this gate's bar, on a
+      # script that is clean. They stage to their own list and the run below reads that
+      # list under the ksh dialect explicitly (--shell=ksh): what the name means, said to
+      # the checker instead of guessed from the shebang it does not know.
+      case $file in
+        (*/*) dir=\${file%/*} ;;
+        (*) dir=. ;;
+      esac
+      mkdir -p -- "$tree/$dir" && mv -- "$work/blob" "$tree/$file" || {
+        echo "etymd: cannot stage tracked file for shellcheck: $file" >&2
+        exit 1
+      }
+      printf "./%s\\0" "$file" >> "$work/scripts-ksh" || exit 1
+      printf . >> "$work/count" || exit 1
+      printf . >> "$work/ksh-alias-count" || exit 1 ;;
     (zsh|zsh[0-9]*|zsh-[0-9]*)
       printf . >> "$work/zsh-count" || exit 1 ;;
     (ash|yash|posh|csh|tcsh|fish)
@@ -1020,7 +1038,8 @@ if command -v shellcheck >/dev/null 2>&1; then
         echo "✗ shellcheck: cannot read commit $(git rev-parse --short "$sha" 2>/dev/null || echo "$sha") — refusing the push rather than certifying bytes this gate did not read" >&2
         exit 1
       fi
-      : > "$shellcheck_tmp/scripts" && : > "$shellcheck_tmp/count" \\
+      : > "$shellcheck_tmp/scripts" && : > "$shellcheck_tmp/scripts-ksh" \\
+        && : > "$shellcheck_tmp/count" && : > "$shellcheck_tmp/ksh-alias-count" \\
         && : > "$shellcheck_tmp/zsh-count" && : > "$shellcheck_tmp/other-count" \\
         && : > "$shellcheck_tmp/skip-count" || exit 1
       # Only the paths this commit adds, copies, modifies, renames or retypes against its first
@@ -1139,6 +1158,7 @@ if command -v shellcheck >/dev/null 2>&1; then
         done
       fi
       count=$(wc -c < "$shellcheck_tmp/count") || exit 1
+      ksh_alias_count=$(wc -c < "$shellcheck_tmp/ksh-alias-count") || exit 1
       zsh_count=$(wc -c < "$shellcheck_tmp/zsh-count") || exit 1
       other_count=$(wc -c < "$shellcheck_tmp/other-count") || exit 1
       skip_count=$(wc -c < "$shellcheck_tmp/skip-count") || exit 1
@@ -1148,6 +1168,7 @@ if command -v shellcheck >/dev/null 2>&1; then
       # accepts surrounding whitespace), so every consumer below sees a canonical integer.
       # Not tr in a pipeline: the pipeline would report tr's status and mask a failed wc.
       count=$((count))
+      ksh_alias_count=$((ksh_alias_count))
       zsh_count=$((zsh_count))
       other_count=$((other_count))
       skip_count=$((skip_count))
@@ -1168,8 +1189,20 @@ if command -v shellcheck >/dev/null 2>&1; then
         # scripts again for advice). The error/warning lines in the one output ARE the blocking
         # verdict; every other line is the advice — one read of one run instead of two passes
         # over files already read.
-        out=$( cd "$tree" && env SHELLCHECK_OPTS="$sc_kept" xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/scripts" 2> "$shellcheck_tmp/err" )
-        sc_rc=$?
+        # The ksh family's aliases (mksh, pdksh, oksh, lksh) get their own run with the ksh
+        # dialect named explicitly: the checker does not know those shebangs, and answers
+        # SC1008 at ERROR severity — over this gate's bar — for scripts that are clean. Both
+        # lists are read by the same function, held to the same verdict bar.
+        sc_run() {
+          # $1: the staged list to read; $2...: dialect flags handed to the checker.
+          sc_list=$1
+          shift
+          # An empty list (this commit's scripts may all sit in the OTHER list) never
+          # reaches the checker: xargs would hand it no operand and it would read the
+          # hook's own stdin instead of files.
+          [ -s "$sc_list" ] || return 0
+          out=$( cd "$tree" && env SHELLCHECK_OPTS="$sc_kept" xargs -0 shellcheck "$@" -S style -f gcc -- < "$sc_list" 2> "$shellcheck_tmp/err" )
+          sc_rc=$?
         # The 2> redirect hangs off the checker command, so a failed cd leaves the err file
         # never created: the read is guarded, and an unread stderr is empty, never fatal.
         err=$(cat "$shellcheck_tmp/err" 2>/dev/null) || true
@@ -1248,11 +1281,17 @@ if command -v shellcheck >/dev/null 2>&1; then
         # alternation this replaced is a GNU-ism BSD grep reads literally, which reprinted the
         # blocking findings verbatim as "advice" on a BSD desk. The same anchored pattern as the
         # blocking read, complemented: a line over the bar is never also advice.
-        advice=$(printf '%s\\n' "$out" | grep -Ev "$block_pat" || true)
-        if [ -n "$advice" ]; then
-          echo "  · style/info (not blocking):"
-          printf '%s\\n' "$advice" | sed 's/^/    /'
+          advice=$(printf '%s\\n' "$out" | grep -Ev "$block_pat" || true)
+          if [ -n "$advice" ]; then
+            echo "  · style/info (not blocking):"
+            printf '%s\\n' "$advice" | sed 's/^/    /'
+          fi
+        }
+        sc_run "$shellcheck_tmp/scripts"
+        if [ "$ksh_alias_count" -gt 0 ]; then
+          echo "› shellcheck: $((ksh_alias_count)) of them under the ksh family's aliases (mksh, pdksh, oksh, lksh) — the checker does not know those shebangs, so that list runs with the ksh dialect named explicitly"
         fi
+        sc_run "$shellcheck_tmp/scripts-ksh" --shell=ksh
       fi
       rm -rf "$tree" || {
         # The checks passed; only the removal failed. A bare nonzero exit here read as a gate
@@ -1430,6 +1469,28 @@ if command -v etymd >/dev/null 2>&1; then
           esac
           case \${meta%% *} in (160000) continue ;; esac
           case $file in (*/*) dir=\${file%/*} ;; (*) dir=. ;; esac
+          # Two escapes the lexical guard above cannot see, both live on a case-insensitive
+          # filesystem (the default APFS): distinct git paths can name ONE destination (Foo
+          # and foo both write $wt/foo — the second silently over the first), and a symlink
+          # staged for one entry carries the mkdir or blob write of any entry after it
+          # through itself, outside the tree this gate built. An ancestor that is a symlink,
+          # or a destination that already exists, is refused like an escaping name: bytes
+          # this gate cannot safely place, it will not certify.
+          case $file in
+            (*/*)
+              esc=\${file%/*}
+              while [ "$esc" != "." ] && [ "$esc" != "/" ]; do
+                if [ -L "$wt/$esc" ]; then
+                  echo "etymd: tracked path crosses a symlinked directory: $file (at $esc)" >&2
+                  exit 1
+                fi
+                case $esc in (*/*) esc=\${esc%/*} ;; (*) break ;; esac
+              done ;;
+          esac
+          if [ -e "$wt/$file" ] || [ -L "$wt/$file" ]; then
+            echo "etymd: tracked path collides with an already-materialised destination: $file" >&2
+            exit 1
+          fi
           mkdir -p -- "$wt/$dir" || exit 1
           case \${meta%% *} in
             (120000) ln -s -- "$(gate git cat-file blob "\${meta##* }")" "$wt/$file" || exit 1 ;;

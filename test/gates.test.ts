@@ -1675,6 +1675,68 @@ describe.skipIf(!existsSync(CLI))("etymd gates — zsh is outside shellcheck's r
     expect(stdout).not.toContain("another interpreter")
   })
 
+  it("PINNED: the ksh family's aliases are checked under the ksh dialect, and a clean one passes", async () => {
+    // shellcheck names only sh/bash/dash/ksh as shebangs it knows; mksh/pdksh/lksh (oksh
+    // rides with them under one rule) earned SC1008 at ERROR severity — over this gate's
+    // bar — on scripts that were clean. They are still checked, never excluded: staged to
+    // their own list and read with --shell=ksh, which is what the names mean.
+    await baseRepo()
+    await write("tool/mk", "#!/usr/bin/env mksh\necho ok\n")
+    await write("tool/do.sh", "#!/bin/sh\necho ok\n")
+    await commitAll("chore: mksh and sh tools")
+    await gates()
+    await recordShellcheck()
+    const log = path.join(dir, "shellcheck.jsonl")
+    const env = await stubEnv({ ETYMD_RECORD: log })
+
+    const { stdout } = await runPrePush(
+      env,
+      update("main", await revParse("HEAD"), await revParse("HEAD~1")),
+    )
+    const calls = (await fs.readFile(log, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[])
+    expect(calls).toHaveLength(2)
+    const dialect = calls.find((args) => args.includes("--shell=ksh"))
+    expect(dialect?.filter((arg) => arg.startsWith("./"))).toEqual(["./tool/mk"])
+    const native = calls.find((args) => !args.includes("--shell=ksh"))
+    expect(native?.filter((arg) => arg.startsWith("./"))).toEqual(["./tool/do.sh"])
+    expect(stdout).toContain("ksh family's aliases")
+    expect(stdout).not.toContain("another interpreter")
+  })
+
+  it("a real warning in an mksh script still blocks the push", async () => {
+    // The dialect run is a second READING of the same verdict bar, not a softer one: a
+    // warning-severity finding in an aliased script refuses the push exactly as it would
+    // in an sh script.
+    await baseRepo()
+    await write("tool/mk", "#!/usr/bin/env mksh\necho $UNSET\n")
+    await commitAll("chore: mksh tool")
+    await gates()
+    await stub(
+      "shellcheck",
+      [
+        "#!/usr/bin/env node",
+        'if (process.argv.includes("--version")) { process.stdout.write("version: \\n"); process.exit(0) }',
+        'if (process.argv.includes("--shell=ksh")) {',
+        "  process.stdout.write('./tool/mk:1:6: warning: Double quote to prevent globbing. [SC2086]\\n');",
+        "  process.exit(1)",
+        "}",
+        "process.exit(0)",
+      ].join("\n") + "\n",
+    )
+    const log = path.join(dir, "shellcheck.jsonl")
+    const env = await stubEnv({ ETYMD_RECORD: log })
+
+    await expect(
+      runPrePush(env, update("main", await revParse("HEAD"), await revParse("HEAD~1"))),
+    ).rejects.toMatchObject({
+      code: 1,
+      stdout: expect.stringContaining("warning: Double quote to prevent globbing"),
+    })
+  })
+
   it("a versioned or suffixed interpreter lands in its family", async () => {
     // Three near-duplicate patterns matched the interpreter by its exact name, so bash5 and
     // zsh5 fell through to the "other" bucket: a bash script went unchecked, a zsh one was
@@ -2511,6 +2573,75 @@ describe.skipIf(!existsSync(CLI))("etymd gates — the push-time audit reads the
     // tracked files, so the audit read the tree it was handed.
     expect(auditCount).toBeDefined()
     expect(Number(auditCount?.split(" ")[1])).toBeGreaterThan(0)
+  })
+
+  it("PINNED: distinct-case tree entries cannot write one destination or ride a symlink out of the audit tree", async (ctx) => {
+    // The lexical staying-inside guard reads names; a case-insensitive filesystem (the
+    // default APFS) resolves them: Foo and foo are one destination, and a symlink staged
+    // for Foo carries foo/anything's mkdir and blob write through itself, outside the tree
+    // this gate built. Both are refused like an escaping name — bytes this gate cannot
+    // safely place, it will not certify. The tree is forged with update-index (git's own
+    // writers refuse nothing here, but a hand-built index can carry both names), and the
+    // whole test sleeps on a case-insensitive desk: on a case-sensitive one the names are
+    // simply two files, nothing to refuse.
+    const probe = await fs.mkdtemp(path.join(os.tmpdir(), "etymd-case-probe-"))
+    try {
+      await fs.writeFile(path.join(probe, "Probe"), "x")
+      await fs.access(path.join(probe, "probe"))
+    } catch {
+      ctx.skip()
+      return
+    } finally {
+      await fs.rm(probe, { recursive: true, force: true })
+    }
+    await baseRepo()
+    await write("scripts/run", "#!/bin/sh\necho ok\n")
+    await commitAll("chore: script")
+    await gates()
+    const env = await pushEnv()
+    const gitEnv = {
+      ...process.env,
+      GIT_AUTHOR_NAME: "fixture",
+      GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+      GIT_COMMITTER_NAME: "fixture",
+      GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+    }
+    const blob = (content: string) =>
+      spawnSync("git", ["hash-object", "-w", "--stdin"], {
+        cwd: dir,
+        input: content,
+        encoding: "utf8",
+      }).stdout?.trim() ?? ""
+    const forge = async (entries: string[]) => {
+      for (const entry of entries)
+        await pExecFile("git", ["update-index", "--add", "--cacheinfo", entry], {
+          cwd: dir,
+          env: gitEnv,
+        })
+      await pExecFile("git", ["commit", "-m", "chore: forged tree"], { cwd: dir, env: gitEnv })
+      return {
+        head: await revParse("HEAD"),
+        base: await revParse("HEAD~1"),
+      }
+    }
+    // A symlink entry named Foo, then a file under foo/ — distinct git paths, one
+    // destination: the parents walk must see the symlink before mkdir follows it.
+    const link = await blob("../outside")
+    const payload = await blob("escaped\n")
+    let pushed = await forge([`120000,${link},Foo`, `100644,${payload},foo/escape.txt`])
+    await expect(runPrePush(env, update("main", pushed.head, pushed.base))).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("crosses a symlinked directory"),
+    })
+    // Two blobs whose names case-collapse onto one destination: the second write must be
+    // refused, not silently written over the first.
+    const a = await blob("first\n")
+    const b = await blob("second\n")
+    pushed = await forge([`100644,${a},Dup`, `100644,${b},dup`])
+    await expect(runPrePush(env, update("main", pushed.head, pushed.base))).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("collides with an already-materialised destination"),
+    })
   })
 
   it("PINNED: a failed materialisation prints git's own reason, not a bare refusal", async () => {

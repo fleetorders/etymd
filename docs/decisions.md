@@ -289,6 +289,12 @@ paying it forever for a dialect the checker reads is the wrong bill. ash stays e
 uncontested: the checker has no mode for it without a per-file directive, and the raw blobs this
 gate reads cannot carry one.
 
+**Amended (pack 37):** "natively" covers `ksh` alone. The checker's own refusal names only
+sh/bash/dash/ksh, and a `mksh`, `pdksh`, `oksh` or `lksh` shebang earns SC1008 at error severity
+— over the gate's bar — on a clean script. The aliases stay in the checked set and now run as
+their own list with the ksh dialect named explicitly (`--shell=ksh`): checked under what the
+names mean, never a standing refusal over nothing.
+
 **Consequences:** a repo with ksh scripts carrying real findings starts refusing pushes the day
 its pack regenerates past this version — the same one-time migration every severity-bar change
 pays. The pack version bumps with the classifier; consumers take the widening at their next

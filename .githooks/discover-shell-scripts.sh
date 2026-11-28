@@ -182,7 +182,11 @@ for entry do
       exit
     }' "$work/first-line") || exit 1
   case $interp in
-    (sh|bash|dash|sh[0-9]*|bash[0-9]*|dash[0-9]*|sh-[0-9]*|bash-[0-9]*|dash-[0-9]*)
+    (sh|bash|dash|ksh|sh[0-9]*|bash[0-9]*|dash[0-9]*|ksh[0-9]*|sh-[0-9]*|bash-[0-9]*|dash-[0-9]*|ksh-[0-9]*)
+      # ksh is in the checked set, not the excluded bucket: the checker names ksh among its
+      # native dialects (a ksh-shebang file gets real findings, no dialect error), so
+      # excluding it was a policy choice paid as a standing hole on every push of a repo
+      # that carries any ksh.
       case $file in
         (*/*) dir=${file%/*} ;;
         (*) dir=. ;;
@@ -193,14 +197,32 @@ for entry do
       }
       printf "./%s\0" "$file" >> "$work/scripts" || exit 1
       printf . >> "$work/count" || exit 1 ;;
+    (mksh|pdksh|oksh|lksh)
+      # The ksh family's other names are ksh to their authors, and are checked, never
+      # excluded — but the checker's own refusal names only sh/bash/dash/ksh, and a
+      # mksh/pdksh/lksh shebang earns SC1008 at ERROR severity, over this gate's bar, on a
+      # script that is clean. They stage to their own list and the run below reads that
+      # list under the ksh dialect explicitly (--shell=ksh): what the name means, said to
+      # the checker instead of guessed from the shebang it does not know.
+      case $file in
+        (*/*) dir=${file%/*} ;;
+        (*) dir=. ;;
+      esac
+      mkdir -p -- "$tree/$dir" && mv -- "$work/blob" "$tree/$file" || {
+        echo "etymd: cannot stage tracked file for shellcheck: $file" >&2
+        exit 1
+      }
+      printf "./%s\0" "$file" >> "$work/scripts-ksh" || exit 1
+      printf . >> "$work/count" || exit 1
+      printf . >> "$work/ksh-alias-count" || exit 1 ;;
     (zsh|zsh[0-9]*|zsh-[0-9]*)
       printf . >> "$work/zsh-count" || exit 1 ;;
-    (ksh|ksh[0-9]*|ksh-[0-9]*|mksh|pdksh|oksh|lksh|ash|yash|posh|csh|tcsh|fish)
-      # Another shell is a script this gate does not check — by policy, not always by
-      # necessity: the checker parses ksh (only ash warns per file), so the exclusion is a
-      # choice, and the announcement below says so rather than claiming the checker cannot
-      # read what it can. It gets its own bucket, announced by the hook like the zsh
-      # exclusion — a coverage hole that is silent is indistinguishable from coverage.
+    (ash|yash|posh|csh|tcsh|fish)
+      # Another shell is a script this gate does not check: the checker has no dialect mode
+      # for any of them that these raw blobs could name — a per-file directive could force
+      # the sh parser onto some, and the bytes this gate reads carry none. It gets its own
+      # bucket, announced by the hook like the zsh exclusion — a coverage hole that is
+      # silent is indistinguishable from coverage.
       printf . >> "$work/other-count" || exit 1 ;;
     (*)
       # No shebang (data), or an interpreter that is not a shell at all (node, python3, ruby,
@@ -210,4 +232,4 @@ for entry do
       ;;
   esac
 done
-# etymd:generated pack-v35 9b3a53f66674f9fe
+# etymd:generated pack-v37 5dc728df1559d84c
