@@ -273,13 +273,20 @@ function isOnlyFlagValue(text: string, claim: string): boolean {
  * Does a missing path start somewhere this repo has? In a source comment a leading `./` or `../`
  * is relative to the commenting file, so the reference is about this tree by construction —
  * deleting the directory it names must not reclassify the mention as quoted from another repo.
- * A multi-segment claim without one is judged by the directory it names.
+ * A multi-segment claim without one is judged by the directory it names. The construction has a
+ * boundary: a `../` claim in a file at the repo root (or enough `../` segments anywhere) names a
+ * path OUTSIDE the tree — a sibling checkout, not this repo — so it is resolved from the
+ * claiming file's directory first and read as quoted-from-elsewhere when it escapes.
  */
-function startsInRepo(claim: string, opts: TextClaimsOptions): boolean {
+function startsInRepo(claim: string, opts: TextClaimsOptions, fromDir: string): boolean {
   const rooted = opts.rootedFirstSegments
   if (!rooted) return true
   if (!opts.sourceRelative) return rooted.has(claim.split("/")[0] ?? claim)
-  if (/^\.\.?\//.test(claim)) return true
+  if (/^\.\.?\//.test(claim)) {
+    if (claim.startsWith("./")) return true
+    const resolved = path.posix.normalize(path.posix.join(fromDir, claim))
+    return !resolved.startsWith("../")
+  }
   const segments = claim.replace(/^(?:\.\.?\/)+/, "").split("/")
   if (segments.length < 2) return true
   return rooted.has(segments[0] as string)
@@ -467,7 +474,7 @@ export async function checkTextClaims(
     }
     // Outside this repo (task surface and source comments): a path that starts at no directory the repo has
     // is quoted from elsewhere, and "missing here" would be a false accusation.
-    if (opts.rootedFirstSegments && !startsInRepo(claim, opts)) {
+    if (opts.rootedFirstSegments && !startsInRepo(claim, opts, fromDir)) {
       counters.outsideRepoSkipped += 1
       examined.push({ kind: "path", value: claim, exists: null })
       continue

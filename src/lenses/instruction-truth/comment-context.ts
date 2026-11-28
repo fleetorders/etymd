@@ -33,8 +33,10 @@ const LIST_ITEM_RE =
 // `like` and `say` clear ordinary prose when bare ("the loader looks like", "what the docs
 // say"), so they cue an example only in shape: a noun for what is exemplified in front of
 // `like` ("a path like", "files like"), "named/called like", or let's/just/or say.
+// Case-insensitive: a cue opening its own sentence capitalises it ("For example, `src/x.ts`") —
+// the same words marking the same example, only the initial letter different.
 const EXAMPLE_CUE_RE =
-  /(?:\b(?:e\.g\.?|for example|for instance|such as)|\b(?:a|an|the)?\s*(?:path|file|dir|directory|folder|script|module|package|library|name|pattern|shape|token|word|mention|example|extension|suffix|prefix)s?\s+like|\b(?:named|called)\s+like|\b(?:let'?s|just|or)\s+say)[,:]?$/
+  /(?:\b(?:e\.g\.?|for example|for instance|such as)|\b(?:a|an|the)?\s*(?:path|file|dir|directory|folder|script|module|package|library|name|pattern|shape|token|word|mention|example|extension|suffix|prefix)s?\s+like|\b(?:named|called)\s+like|\b(?:let'?s|just|or)\s+say)[,:]?$/i
 // The only content a bare enumeration carries: code spans, list separators, conjunctions. A
 // bracket holding a word (see, in, e.g., the build script) is a worded bracket — a
 // reference's parenthetical, not an enumeration.

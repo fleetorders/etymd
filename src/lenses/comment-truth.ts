@@ -149,7 +149,41 @@ export const commentTruthLens: Lens = {
     }
 
     const env = await buildTruthEnv(root, facts)
-    const pathResolves = cachedPathResolve(env.pathResolves)
+    // Nested package dirs, used twice below with one rule: a package frames only the comments
+    // written inside it. Computed here (before the scoped resolver) because the resolver needs
+    // it too — a path claim must never be FOUND through a package the commenting file does not
+    // sit in, or the frame rule in the skips is unreachable: the claim arrives already resolved.
+    const packageDirs = [
+      ...new Set(
+        tracked
+          .filter((rel) => PACKAGE_MANIFEST_RE.test(rel))
+          .map((rel) => path.posix.dirname(rel))
+          .filter((d) => d !== "."),
+      ),
+    ]
+    // A source comment's paths resolve from where its FILE sits: the repo root, and — only for
+    // a file inside a nested package — that package's own base. The instruction-file monorepo
+    // rule (ANY workspace's copy satisfies any claim) is deliberately not kept for comments:
+    // a root-level comment naming `src/index.ts` means this repo's src, and a package carrying
+    // a file at the same relative spot must not vouch for it — the same frame rule the skips
+    // apply, moved ahead of them so a masked claim never reaches the skip that would frame it.
+    const framePathResolves = async (claim: string, fromDir?: string): Promise<boolean> => {
+      const bases = [root]
+      if (fromDir)
+        for (const d of packageDirs)
+          if (fromDir === d || fromDir.startsWith(`${d}/`)) bases.push(path.join(root, d))
+      for (const base of bases) {
+        if (await pathExists(path.join(base, claim))) return true
+        // Conventional sub-roots instruction prose is written relative to.
+        if (await pathExists(path.join(base, "src", claim))) return true
+        if (await pathExists(path.join(base, "scripts", claim))) return true
+      }
+      // Relative to the commenting file's own directory, like buildTruthEnv.
+      if (fromDir && fromDir !== "." && (await pathExists(path.join(root, fromDir, claim))))
+        return true
+      return false
+    }
+    const pathResolves = cachedPathResolve(framePathResolves)
     const binResolves = cached(env.binResolves)
     // Nested manifests count whether or not a workspace declares them (a `server/` with its own
     // manifest beside an app), and their scripts are POOLED into one flat set, not scoped to the
@@ -224,14 +258,7 @@ export const commentTruthLens: Lens = {
     const keptIds = new Set<string>()
     // A missing path that exists under a nested package's own directory was written relative to
     // that package, by a file that does not sit in it (a root script naming a package's file).
-    const packageDirs = [
-      ...new Set(
-        tracked
-          .filter((rel) => PACKAGE_MANIFEST_RE.test(rel))
-          .map((rel) => path.posix.dirname(rel))
-          .filter((d) => d !== "."),
-      ),
-    ]
+    // `packageDirs` is declared above, beside the scoped resolver that shares the frame rule.
     const isInNestedPackage = cachedPathResolve(async (claim: string, rel?: string) => {
       if (!rel || claim.startsWith(".")) return false // dot-relative: about the commenting file's own directory
       const bare = claim.replace(/\/+$/, "")
@@ -472,16 +499,18 @@ export const commentTruthLens: Lens = {
           ),
         )
       }
-      // The cap, taken after the skips: what it drops is disclosed — the examined list is
-      // not the findings list.
+      // No truncation. A finding this lens drops is a finding the ledger reads as fixed
+      // (absent from the run means done), so the list handed onward is complete however long
+      // it gets: the cap this replaced once spent itself on ten stale paths and let a
+      // still-broken command behind them be marked done by the next audit. The reader's
+      // economy is served by the disclosure below, never by hiding evidence.
       const keptFindings = [...byId.values()]
+      findings.push(...keptFindings)
       if (keptFindings.length > MAX_PATH_FINDINGS_PER_FILE) {
         disclosures.push(
-          `${rel}: more than ${MAX_PATH_FINDINGS_PER_FILE} stale-path findings survived the comment-context skips — truncated.`,
+          `${rel}: ${keptFindings.length} findings survived the comment-context skips — all reported, none truncated; a file this far from its own tree is one repair, not many.`,
         )
-        keptFindings.length = MAX_PATH_FINDINGS_PER_FILE
       }
-      findings.push(...keptFindings)
     }
 
     // Honest coverage — every class not checked is named, never silently dropped.

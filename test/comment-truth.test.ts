@@ -798,6 +798,73 @@ describe("the comment skip rules read what the words say", () => {
     expect(report.disclosures.join("\n")).toMatch(/12 missing path\(s\) in comments are introduced/)
   })
 
+  it("keeps every finding past the per-file flood — the ledger must not read truncation as repair", async () => {
+    // The per-file cap once dropped findings silently: a still-broken command behind twelve
+    // stale paths vanished from the run, and the ledger marked it done on the next audit —
+    // an unfixed risk read as resolved. All findings now flow onward, and the disclosure
+    // names the flood instead of hiding evidence.
+    await write("package.json", JSON.stringify({ name: "flood", scripts: { build: "node x" } }))
+    await write("docs/readme.md", "# d\n")
+    const paths = Array.from({ length: 12 }, (_, i) => `docs/g${i}.md`).join(" and ")
+    await write("src/a.ts", `// stale ${paths}\n// Rebuild with npm run build:old.\nexport {}\n`)
+    await write("node_modules/.gitkeep", "")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report).filter((id) => id.includes("stale-path"))).toHaveLength(12)
+    expect(ids(report)).toContain("comment-truth/stale-command:src/a.ts:build:old")
+    expect(report.disclosures.join("\n")).toMatch(
+      /13 findings survived the comment-context skips — all reported, none truncated/,
+    )
+    expect(report.disclosures.join("\n")).not.toMatch(/— truncated\./)
+  })
+
+  it("a capitalised For example still marks its path an example", async () => {
+    // The example-cue pattern lost its case-insensitive flag at a rewrite: the same words
+    // with a capital F turned an illustrative path into a stale-path finding.
+    await write("docs/readme.md", "# d\n")
+    await write("src/a.ts", "// For example, docs/shape.md is dropped at load\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/introduced as examples/)
+  })
+
+  it("a parent-relative path that leaves the repository is quoted from elsewhere, not stale here", async () => {
+    // A `../` claim in a root-level file names something outside this tree: the old rule
+    // called every dot-relative claim "about this tree by construction", so a path that
+    // lives in no repository of the reader was reported missing INSIDE this one.
+    await write("run.ts", "// see ../elsewhere/guide.md for the outside docs\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual([])
+    expect(report.disclosures.join("\n")).toMatch(/quoted from another tree/)
+  })
+
+  it("a parent-relative path from a nested file stays this repo's to lose", async () => {
+    // The control: from src/ the same words point at the repo root's own parent-relative
+    // target — inside the tree, so its absence is a real stale path, not a quote from
+    // elsewhere.
+    await write("src/b.ts", "// see ../elsewhere/guide.md\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:src/b.ts:../elsewhere/guide.md"])
+  })
+
+  it("a workspace's copy does not vouch for a root comment's path", async () => {
+    // The instruction-file monorepo rule (any package's copy satisfies any claim) masked
+    // source comments: a root-level `src/index.ts` passed while only
+    // packages/shared/src/index.ts existed. A package frames only the comments written
+    // inside it — at the resolver too, or the frame rule in the skips is unreachable.
+    await write("package.json", JSON.stringify({ name: "r", workspaces: ["packages/*"] }))
+    await write("packages/shared/package.json", JSON.stringify({ name: "@r/shared" }))
+    await write("packages/shared/src/index.ts", "export {}\n")
+    await write("packages/shared/cli.ts", "// calls src/index.ts at boot\nexport {}\n")
+    await write("tools/run.ts", "// loads src/index.ts at boot\nexport {}\n")
+    await gitStage()
+    const report = await runComments()
+    expect(ids(report)).toEqual(["comment-truth/stale-path:tools/run.ts:src/index.ts"])
+  })
+
   it("does not call a wrap cut where no next comment line exists", async () => {
     // The disclosure said "the phrase continues on the next line" about a comment that had no
     // next line: the wrap skip needs the continuation to exist.
